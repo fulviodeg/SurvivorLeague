@@ -1,0 +1,37 @@
+# =============================================================================
+# Survivor League — .gitignore
+# File di esclusione per Git: dipendenze, artefatti di build, dati di runtime,
+# file di configurazione con credenziali e file locali/OS/IDE.
+# I file .env*.example restano tracciati (template senza segreti).
+# =============================================================================
+
+# --- Dipendenze e artefatti di build ---
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# --- Dati di runtime e log (database SQLite, log, file temporanei) ---
+data/
+.tmp/
+coverage/
+*.log
+
+# --- File di configurazione con credenziali (MAI committare) ---
+.env
+.env.bak
+.env.uat
+.env.uat-replay
+.env.local
+.env.*.local
+
+# --- Note personali (non fanno parte del progetto) ---
+note personali.txt
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- IDE ---
+.idea/
+.vscode/

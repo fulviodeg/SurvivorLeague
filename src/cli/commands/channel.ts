@@ -1,0 +1,157 @@
+/**
+ * Comandi CLI del Channel Adapter (LLD §7.9, piano Task 6.1/6.2).
+ *
+ * Ruolo:
+ *   - `channel:email:fetch` — legge le email NON LETTE dalla casella IMAP
+ *     (`receivedAt` = internaldate, ADR-001) e le stampa in JSON; NON marca
+ *     nulla (D7), idempotente;
+ *   - `channel:email:process` — flusso end-to-end (wiring, Task 6.2): fetch →
+ *     Message Router → iscrizione/pick con Parser LLM + moduli di gioco →
+ *     risposte → flag \Seen a successo (D7); elenca poi per messaggio
+ *     l'azione compiuta (diagnostica);
+ *   - `channel:email:send --to --subject --body` — invio SMTP di prova
+ *     (helper test/debug, LLD §7.9): soggetto dal chiamante (D1).
+ *
+ * Pattern CLI consolidato (briefing §1-I): il comando costruisce config → DB
+ * → componenti email reali (src/cli/email-wiring.ts) e inietta; la logica
+ * vive nei moduli (email-adapter, email-processor, Game Engine).
+ */
+import type { Argv, CommandModule } from 'yargs';
+
+import { getConfig } from '../../config.js';
+import { DbSeasonDataProvider } from '../../data/db-provider.js';
+import { createConnection } from '../../db/connection.js';
+import { migrate } from '../../db/schema.js';
+import { createLogger } from '../../logger.js';
+import { processEmailBatch } from '../../channel/email-processor.js';
+import { normalizeEmail } from '../../channel/email-adapter/message-router.js';
+import { buildEmailComponents } from '../email-wiring.js';
+import { loadTeamAliasesFor } from '../../llm/parser.js';
+import { makeNow } from '../../clock.js';
+import { jsonWithTestMode, printTestModeBanner } from '../output.js';
+
+interface JsonArg {
+  json: boolean;
+}
+
+export const channelEmailFetchCommand: CommandModule<object, JsonArg> = {
+  command: 'channel:email:fetch',
+  describe:
+    'Recupera le email non lette dalla casella IMAP (internaldate = receivedAt, ADR-001; NON marca nulla, D7)',
+  builder: (yargs: Argv<object>) =>
+    yargs.option('json', {
+      type: 'boolean' as const,
+      default: false,
+      describe: 'Output JSON strutturato invece di testo (LLD §7.13)'
+    }),
+  handler: async (argv) => {
+    const config = getConfig();
+    const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode);
+    const { channel } = buildEmailComponents(config);
+    const messages = await channel.fetchMessages();
+    if (argv.json) {
+      console.log(jsonWithTestMode(config, messages));
+    } else if (messages.length === 0) {
+      printTestModeBanner(config);
+      console.log('Nessuna email non letta in casella');
+    } else {
+      printTestModeBanner(config);
+      for (const m of messages) {
+        console.log(`Da: ${m.from} — ricevuta: ${m.receivedAt.toISOString()}`);
+        console.log(`  ${m.body.split('\n')[0] ?? ''}`);
+      }
+    }
+    logger.info({ count: messages.length }, 'channel:email:fetch completato (nessun flag impostato)');
+  }
+};
+
+interface SendArgs extends JsonArg {
+  to: string;
+  subject?: string;
+  body: string;
+}
+
+export const channelEmailSendCommand: CommandModule<object, SendArgs> = {
+  command: 'channel:email:send',
+  describe: 'Invia un\'email via SMTP (helper test/debug, LLD §7.9); soggetto dal chiamante (D1)',
+  builder: (yargs: Argv<object>) =>
+    yargs
+      .option('json', {
+        type: 'boolean' as const,
+        default: false,
+        describe: 'Output JSON strutturato invece di testo (LLD §7.13)'
+      })
+      .option('to', {
+        type: 'string' as const,
+        demandOption: true,
+        describe: 'Destinatario (indirizzo email)'
+      })
+      .option('subject', { type: 'string' as const, describe: 'Oggetto dell\'email' })
+      .option('body', { type: 'string' as const, demandOption: true, describe: 'Corpo dell\'email' }),
+  handler: async (argv) => {
+    const config = getConfig();
+    const { channel } = buildEmailComponents(config);
+    await channel.sendMessage(argv.to, argv.body, argv.subject);
+    if (argv.json) {
+      console.log(jsonWithTestMode(config, { sent: true, to: argv.to }));
+    } else {
+      printTestModeBanner(config);
+      console.log(`Email inviata a ${argv.to}`);
+    }
+  }
+};
+
+export const channelEmailProcessCommand: CommandModule<object, JsonArg> = {
+  command: 'channel:email:process',
+  describe:
+    'Flusso end-to-end: fetch → router → iscrizione/pick (Parser LLM + moduli di gioco) → risposte → flag \\Seen a successo (D7)',
+  builder: (yargs: Argv<object>) =>
+    yargs.option('json', {
+      type: 'boolean' as const,
+      default: false,
+      describe: 'Output JSON strutturato invece di testo (LLD §7.13)'
+    }),
+  handler: async (argv) => {
+    const config = getConfig();
+    const db = createConnection(config.DB_PATH);
+    const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode);
+    try {
+      migrate(db);
+      const provider = new DbSeasonDataProvider(db);
+      const { channel, generator, parser } = buildEmailComponents(config);
+
+      // Dati letti UNA VOLTA per batch (M): lista canonica + alias (D7: risorsa
+      // sintetica in test mode) + mittenti noti.
+      const teams = await provider.getTeams();
+      const aliases = await loadTeamAliasesFor(config.testMode);
+      const knownEmails = new Set(
+        (db.prepare('SELECT email FROM player').all() as Array<{ email: string }>).map((r) =>
+          normalizeEmail(r.email)
+        )
+      );
+
+      const messages = await channel.fetchMessages();
+      const result = await processEmailBatch(
+        { db, dataProvider: provider, config, now: makeNow(config), channel, generator, parser },
+        messages,
+        { teams, aliases, knownEmails, markSeen: (m) => channel.markSeen(m), logger, testMode: config.testMode }
+      );
+
+      if (argv.json) {
+        console.log(jsonWithTestMode(config, result));
+      } else {
+        printTestModeBanner(config);
+        for (const m of result.messages) {
+          console.log(
+            `  ${m.seen ? '[letto]' : '[non letto]'} ${m.from}: ${m.action}${m.detail !== undefined ? ` (${m.detail})` : ''}`
+          );
+        }
+        console.log(
+          `Processati ${result.processed} messaggi, ${result.seen} marcati letti${result.stopped ? ' — batch FERMATO su errore LLM (retry al prossimo tick)' : ''}`
+        );
+      }
+    } finally {
+      db.close();
+    }
+  }
+};

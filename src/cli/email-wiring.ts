@@ -1,0 +1,99 @@
+/**
+ * Wiring email della CLI (briefing Fase 5-6, problema M; LLD §5).
+ *
+ * Ruolo: helper condiviso che costruisce le IMPLEMENTAZIONI REALI dei confini
+ * I/O delle Fasi 5–6 — `EmailAdapter` (IMAP/SMTP), `OpenAIGenerator` e
+ * `OpenAIParser` (API LLM OpenAI-compatibile) — dai valori della
+ * configurazione, e le INIETTA nel `GameContext`. È l'unico punto dove i
+ * moduli vedono la configurazione: i moduli stessi non chiamano MAI
+ * `getConfig()` (AGENTS.md §1.3, briefing Fase 3 §1-I).
+ *
+ * La costruzione non fa rete: il transport SMTP è creato ma connesso solo
+ * all'invio; la connessione IMAP è una factory lazy (una connessione per
+ * fetch/markSeen); il client LLM chiama l'API solo al primo parse/generate.
+ *
+ * Usato da: comandi `round:*` e `tournament:register:*` (notifiche reali) e
+ * dai nuovi comandi `channel:email:*`/`llm:*` (Task 5.1/5.2/6.1/6.2).
+ */
+import { ImapFlow } from 'imapflow';
+import nodemailer from 'nodemailer';
+
+import type { AppConfig } from '../config.js';
+import { EmailAdapter } from '../channel/email-adapter/index.js';
+import type { GameContext } from '../game/context.js';
+import { OpenAIClient } from '../llm/openai-client.js';
+import { OpenAIParser } from '../llm/parser.js';
+import { OpenAIGenerator } from '../llm/generator.js';
+import { createLogger } from '../logger.js';
+
+/** Componenti I/O reali delle Fasi 5–6, pronti da iniettare. */
+export interface EmailComponents {
+  /** Canale email concreto (IMAP fetch / SMTP send, flag \Seen via markSeen). */
+  channel: EmailAdapter;
+  /** Generatore LLM dei testi email (template + segnaposto TT/TC, D4). */
+  generator: OpenAIGenerator;
+  /** Parser LLM delle email in ingresso (lista+alias iniettati per chiamata, D2). */
+  parser: OpenAIParser;
+}
+
+/**
+ * Costruisce le componenti email reali dalla configurazione (mai getConfig()
+ * qui: i valori arrivano come parametro). Transport SMTP: host/port da
+ * config, `secure: false` = STARTTLS (default nodemailer su 587). Connessione
+ * IMAP: `secure: true` su porta 993, auth user/pass (App Password Gmail).
+ */
+export function buildEmailComponents(config: AppConfig): EmailComponents {
+  // Il logger porta il binding testMode quando il test mode è attivo (D3):
+  // ogni riga pino emessa dal canale/LLM reca il campo strutturato testMode.
+  const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode);
+  const client = new OpenAIClient({
+    baseUrl: config.LLM_API_BASE_URL,
+    apiKey: config.LLM_API_KEY,
+    models: config.LLM_MODEL,
+    timeoutMs: config.LLM_TIMEOUT_MS,
+    retries: config.LLM_RETRIES,
+    // Diagnostica D7: ogni tentativo LLM (inclusi i retry dello stesso modello)
+    // finisce nei log pino — modello/tentativo usato e status (messaggi in
+    // inglese, regola progetto). Niente modifiche agli output CLI.
+    onModelTried: (model: string, ok: boolean, status?: number) => {
+      logger.info({ model, ok, status }, ok ? 'LLM attempt succeeded' : 'LLM attempt failed');
+    }
+  });
+  const transport = nodemailer.createTransport({
+    host: config.SMTP_HOST,
+    port: config.SMTP_PORT,
+    secure: false,
+    auth: { user: config.SMTP_USER, pass: config.SMTP_PASS }
+  });
+  const channel = new EmailAdapter({
+    from: config.SMTP_USER,
+    transport,
+    // Banner "TEST MODE" sulle email inviate (D2): seam unico nel canale di
+    // invio, attivo solo quando config.testMode.
+    testMode: config.testMode,
+    createImap: () =>
+      Promise.resolve(
+        new ImapFlow({
+          host: config.IMAP_HOST,
+          port: config.IMAP_PORT,
+          secure: true,
+          auth: { user: config.IMAP_USER, pass: config.IMAP_PASS }
+        })
+      )
+  });
+  return {
+    channel,
+    generator: new OpenAIGenerator(client),
+    parser: new OpenAIParser(client)
+  };
+}
+
+/**
+ * Inietta le componenti email reali nel contesto di gioco (pattern
+ * "la CLI inietta"): restituisce una copia del contesto con `channel`,
+ * `generator` e `parser` impostati.
+ */
+export function attachEmailToContext(ctx: GameContext, config: AppConfig): GameContext {
+  const { channel, generator, parser } = buildEmailComponents(config);
+  return { ...ctx, channel, generator, parser };
+}

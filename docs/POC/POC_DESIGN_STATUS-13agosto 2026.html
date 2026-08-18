@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Design Status — POC Survivor League</title>
+<meta name="description" content="Stato del design della POC Survivor League, leggibile anche da stakeholder non tecnici.">
+<style>
+
+:root{
+  --bg:#f6f7fb; --card:#ffffff; --text:#111827; --muted:#6b7280; --line:#e5e7eb;
+  --accent:#4f46e5; --accent-soft:#eef2ff; --accent-soft-2:#e0e7ff;
+  --ok:#059669; --ok-soft:#ecfdf5; --warn:#d97706; --warn-soft:#fffbeb;
+  --danger:#dc2626; --danger-soft:#fef2f2; --freeze:#7c3aed; --freeze-soft:#f5f3ff;
+  --shadow:0 1px 2px rgba(16,24,40,.06),0 8px 24px -12px rgba(16,24,40,.18);
+  --shadow-overlay:0 4px 6px rgba(16,24,40,.08),0 16px 40px -12px rgba(16,24,40,.35);
+  --radius:14px;
+  --header-h:72px;
+  color-scheme:light;
+}
+[data-theme="dark"]{
+  --bg:#0f172a; --card:#1e293b; --text:#e2e8f0; --muted:#94a3b8; --line:#334155;
+  --accent:#818cf8; --accent-soft:#1e1b4b; --accent-soft-2:#312e81;
+  --ok:#34d399; --ok-soft:#022c22; --warn:#fbbf24; --warn-soft:#422006;
+  --danger:#f87171; --danger-soft:#450a0a; --freeze:#a78bfa; --freeze-soft:#2e1065;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.6);
+  --shadow-overlay:0 4px 6px rgba(0,0,0,.5),0 16px 40px -12px rgba(0,0,0,.7);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+body{
+  margin:0;font-family:"Segoe UI",ui-sans-serif,system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  background:var(--bg);color:var(--text);line-height:1.62;font-size:16px;
+  overflow-x:clip;
+}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+h1,h2,h3,h4{line-height:1.25;scroll-margin-top:calc(var(--header-h,72px) + 16px)}
+h2{margin:56px 0 4px;font-size:1.55rem}
+h3{margin:34px 0 4px;font-size:1.18rem}
+p{margin:.55rem 0}
+code{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.88em;
+  background:var(--accent-soft);padding:.12em .4em;border-radius:6px;overflow-wrap:break-word;
+}
+hr{border:none;border-top:1px solid var(--line);margin:2.5rem 0}
+
+.site-header{
+  background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:60;
+  box-shadow:var(--shadow);
+}
+.header-inner{max-width:1180px;margin:0 auto;padding:.8rem 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:12px;min-width:0}
+.brand-mark{
+  width:42px;height:42px;border-radius:12px;flex:none;
+  background:linear-gradient(135deg,var(--accent),var(--freeze));
+  display:grid;place-items:center;color:#fff;font-weight:700;font-size:1.1rem;
+}
+.brand h1{margin:0;font-size:1.18rem;letter-spacing:.2px}
+.brand .sub{margin:0;font-size:.8rem;color:var(--muted)}
+.header-spacer{flex:1}
+.chip{
+  display:inline-flex;align-items:center;gap:6px;font-size:.76rem;font-weight:600;
+  padding:.28rem .6rem;border-radius:999px;border:1px solid var(--line);
+  white-space:nowrap;
+}
+.chip.ok{color:var(--ok);background:var(--ok-soft);border-color:transparent}
+.chip.poc{color:var(--warn);background:var(--warn-soft);border-color:transparent}
+.icon-btn{
+  border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:10px;
+  width:38px;height:38px;cursor:pointer;display:grid;place-items:center;font-size:1rem;
+}
+.icon-btn:hover{border-color:var(--accent)}
+
+.layout{max-width:1180px;margin:0 auto;padding:28px 20px 80px;display:grid;grid-template-columns:264px minmax(0,1fr);gap:36px;align-items:start}
+main{min-width:0}
+
+/* ---- TOC ---- */
+.toc{
+  position:sticky;top:calc(var(--header-h,72px) + 12px);max-height:calc(100vh - var(--header-h,72px) - 24px);overflow:auto;
+  background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  padding:16px 16px 10px;box-shadow:var(--shadow);scrollbar-width:thin;
+}
+.toc-title{font-size:.78rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 10px 8px}
+.toc ol{list-style:none;margin:0;padding:0;border-left:1px solid var(--line)}
+.toc li{margin:0}
+.toc a{
+  display:block;padding:5px 10px 5px 14px;margin:1px 0;border-radius:8px;
+  font-size:.88rem;color:var(--muted);border-left:2px solid transparent;margin-left:-1px;
+}
+.toc a:hover{color:var(--text);text-decoration:none}
+.toc a.active{color:var(--accent);border-left-color:var(--accent);background:var(--accent-soft);font-weight:600}
+.toc .lvl-2{margin-left:12px;font-size:.8rem}
+.toc .lvl-3{margin-left:22px;font-size:.78rem}
+.menu-toggle{display:none}
+
+/* ---- generic ---- */
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:22px 24px;box-shadow:var(--shadow)}
+.notice{
+  background:var(--warn-soft);border:1px solid color-mix(in srgb,var(--warn) 30%,transparent);
+  border-left:4px solid var(--warn);border-radius:10px;padding:12px 16px;margin:18px 0;font-size:.94rem;
+}
+.notice.ok{background:var(--ok-soft);border-left-color:var(--ok);border-color:color-mix(in srgb,var(--ok) 30%,transparent)}
+.notice .head{font-weight:700;display:block;margin-bottom:2px}
+.kicker{
+  font-size:.74rem;font-weight:700;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--accent);margin:64px 0 -8px;
+}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:.93rem;background:var(--card);border-radius:10px;overflow:hidden;box-shadow:var(--shadow)}
+th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+th{background:var(--accent-soft);font-size:.8rem;letter-spacing:.05em;text-transform:uppercase;color:var(--accent)}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:nth-child(even){background:color-mix(in srgb,var(--accent-soft) 38%,transparent)}
+tr:hover td{background:color-mix(in srgb,var(--accent-soft) 60%,transparent)}
+
+.steps{counter-reset:step;margin:14px 0 0;padding:0;list-style:none;display:grid;gap:10px}
+.steps li{counter-increment:step;position:relative;padding:12px 16px 12px 52px;background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+.steps li::before{
+  content:counter(step);position:absolute;left:14px;top:50%;transform:translateY(-50%);
+  width:26px;height:26px;border-radius:8px;background:var(--accent);color:#fff;font-weight:700;
+  display:grid;place-items:center;font-size:.9rem;
+}
+.roles{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-top:14px}
+.role{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:var(--shadow)}
+.role h4{margin:0 0 4px;display:flex;align-items:center;gap:8px}
+.role .who{font-size:.72rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+.role p{margin:6px 0 0;font-size:.9rem;color:var(--muted)}
+
+.us{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:12px;padding:16px 20px;margin:16px 0;box-shadow:var(--shadow)}
+.us .us-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}
+.us .us-title{font-weight:700;color:var(--accent)}
+.us .us-tag{font-size:.72rem;color:var(--muted)}
+.us blockquote{border:none;background:var(--accent-soft);border-radius:8px;padding:10px 14px;margin:10px 0;font-size:.95rem}
+.us blockquote b{color:var(--accent)}
+.us .story{font-style:italic;color:var(--muted);font-size:.93rem;position:relative;padding-left:16px}
+.us .story::before{content:"";position:absolute;left:0;top:.2em;bottom:.2em;width:3px;border-radius:2px;background:var(--accent-soft-2)}
+.tag{display:inline-block;font-size:.72rem;font-weight:700;padding:.16rem .5rem;border-radius:999px;letter-spacing:.03em}
+.tag.risolta{background:var(--ok-soft);color:var(--ok)}
+.tag.aperta{background:var(--warn-soft);color:var(--warn)}
+.tag.mista{background:var(--accent-soft);color:var(--accent)}
+.tag.neutral{background:var(--line);color:var(--muted)}
+
+.dig{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:18px 10px;margin:16px 0;box-shadow:var(--shadow);text-align:center}
+.dig svg{max-width:100%;height:auto}
+.figcap{font-size:.8rem;color:var(--muted);text-align:center;margin-top:6px}
+.cardlink{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow);color:var(--text)}
+.cardlink:hover{text-decoration:none;border-color:var(--accent)}
+.cardlink .lbl{font-size:.72rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+.cardlink .url{font-size:.85rem;word-break:break-all;color:var(--muted)}
+.note-list{list-style:none;margin:0;padding:0;display:grid;gap:12px}
+.note-list li{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;box-shadow:var(--shadow)}
+.note-list li b{color:var(--accent)}
+.status-line{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:12px}
+
+#toTop{
+  position:fixed;right:22px;bottom:22px;width:44px;height:44px;border-radius:12px;cursor:pointer;
+  background:var(--accent);color:#fff;border:none;font-size:1.15rem;box-shadow:var(--shadow);
+  opacity:0;pointer-events:none;transition:opacity .2s;z-index:50;
+}
+#toTop.show{opacity:1;pointer-events:auto}
+footer{max-width:1180px;margin:0 auto;padding:0 20px 40px;color:var(--muted);font-size:.85rem;border-top:1px solid var(--line)}
+footer p{margin:.4rem 0}
+
+@media (max-width:920px){
+  .layout{grid-template-columns:1fr;gap:18px}
+  /* TOC come dropdown fissato sotto l'header sticky: resta visibile
+     a prescindere dalla posizione di scroll della pagina */
+  .toc{
+    position:fixed;top:calc(var(--header-h,72px) + 8px);left:12px;right:12px;z-index:55;
+    max-height:calc(100vh - var(--header-h,72px) - 24px);
+    max-height:calc(100dvh - var(--header-h,72px) - 24px);
+    display:none;margin:0;box-shadow:var(--shadow-overlay);
+  }
+  .toc.open{display:block}
+  .menu-toggle{display:inline-flex}
+  body.menu-open{overflow:hidden}
+  table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}
+}
+@media (max-width:560px){
+  body{font-size:15px}
+  .header-inner{padding:.7rem 14px;gap:10px}
+  .brand h1{font-size:1.02rem}
+  .brand .sub{display:none}
+  .chip{font-size:.68rem;padding:.22rem .5rem}
+  .card,.us{padding:16px}
+  h2{font-size:1.35rem}
+  th,td{padding:8px 10px;font-size:.88rem}
+  .dig{padding:10px 4px}
+  #toTop{right:14px;bottom:14px}
+}
+@media print{
+  .toc,.site-header,#toTop{display:none}
+  .layout{display:block;padding:0}
+  body{background:#fff}
+  .card,.role,.us,.note-list li,.dig{border:1px solid #ccc;box-shadow:none}
+}
+
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-inner">
+    <div class="brand">
+      <div class="brand-mark">SL</div>
+      <div>
+        <h1>Design Status — POC Survivor League</h1>
+        <p class="sub">Stato del design della Proof of Concept · documento autonomo e cancellabile</p>
+      </div>
+    </div>
+    <div class="header-spacer"></div>
+    <span class="chip poc">POC ONLY</span>
+    <span class="chip ok">Readiness ~86/100</span>
+    <button id="menuToggle" class="icon-btn menu-toggle" aria-label="Sommario" aria-expanded="false" aria-controls="toc">☰</button>
+    <button id="themeToggle" class="icon-btn" aria-label="Tema chiaro/scuro">☾</button>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="toc" id="toc">
+    <p class="toc-title">Sommario</p>
+    <nav><ol id="tocList"></ol></nav>
+  </aside>
+
+  <main id="content">
+
+    <div class="notice">
+      <span class="head">POC ONLY</span>
+      Questo documento descrive lo stato del design della Proof of Concept in forma
+      accessibile anche a stakeholder non tecnici. Non è il design del sistema di
+      produzione. I documenti di riferimento fanno fede: <code>POC_PRD.md</code>,
+      <code>POC_HLD.md</code>, <code>POC_LLD.md</code>.
+    </div>
+    <div class="notice ok">
+      <span class="head">Documento autonomo e cancellabile</span>
+      è un file nuovo, non modifica i documenti esistenti. Rollback = cancellare questo file.
+    </div>
+
+    <div class="card">
+      <p><strong>Stato complessivo del design:</strong> completo e pronto per l'implementazione
+      del nucleo (no bloccanti residui). Architecture review indipendente del 2026-08-11/12:
+      tutti i finding prioritizzati risolti (HIGH-02, MED-02, CRITICAL-02).</p>
+      <p><strong>Destinatari:</strong> organizzatori, giocatori e chiunque voglia capire il
+      torneo senza leggere i documenti tecnici. La Parte 1 è non tecnica; la Parte 2 ha i
+      diagrammi; le Parti 3-5 sono per chi vuole il dettaglio (con rimandi al PRD/HLD/LLD).</p>
+    </div>
+
+    <!-- ===================== PARTE 1 ===================== -->
+    <p class="kicker">Parte 1 — per tutti</p>
+    <h2 id="sec1">1. Cos'è Survivor League</h2>
+    <div class="card">
+      <p>Survivor League è un <strong>torneo a eliminazione tra amici</strong>, giocato via
+      email, basato sui risultati della <strong>Serie A</strong>. Ogni settimana (giornata di
+      campionato) chi è ancora in gara invia un pronostico: sceglie <strong>una squadra</strong>
+      e dice se <strong>vincerà, perderà o pareggerà</strong>. Chi indovina resta in gara; chi
+      sbaglia (o non risponde in tempo) viene eliminato. Vince chi resta solo in gara. Titolo
+      provvisorio, gioco privato non commerciale (vedi disclaimer in <code>BRIEF/BRIEF.MD</code>).</p>
+    </div>
+
+    <h2 id="sec2">2. Come si gioca in 5 passi</h2>
+    <ol class="steps">
+      <li><strong>Ti iscrivi</strong> inviando un'email all'indirizzo del torneo. Ricevi conferma e le istruzioni.</li>
+      <li><strong>Prima di ogni giornata</strong> il sistema ti manda un'email: quali squadre puoi ancora usare e <strong>entro quando</strong> rispondere (la deadline).</li>
+      <li><strong>Invii il pick</strong>: rispondi indicando squadra + esito ("Milan, vince").</li>
+      <li><strong>Dopo la partita</strong> ricevi l'esito del tuo pronostico: sei in gara o sei eliminato.</li>
+      <li><strong>Si riparte</strong> la giornata dopo, con una squadra diversa. Chi non risponde entro la deadline è eliminato. Alla fine emerge il vincitore (o più vincitori, nei casi previsti).</li>
+    </ol>
+
+    <h2 id="sec3">3. Chi è chi</h2>
+    <div class="roles">
+      <div class="role"><span class="who">Giocatore</span><p>La persona che partecipa. Nella POC un giocatore = un profilo, e l'email è l'identificativo.</p></div>
+      <div class="role"><span class="who">Organizzatore (Commissioner)</span><p>Amministra il torneo (test, override, correzioni) con comandi da terminale (CLI).</p></div>
+      <div class="role"><span class="who">Il Sistema</span><p>Applica le regole da solo, in modo deterministico: valida i pick, conta i risultati, elimina, decreta i vincitori.</p></div>
+      <div class="role"><span class="who">Campionato (Serie A)</span><p>Fonte di calendario e risultati — fornisce i dati, non decide nulla (nella POC: dati storici 2025/26).</p></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <p>Il "cervello" che legge le email in linguaggio naturale e scrive le risposte in italiano è una componente interna (LLM): <strong>confinata all'interpretazione del testo</strong>. Non prende decisioni di gioco — nessuna eliminazione o vittoria dipende dall'IA. Vedi §7.</p>
+    </div>
+
+    <h2 id="sec4">4. Regole in una pagina</h2>
+    <table>
+      <thead><tr><th>Regola</th><th>In parole semplici</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Una squadra per girone</strong></td><td>In un girone (andata: giornate 1-19; ritorno: 20-38) puoi usare ogni squadra una volta sola. Al giro di boa il pool si azzera e tornano tutte disponibili.</td></tr>
+        <tr><td><strong>Primo pick valido</strong></td><td>Conta il primo pronostico accettato per la giornata. I successivi vengono rifiutati (non è un errore: hai già giocato).</td></tr>
+        <tr><td><strong>Deadline unica</strong></td><td>Tutti hanno la stessa scadenza: inizio della prima partita della giornata − 30 minuti (valore configurabile). Fa fede l'arrivo sul server, non l'orario scritto nella tua email.</td></tr>
+        <tr><td><strong>Pick sbagliato → eliminato</strong></td><td>Pronostico errato rispetto al risultato ufficiale = fuori.</td></tr>
+        <tr><td><strong>Pick mancante → eliminato</strong></td><td>Niente pronostico entro la deadline = fuori. Nessuna seconda chance.</td></tr>
+        <tr><td><strong>Partita rinviata/sospesa</strong></td><td>Non è colpa tua: il pick resta in attesa (stato "congelato") finché la partita non si gioca. Se il recupero è nella stessa finestra, si valuta normalmente; se è dopo, resta congelato. In nessun caso la squadra torna disponibile nel girone (resta "bruciata").</td></tr>
+        <tr><td><strong>Fine del torneo</strong></td><td>1) resta un solo giocatore → vince lui; 2) tutti gli ultimi in gara eliminati nella stessa giornata → vittoria condivisa; 3) due o più superstiti a fine stagione → vittoria condivisa.</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="sec5">5. User stories e scenari d'uso</h2>
+    <p>Formato: <em>«Come … voglio … così …»</em>, con una breve narrazione per capire l'esperienza reale.</p>
+
+    <div class="us">
+      <div class="us-head"><span class="us-title">US1 — Iscrizione</span><span class="us-tag">⇒ CL2</span></div>
+      <blockquote><b>Come</b> giocatore, <b>voglio</b> iscrivermi con la mia email, <b>così</b> posso iniziare a fare pick.</blockquote>
+      <p>Anche a stagione in corso un nuovo giocatore può iscriversi, purché l'iscrizione sia completata <strong>prima della deadline</strong> della giornata per cui vuole giocare.</p>
+      <p class="story">Anna vuole entrare nel torneo degli amici. Scrive una email all'indirizzo dedicato ("vorrei iscrivermi"). Il sistema le risponde confermando l'iscrizione e spiegando il formato del pick e le regole. Anna è ora un profilo attivo: dalla prossima giornata riceverà le email con le squadre disponibili.</p>
+    </div>
+
+    <div class="us">
+      <div class="us-head"><span class="us-title">US2 — Fare un pick (scenario felice)</span><span class="us-tag">⇒ CL4, CL5</span></div>
+      <blockquote><b>Come</b> giocatore, <b>voglio</b> scegliere squadra ed esito via email, <b>così</b> resto in gara se indovino.</blockquote>
+      <p>Il primo pick valido viene registrato; un pick rifiutato (formato poco chiaro, squadra non in giornata, squadra già usata) non consuma il tentativo → si può riprovare.</p>
+      <p class="story">Marta riceve l'email della giornata 5: può usare Roma, Inter, … entro sabato alle 14:30. Risponde "Roma, vince". Il sistema conferma: «Pick registrato per il turno 5».</p>
+    </div>
+
+    <div class="us">
+      <div class="us-head"><span class="us-title">US3 — Il pick arrivato troppo tardi</span><span class="us-tag">⇒ CL3</span></div>
+      <blockquote><b>Come</b> giocatore, <b>voglio</b> conoscere sempre la deadline, <b>così</b> evito di essere eliminato per pick mancante.</blockquote>
+      <p>Un pick che arriva dopo la deadline è ignorato: fa fede l'istante di <strong>ricezione sul server</strong> (<code>receivedAt</code>), non l'header <code>Date</code> dell'email (decisione PO del 2026-08-12).</p>
+      <p class="story">Luca risponde la domenica sera "Inter, pareggia". Il sistema gli comunica che la finestra del turno è scaduta: il pick conta come mancante e Luca è eliminato. Aveva ricevuto una email con la deadline, ma non l'ha rispettata.</p>
+    </div>
+
+    <div class="us">
+      <div class="us-head"><span class="us-title">US4 — La partita rinviata</span><span class="us-tag">⇒ CL7, CL8, CL1</span></div>
+      <blockquote><b>Come</b> giocatore, <b>voglio</b> non essere penalizzato se la partita che ho scelto viene rinviata, <b>così</b> posso ancora vincere.</blockquote>
+      <p>Recupero entro la finestra → il pick si valuta normalmente (CL7). Recupero fuori finestra → il pick va in <strong>Freeze (congelato)</strong>: non è né giusto né sbagliato, non elimina. Se l'ultima partita prevista della giornata non si gioca, la giornata si chiude comunque e il pick si congela (CL8, CL1).</p>
+      <p class="story">Paolo sceglie "Napoli, vince" ma Napoli-Atalanta viene rinviata. Non è una penalità: il pick aspetta. La partita si recupera il mercoledì successivo (fuori finestra): il pick resta congelato finché la partita non finisce. Paolo non viene eliminato e la sua Napoli resta comunque usata nel girone.</p>
+    </div>
+
+    <div class="us">
+      <div class="us-head"><span class="us-title">US5 — Fine del torneo</span><span class="us-tag">⇒ CS6</span></div>
+      <blockquote><b>Come</b> organizzatore, <b>voglio</b> che il vincitore sia determinato in modo trasparente, <b>così</b> tutti accettano il risultato.</blockquote>
+      <p>Tre casi coperti e testati: vincitore unico; eliminazione collettiva; superstiti a fine stagione (vittoria condivisa).</p>
+      <p class="story">Alla giornata 30 restano Giulia e Marco. Marco sbaglia: Giulia resta sola → vince lei. In un altro torneo di prova, sia Giulia sia Marco sbagliano alla giornata 25: condividono la vittoria. Se nessuno sbagliasse più fino alla 38, condividerebbero la vittoria.</p>
+    </div>
+
+    <!-- ===================== PARTE 2 ===================== -->
+    <p class="kicker">Parte 2 — diagrammi</p>
+    <h2 id="sec6">6. Diagrammi della logica di dominio</h2>
+
+    <h3 id="sec61">6.1 La linea del tempo: giornata di campionato (TC) e turno del torneo (TT)</h3>
+    <div class="card">
+      <p>Il concetto più importante: <strong>il torneo gira su due orologi paralleli</strong>.
+      La <em>giornata della Serie A</em> (TC) è la cornice temporale; il <em>turno del torneo</em>
+      (TT) è la finestra in cui si gioca il pronostico (apertura → deadline → verdetto). La
+      deadline cade prima del fischio d'inizio della prima partita; la giornata si chiude qualche
+      ora dopo la fine prevista dell'ultima partita programmata.</p>
+      <a class="cardlink" href="https://excalidraw.com/#json=8JIxedSJglAnN3s08uOsn,IY_hoBLVb7oJPRtHSLPqAg" target="_blank" rel="noopener">
+        <div>
+          <div class="lbl">Diagramma timeline TC/TT — apri in Excalidraw</div>
+          <div class="url">excalidraw.com/#json=8JIxedSJglAnN3s08uOsn,…</div>
+        </div>
+      </a>
+      <p style="font-size:.85rem;color:var(--muted)">Il file <code>docs/POC/POC_PRD_timeline.excalidraw</code> è la fonte; il link permette di aprirlo e modificarlo senza rigenerarlo. Questo documento NON ne contiene una copia.</p>
+      <p style="font-size:.9rem"><em>Legenda:</em> sul diagramma vedi come si sovrappongono apertura, deadline, partite e chiusura — e dove cadono i rinvii dentro/fuori finestra.</p>
+    </div>
+
+    <h3 id="sec62a">6.2a Dalla partita al pick: l'invio e la validazione</h3>
+    <figure class="dig"><svg viewBox="0 0 1000 1180" role="img" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/></marker></defs><rect x="60.0" y="59.8" width="380.0" height="36.5" rx="8" fill="#ffffff" stroke="#475569" stroke-width="1.4"/><text x="250.0" y="69.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="400" fill="#1f2937"><tspan x="250.0" dy="0.0">Il giocatore invia l’email con squadra + esito</tspan></text><rect x="80.0" y="176.8" width="340.0" height="36.5" rx="8" fill="#eef2ff" stroke="#6366f1" stroke-width="1.4"/><text x="250.0" y="186.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#312e81"><tspan x="250.0" dy="0.0">Formato riconosciuto?</tspan></text><rect x="520.0" y="185.0" width="440.0" height="430.0" rx="8" fill="#ffffff" stroke="#475569" stroke-width="1.4"/><text x="740.0" y="400.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="400" fill="#1f2937"></text><text x="740.0" y="383.5" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">Il sistema risponde: indica squadra ed esito in modo più</text><text x="740.0" y="400.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">chiaro. Puoi riprovare</text><rect x="75.0" y="311.8" width="350.0" height="36.5" rx="8" fill="#eef2ff" stroke="#6366f1" stroke-width="1.4"/><text x="250.0" y="321.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#312e81"><tspan x="250.0" dy="0.0">Squadra in partita in questa giornata?</tspan></text><rect x="75.0" y="446.8" width="350.0" height="36.5" rx="8" fill="#eef2ff" stroke="#6366f1" stroke-width="1.4"/><text x="250.0" y="456.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#312e81"><tspan x="250.0" dy="0.0">Squadra già usata nel girone?</tspan></text><rect x="75.0" y="581.8" width="350.0" height="36.5" rx="8" fill="#eef2ff" stroke="#6366f1" stroke-width="1.4"/><text x="250.0" y="591.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#312e81"><tspan x="250.0" dy="0.0">Esito valido? vince / perde / pareggia</tspan></text><rect x="75.0" y="716.8" width="350.0" height="36.5" rx="8" fill="#eef2ff" stroke="#6366f1" stroke-width="1.4"/><text x="250.0" y="726.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#312e81"><tspan x="250.0" dy="0.0">Arrivato entro la deadline?</tspan></text><rect x="570.0" y="690.0" width="400.0" height="90.0" rx="8" fill="#fef2f2" stroke="#dc2626" stroke-width="1.4"/><text x="770.0" y="735.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#991b1b"></text><text x="770.0" y="718.5" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">Pick ignorato: finestra scaduta. Vale come pick</text><text x="770.0" y="735.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">mancante</text><rect x="75.0" y="851.8" width="350.0" height="36.5" rx="8" fill="#eef2ff" stroke="#6366f1" stroke-width="1.4"/><text x="250.0" y="861.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#312e81"><tspan x="250.0" dy="0.0">Esiste già un pick valido per questo turno?</tspan></text><rect x="570.0" y="845.0" width="400.0" height="110.0" rx="8" fill="#ffffff" stroke="#475569" stroke-width="1.4"/><text x="770.0" y="900.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="400" fill="#1f2937"></text><text x="770.0" y="883.5" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">Il sistema risponde: pick già registrato, il</text><text x="770.0" y="900.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">successivo è rifiutato</text><rect x="85.0" y="981.8" width="330.0" height="36.5" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.4"/><text x="250.0" y="991.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#065f46"><tspan x="250.0" dy="0.0">Pick registrato</tspan></text><rect x="60.0" y="1091.8" width="380.0" height="36.5" rx="8" fill="#ffffff" stroke="#475569" stroke-width="1.4"/><text x="250.0" y="1101.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="400" fill="#1f2937"><tspan x="250.0" dy="0.0">Il sistema conferma e aspetta la partita</tspan></text><path d="M 250.0 96.2 L 250.0 176.8" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><path d="M 420.0 195.0 L 520.0 195.0" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="470.0" y="190.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">No</text><path d="M 250.0 213.2 L 250.0 311.8" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="250.0" y="262.5" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">Sì</text><path d="M 425.0 330.0 L 520.0 330.0" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="472.5" y="325.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">No</text><path d="M 250.0 348.2 L 250.0 446.8" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="250.0" y="397.5" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">Sì</text><path d="M 425.0 465.0 L 520.0 465.0" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="472.5" y="441.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">Sì (già usata)</text><path d="M 250.0 483.2 L 250.0 581.8" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="250.0" y="532.5" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">No</text><path d="M 425.0 600.0 L 520.0 600.0" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="472.5" y="595.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">No</text><path d="M 250.0 618.2 L 250.0 716.8" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="250.0" y="667.5" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">Sì</text><path d="M 425.0 735.0 L 570.0 735.0" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="497.5" y="730.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">No</text><path d="M 250.0 753.2 L 250.0 851.8" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="250.0" y="802.5" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">Sì</text><path d="M 425.0 870.0 L 570.0 870.0" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="497.5" y="874.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">Sì</text><path d="M 250.0 888.2 L 250.0 981.8" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="250.0" y="935.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">No</text><path d="M 250.0 1018.2 L 250.0 1091.8" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/></svg></figure>
+    <p class="figcap">Figura 6.2a — il percorso di un pick dall'invio alla conferma (o al rifiuto)</p>
+
+    <h3 id="sec62b">6.2b Dopo la partita: il verdetto</h3>
+    <figure class="dig"><svg viewBox="0 0 1000 1140" role="img" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/></marker></defs><rect x="200.0" y="76.8" width="320.0" height="36.5" rx="8" fill="#eef2ff" stroke="#6366f1" stroke-width="1.4"/><text x="360.0" y="86.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#312e81"><tspan x="360.0" dy="0.0">Partita conclusa?</tspan></text><rect x="195.0" y="216.8" width="330.0" height="36.5" rx="8" fill="#eef2ff" stroke="#6366f1" stroke-width="1.4"/><text x="360.0" y="226.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#312e81"><tspan x="360.0" dy="0.0">La partita era in Freeze?</tspan></text><rect x="185.0" y="356.8" width="350.0" height="36.5" rx="8" fill="#eef2ff" stroke="#6366f1" stroke-width="1.4"/><text x="360.0" y="366.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#312e81"><tspan x="360.0" dy="0.0">Confronta pronostico e risultato</tspan></text><rect x="60.0" y="496.8" width="280.0" height="36.5" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.4"/><text x="200.0" y="506.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#065f46"><tspan x="200.0" dy="0.0">corretto — sei in gara</tspan></text><rect x="420.0" y="496.8" width="280.0" height="36.5" rx="8" fill="#fef2f2" stroke="#dc2626" stroke-width="1.4"/><text x="560.0" y="506.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#991b1b"><tspan x="560.0" dy="0.0">wrong — eliminato</tspan></text><rect x="185.0" y="633.5" width="350.0" height="53.0" rx="8" fill="#eef2ff" stroke="#6366f1" stroke-width="1.4"/><text x="360.0" y="643.5" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#312e81"><tspan x="360.0" dy="0.0">Tutti i pick del turno sono in uno stato</tspan><tspan x="360.0" dy="16.5">finale?</tspan></text><rect x="195.0" y="776.8" width="330.0" height="36.5" rx="8" fill="#ffffff" stroke="#475569" stroke-width="1.4"/><text x="360.0" y="786.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="400" fill="#1f2937"><tspan x="360.0" dy="0.0">Turno del torneo chiuso</tspan></text><rect x="195.0" y="911.8" width="330.0" height="36.5" rx="8" fill="#eef2ff" stroke="#6366f1" stroke-width="1.4"/><text x="360.0" y="921.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#312e81"><tspan x="360.0" dy="0.0">Chi resta in gara?</tspan></text><rect x="30.0" y="1056.8" width="240.0" height="36.5" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.4"/><text x="150.0" y="1066.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#065f46"><tspan x="150.0" dy="0.0">Vincitore</tspan></text><rect x="280.0" y="1056.8" width="240.0" height="36.5" rx="8" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.4"/><text x="400.0" y="1066.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#5b21b6"><tspan x="400.0" dy="0.0">Vittoria condivisa</tspan></text><rect x="525.0" y="1056.8" width="270.0" height="36.5" rx="8" fill="#ffffff" stroke="#475569" stroke-width="1.4"/><text x="660.0" y="1066.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="400" fill="#1f2937"><tspan x="660.0" dy="0.0">Si prosegue: prossimo turno</tspan></text><path d="M 188 95 C 140 55 140 135 188 121" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="144" y="89" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">No, resta in attesa</text><path d="M 360.0 113.2 L 360.0 216.8" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="360.0" y="165.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">Sì</text><path d="M 360.0 253.2 L 360.0 356.8" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><path d="M 360.0 393.2 L 200.0 496.8" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="280.0" y="445.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">azzeccato</text><path d="M 360.0 393.2 L 560.0 496.8" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="460.0" y="445.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">errato</text><path d="M 200.0 533.2 L 360.0 633.5" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><path d="M 560.0 533.2 L 360.0 633.5" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><path d="M 360.0 686.5 L 360.0 776.8" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="360.0" y="731.6" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">Sì</text><path d="M 360.0 813.2 L 360.0 911.8" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><path d="M 360 948 V 990" fill="none" stroke="#94a3b8" stroke-width="1.5"/><path d="M 150 990 V 1063" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="150" y="982" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">Solo uno</text><circle cx="150" cy="1002" r="2.6" fill="#94a3b8"/><path d="M 400 990 V 1063" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="400" y="982" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">Più di uno, stagione finita</text><circle cx="400" cy="1002" r="2.6" fill="#94a3b8"/><path d="M 660 990 V 1063" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="660" y="982" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">Più di uno, stagione in corso</text><circle cx="660" cy="1002" r="2.6" fill="#94a3b8"/></svg></figure>
+    <p class="figcap">Figura 6.2b — contabilizzazione, eliminazioni e chiusura del turno</p>
+
+    <h3 id="sec63">6.3 Il ciclo di vita di un pick (diagramma di stato)</h3>
+    <figure class="dig"><svg viewBox="0 0 1000 760" role="img" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/></marker></defs><rect x="65.0" y="221.8" width="330.0" height="36.5" rx="8" fill="#eef2ff" stroke="#6366f1" stroke-width="1.4"/><text x="230.0" y="231.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#312e81"><tspan x="230.0" dy="0.0">In attesa (pick registrato)</tspan></text><rect x="560.0" y="161.8" width="320.0" height="36.5" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.4"/><text x="720.0" y="171.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#065f46"><tspan x="720.0" dy="0.0">Corretto — in gara</tspan></text><rect x="560.0" y="361.8" width="320.0" height="36.5" rx="8" fill="#fef2f2" stroke="#dc2626" stroke-width="1.4"/><text x="720.0" y="371.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#991b1b"><tspan x="720.0" dy="0.0">Sbagliato — eliminato</tspan></text><rect x="560.0" y="581.8" width="320.0" height="36.5" rx="8" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.4"/><text x="720.0" y="591.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#5b21b6"><tspan x="720.0" dy="0.0">Congelato (Freeze)</tspan></text><circle cx="44" cy="240" r="7" fill="#059669"/><path d="M 64.0 240.0 L 65.0 240.0" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><path d="M 395.0 240.0 L 560.0 180.0" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="477.5" y="200.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">partita conclusa, azzeccato</text><path d="M 395.0 240.0 L 560.0 380.0" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="477.5" y="216.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">partita conclusa, errato</text><path d="M 395.0 240.0 L 560.0 600.0" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="477.5" y="420.0" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">rinviata/sospesa fuori dalla finestra</text><path d="M 880 600 L 930 600 V 380 L 880 380" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="936" y="470" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">recupero concluso, errato</text><path d="M 880 600 L 975 600 V 180 L 880 180" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="981" y="380" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">recupero concluso, azzeccato</text><path d="M 880.0 180.0 L 910.0 180.0" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><circle cx="924.0" cy="180" r="6" fill="#94a3b8"/><circle cx="924.0" cy="180" r="10" fill="none" stroke="#94a3b8" stroke-width="1.5"/><text x="720" y="147.75" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">resta in gara</text><path d="M 880.0 380.0 L 910.0 380.0" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><circle cx="924.0" cy="380" r="6" fill="#94a3b8"/><circle cx="924.0" cy="380" r="10" fill="none" stroke="#94a3b8" stroke-width="1.5"/><text x="720" y="347.75" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">eliminato</text><path d="M 720.0 618.2 L 720.0 648.2" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><circle cx="720" cy="662.25" r="6" fill="#94a3b8"/><circle cx="720" cy="662.25" r="10" fill="none" stroke="#94a3b8" stroke-width="1.5"/><text x="720" y="680.25" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">fine stagione senza recupero</text></svg></figure>
+    <p class="figcap">Figura 6.3 — gli stati di un pick e le transizioni</p>
+    <div class="notice">
+      <span class="head">Nota — stato Congelato (Freeze)</span>
+      lo stato Congelato non è né giusto né sbagliato: è "in sospeso". Non elimina il giocatore
+      e non ritarda la chiusura del turno. Se la partita non viene mai giocata in stagione, il
+      pick non viene mai valutato (PRD §4.4).
+    </div>
+
+    <h3 id="sec64">6.4 Sequenza: chi parla con chi quando arriva un pick</h3>
+    <figure class="dig"><svg viewBox="0 0 1000 590" role="img" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/></marker></defs><rect x="100" y="52" width="140" height="28" rx="7" fill="#eef2ff" stroke="#6366f1" stroke-width="1.2"/><text x="170" y="71.5" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-weight="600" fill="#312e81">Giocatore (Marta)</text><text x="100" y="84" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="10.5" fill="#94a3b8">G</text><line x1="170" y1="90" x2="170" y2="600" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="4,4"/><rect x="430" y="52" width="140" height="28" rx="7" fill="#eef2ff" stroke="#6366f1" stroke-width="1.2"/><text x="500" y="71.5" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-weight="600" fill="#312e81">Il Sistema</text><text x="430" y="84" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="10.5" fill="#94a3b8">S</text><line x1="500" y1="90" x2="500" y2="600" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="4,4"/><rect x="760" y="52" width="140" height="28" rx="7" fill="#eef2ff" stroke="#6366f1" stroke-width="1.2"/><text x="830" y="71.5" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-weight="600" fill="#312e81">Risultati Serie A</text><text x="760" y="84" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="10.5" fill="#94a3b8">R</text><line x1="830" y1="90" x2="830" y2="600" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="4,4"/><line x1="170" y1="120" x2="500" y2="120" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/><text x="335.0" y="114" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="11.5" fill="#64748b">“Roma, vince” (email)</text><path d="M 530 155 C 640 155 640 175 530 175" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><text x="650" y="170" text-anchor="start" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="11.5" fill="#475569">valida: iscritto · squadra in giornata · esito valido · squadra non usata · entro deadline</text><rect x="40" y="200" width="920" height="330" rx="8" fill="#f8fafc" stroke="#e2e8f0"/><text x="52" y="218" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="11.5" font-weight="600" fill="#475569">alt — Pick valido</text><line x1="500" y1="240" x2="170" y2="240" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/><text x="335.0" y="234" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="11.5" fill="#64748b">conferma registrazione</text><line x1="500" y1="285" x2="830" y2="285" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arr)"/><text x="665.0" y="279" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="11.5" fill="#64748b">attende il risultato di Roma–Cagliari</text><line x1="830" y1="330" x2="500" y2="330" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/><text x="665.0" y="324" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="11.5" fill="#64748b">risultato disponibile</text><rect x="70" y="360" width="860" height="150" rx="8" fill="#eef2ff" stroke="#c7d2fe"/><text x="82" y="378" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="11" font-weight="600" fill="#4338ca">alt — Roma ha vinto</text><line x1="500" y1="400" x2="170" y2="400" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/><text x="335.0" y="394" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="11.5" fill="#64748b">pick corretto, sei in gara</text><text x="82" y="438" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="11" font-weight="600" fill="#4338ca">else — Roma non ha vinto</text><line x1="500" y1="462" x2="170" y2="462" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/><text x="335.0" y="456" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="11.5" fill="#64748b">pick sbagliato, sei eliminato</text><text x="52" y="520" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="11.5" font-weight="600" fill="#475569">else — Pick rifiutato</text><line x1="500" y1="545" x2="170" y2="545" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/><text x="335.0" y="539" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="11.5" fill="#64748b">spiega il motivo, puoi riprovare</text><line x1="170" y1="90" x2="170" y2="580" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="4,4"/><line x1="500" y1="90" x2="500" y2="580" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="4,4"/><line x1="830" y1="90" x2="830" y2="580" stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="4,4"/></svg></figure>
+    <p class="figcap">Figura 6.4 — sequence diagram: giocatore ↔ sistema ↔ risultati</p>
+
+    <h3 id="sec65">6.5 Architettura logica in parole semplici</h3>
+    <figure class="dig"><svg viewBox="0 0 1000 560" role="img" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/></marker></defs><rect x="20.0" y="181.8" width="300.0" height="36.5" rx="8" fill="#ffffff" stroke="#475569" stroke-width="1.4"/><text x="170.0" y="191.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="400" fill="#1f2937"><tspan x="170.0" dy="0.0">Giocatori</tspan></text><rect x="385.0" y="181.8" width="350.0" height="36.5" rx="8" fill="#ffffff" stroke="#475569" stroke-width="1.4"/><text x="560.0" y="191.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="400" fill="#1f2937"><tspan x="560.0" dy="0.0">Il Sistema di gioco</tspan></text><rect x="740.0" y="173.5" width="320.0" height="53.0" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.4"/><text x="900.0" y="183.5" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#065f46"><tspan x="900.0" dy="0.0">Regole Survivor: validazione,</tspan><tspan x="900.0" dy="16.5">eliminazioni, vincitore</tspan></text><rect x="380.0" y="451.8" width="360.0" height="36.5" rx="8" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.4"/><text x="560.0" y="461.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#5b21b6"><tspan x="560.0" dy="0.0">Calendario e risultati Serie A</tspan></text><rect x="20.0" y="451.8" width="300.0" height="36.5" rx="8" fill="#eef2ff" stroke="#6366f1" stroke-width="1.4"/><text x="170.0" y="461.8" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="13.5" font-weight="600" fill="#312e81"><tspan x="170.0" dy="0.0">Canali futuri: WhatsApp, web, chat</tspan></text><path d="M 320.0 200.0 L 385.0 200.0" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)" marker-start="url(#arr)"/><text x="352" y="192" text-anchor="middle" font-family="Segoe UI,ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="12" font-style="italic" fill="#64748b">email: iscrizioni, pick, risposte</text><path d="M 735.0 200.0 L 740.0 200.0" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><path d="M 560.0 218.2 L 560.0 451.8" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)" marker-start="url(#arr)"/><path d="M 385.0 200.0 L 320.0 470.0" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)"/><path d="M 170.0 451.8 L 170.0 218.2" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arr)" stroke-dasharray="5,4"/></svg></figure>
+    <p class="figcap">Figura 6.5 — chi fa cosa: regole, dati e canali</p>
+    <div class="card">
+      <p>Messaggio chiave: il <strong>sistema applica regole deterministiche</strong>; i
+      <strong>dati del campionato</strong> contano solo come fonte; i <strong>canali</strong>
+      (oggi email) sono intercambiabili.</p>
+    </div>
+
+    <!-- ===================== PARTE 3 ===================== -->
+    <p class="kicker">Parte 3 — riferimento tecnico</p>
+    <h2 id="part3">Riferimento tecnico essenziale</h2>
+    <div class="notice">
+      <span class="head">Fonte di verità</span>
+      <code>POC_PRD.md</code> (regole, CL1-8, CS1-7, parametri) · <code>POC_HLD.md</code>
+      (architettura, flussi) · <code>POC_LLD.md</code> (dettaglio implementativo). Qui solo i
+      puntelli per orientarsi: questa parte non duplica la specifica, per evitare errori di
+      sincronizzazione.
+    </div>
+    <table>
+      <thead><tr><th>Argomento</th><th>Dettaglio essenziale</th><th>Riferimento</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Ciclo TC/TT</strong></td><td>TT si apre al termine del TC precedente; finestra di pick fino alla deadline; TT si conclude quando tutti i pick sono in stato terminale (corretto/sbagliato/congelato).</td><td>PRD §3, §4.3-4.4</td></tr>
+        <tr><td><strong>Deadline</strong></td><td>Inizio prima partita TC − anticipo (default 30'). Fa fede <code>receivedAt</code> (ricezione sul server, <code>internaldate</code> IMAP per l'email), non l'header <code>Date</code>.</td><td>PRD §4.3 · PO 2026-08-12 (HIGH-02)</td></tr>
+        <tr><td><strong>Chiusura TC</strong></td><td>Fine prevista UPP + scarto (default 5h); durata stimata partita (default 125'). Finestra di riferimento per rinvii, non trigger di contabilizzazione.</td><td>PRD §4.4 · CRITICAL-02</td></tr>
+        <tr><td><strong>Stati del pick</strong></td><td><code>pending</code> → <code>correct</code> / <code>wrong</code> / <code>frozen</code>.</td><td>PRD §3.5, LLD §3</td></tr>
+        <tr><td><strong>Freeze</strong></td><td>Rinvio/sospensione fuori finestra; squadra resta bruciata; contabilizzato a recupero concluso.</td><td>PRD §4.4, CL1/CL7/CL8</td></tr>
+        <tr><td><strong>Casi limite</strong></td><td>CL1-CL8</td><td>PRD §8</td></tr>
+        <tr><td><strong>Criteri di successo</strong></td><td>CS1-CS7</td><td>PRD §9</td></tr>
+        <tr><td><strong>Parametri configurabili</strong></td><td>Anticipo, scarto TC, durata partita, quota/payout (placeholder Fase 1).</td><td>PRD §4.4, RNF4, LLD §4.1</td></tr>
+        <tr><td><strong>Componenti</strong></td><td>Game Engine (deterministico) · LLM Adapter (solo I/O) · ChannelAdapter (email POC) · SeasonDataProvider (static POC) · Scheduler (solo produzione).</td><td>HLD §1-3, LLD §1</td></tr>
+      </tbody>
+    </table>
+
+    <!-- ===================== PARTE 4 ===================== -->
+    <p class="kicker">Parte 4 — note e considerazioni</p>
+    <h2 id="part4">Note e considerazioni varie</h2>
+    <p>Raccolta di note emerse durante la preparazione di questo "design status".</p>
+    <ul class="note-list">
+      <li><b>Il ruolo dell'LLM e dell'agente AI.</b> Il sistema usa un'LLM per capire le email dei giocatori e scrivere risposte in italiano; è <strong>confinato al solo I/O</strong>, non prende decisioni di gioco (regola architetturale vincolante in <code>AGENTS.md</code>). L'<em>agente AI</em> menzionato in futuro in HLD §1.3 è un <strong>amministratore</strong> (sostituto del commissioner via CLI: monitora e interviene in caso di anomalie) — <strong>non</strong> interagisce con i giocatori, a differenza di un chatbot (FUTURE_EXPLORATIONS §1).</li>
+      <li><b>Cosa vede il giocatore.</b> Il giocatore vede solo email e risultati. Tutta la macchina interna (LLM, database, componenti) è invisibile: nel diagramma di sequenza 6.4 "Il Sistema" è un solo attore.</li>
+      <li><b>Perché non si duplica la specifica qui.</b> Questa è una copia di comodo, non la fonte: duplicare regole/CL/CS creerebbe due verità e rischio di errori. PRD/HLD/LLD restano autorevoli; qui i rimandi.</li>
+      <li><b>Rollback pulito.</b> Il file è nuovo e autonomo: la cancellazione lo rimuove senza toccare PRD/HLD/LLD né i diagrammi esistenti.</li>
+      <li><b>Timeline excalidraw non copiata.</b> Si cita il link e il file sorgente (<code>POC_PRD_timeline.excalidraw</code>) per non creare copie divergenti.</li>
+      <li><b>Pagamenti e PayPal (in attesa del punto 5).</b> I pagamenti non sono nella POC. Quando si progetterà la Fase 1, oltre alla scelta dell'importo servono i vincoli del provider di pagamento: per PayPal le transazioni legate a gioco/competizioni devono rispettare la policy di gaming (closed loop 1-a-1, tra persone, riferite al <strong>giocatore</strong>, non al profilo). Da verificare anche il quadro normativo italiano (ADM) se si passa a operatività pubblica con denaro reale (disclaimer <code>BRIEF/BRIEF.MD</code>).</li>
+      <li><b>Prossimi passi (roadmap BRIEF §7):</b> POC → aggiornamento LLD da review §16 → implementazione nucleo deterministico → simulazione stagione 2025/26 → poi Fase 1 (WhatsApp, profili multipli, quota/montepremi, tornei multipli).</li>
+    </ul>
+
+    <!-- ===================== PARTE 5 ===================== -->
+    <p class="kicker">Parte 5 — domande aperte</p>
+    <h2 id="part5">Domande aperte al Product Owner</h2>
+    <p class="status-line">
+      <span class="tag risolta">Risolta</span> = decisa e documentata ·
+      <span class="tag aperta">Aperta</span> = da decidere ·
+      <span class="tag mista">Aperta (non bloccante POC)</span> = rinviata alla Fase 1 / oltre
+    </p>
+
+    <h3 id="po-exist">Esistenti (da PRD §11, HLD §7, review §15)</h3>
+    <table>
+      <thead><tr><th>#</th><th>Domanda</th><th>Stato</th><th>Dove</th></tr></thead>
+      <tbody>
+        <tr><td>PO-1</td><td>Fonte e formato dei dati storici 2025/26 (<code>calendar.json</code>, <code>results.json</code>)?</td><td><span class="tag aperta">Aperta</span></td><td>PRD §11.1, HLD §7.1, review §15.1</td></tr>
+        <tr><td>PO-2</td><td>Quanto deve essere strutturato il formato del pick nell'email? ("Milan, vince" vs testo libero)</td><td><span class="tag aperta">Aperta</span></td><td>PRD §11.4, review §15.3 (B3)</td></tr>
+        <tr><td>PO-3</td><td>Provider dati per la produzione 2026/27? Budget per API a pagamento?</td><td><span class="tag mista">Aperta (non bloccante)</span></td><td>review §15.4 (HIGH-06)</td></tr>
+        <tr><td>PO-4</td><td>Livello di monitoring atteso in produzione (health check vs alert proattivi)?</td><td><span class="tag mista">Aperta (non bloccante)</span></td><td>review §15.5 (HIGH-05)</td></tr>
+        <tr><td>PO-5</td><td>Email di apertura turno: mostrare tutte le partite della giornata o solo le squadre disponibili per il profilo?</td><td><span class="tag aperta">Aperta</span></td><td>review §15.6 (B4), HLD §7.7</td></tr>
+        <tr><td>PO-6</td><td>Da quale istante si apre la finestra di pick del primo TC? (proposta: alla creazione del torneo/iscrizioni, configurabile)</td><td><span class="tag aperta">Aperta</span></td><td>PRD §11.5</td></tr>
+        <tr><td>PO-7</td><td>Account Gmail dedicato? Quando configurarlo?</td><td><span class="tag aperta">Aperta</span></td><td>PRD §11.2, HLD §7.4</td></tr>
+        <tr><td>PO-8</td><td>Dettagli VPS: OS, accesso SSH, dominio?</td><td><span class="tag aperta">Aperta</span></td><td>PRD §11.3</td></tr>
+        <tr><td>PO-9</td><td>Quale LLM? (OpenAI, Claude, Ollama locale)</td><td><span class="tag aperta">Aperta</span></td><td>HLD §7.5</td></tr>
+        <tr><td>PO-10</td><td>Il passaggio di un pick in Freeze va notificato al giocatore?</td><td><span class="tag aperta">Aperta</span></td><td>PRD §11.6</td></tr>
+        <tr><td>PO-11</td><td>Quale timestamp fa fede alla deadline?</td><td><span class="tag risolta">Risolta</span> (2026-08-12: ricezione sul server)</td><td>PRD §4.3, HLD §5, review §0.1 (HIGH-02)</td></tr>
+        <tr><td>PO-12</td><td>Partite sospese come trattarle?</td><td><span class="tag risolta">Risolta</span> (2026-08-12: come rinviate)</td><td>PRD §4.4, review §0.2 (MED-02)</td></tr>
+        <tr><td>PO-13</td><td>Completezza dei risultati per la contabilizzazione</td><td><span class="tag risolta">Risolta</span> (2026-08-12: contabilizzazione incrementale, niente <code>areAllResultsFinal</code>)</td><td>review §0.3 (CRITICAL-02)</td></tr>
+      </tbody>
+    </table>
+
+    <h3 id="po-new">Nuovi punti richiesti — verifica risolto / aperto</h3>
+
+    <div class="us">
+      <div class="us-head"><span class="us-title">1. Il Channel Adapter è compatibile con una web app e con un agente che interagisce con i giocatori?</span></div>
+      <span class="tag mista">In parte risolto (compatibilità architetturale confermata) — design di dettaglio Aperto (Fase 1+)</span>
+      <p>Il Game Engine non parla con i canali ma con l'interfaccia astratta <code>ChannelAdapter</code>
+      (HLD §1.4, LLD §6.4): oggi c'è solo <code>EmailAdapter</code>. L'architettura <strong>non preclude</strong>
+      web, WhatsApp, Telegram o un chatbot: aggiungere un canale = nuovo adapter, senza toccare la logica
+      di gioco (review §17). Sia la <strong>web app</strong> (FUTURE_EXPLORATIONS §2, BRIEF §7.3) sia
+      l'<strong>agente che interagisce con i giocatori</strong> (chatbot: FUTURE_EXPLORATIONS §1) sono però
+      <strong>fuori dalla POC</strong> e non hanno design di dettaglio. Nota di distinzione: l'<em>agente
+      AI commissioner</em> (HLD §1.3) è amministrativo, non di gioco.</p>
+    </div>
+
+    <div class="us">
+      <div class="us-head"><span class="us-title">2. Serve capire chi interagisce con chi (quali componenti quando un giocatore invia/riceve una email)</span></div>
+      <span class="tag risolta">Risolto a livello POC — documentato; reso visibile con il diagramma di sequenza (§6.4)</span>
+      <p>I componenti coinvolti e i flussi completi sono già documentati in HLD §3 e §4.0-4.4 e LLD §1:
+      <code>EmailAdapter (IMAP) → Message Router → handler iscrizione/pick → LLM Parser → Pick Processor
+      (Game Engine) → LLM Generator → EmailAdapter (SMTP)</code>. Il diagramma di sequenza 6.4 lo rende
+      comprensibile a tutti (giocatore ↔ "Il Sistema" ↔ risultati).</p>
+    </div>
+
+    <div class="us">
+      <div class="us-head"><span class="us-title">3. Almeno un sequence diagram per capire le interazioni</span></div>
+      <span class="tag risolta">Aperto → chiuso in questo documento (§6.4)</span>
+      <p>I documenti esistenti usavano solo flowchart (nessun <code>sequenceDiagram</code>). Il diagramma
+      6.4 (invio pick e verdetto) colma la lacuna. Eventuali sequence aggiuntivi (apertura/chiusura turno,
+      contabilizzazione incrementale) possono essere aggiunti nella prossima revisione.</p>
+    </div>
+
+    <div class="us">
+      <div class="us-head"><span class="us-title">4. Tornei multipli — come? Installazioni multiple (es. più Docker), o un singolo sistema?</span></div>
+      <span class="tag aperta">Aperto — brainstorming e decisione architetturale prima del design Fase 1 (non bloccante per la POC)</span>
+      <p>Capability di <strong>Fase 1</strong> (BRIEF §3.10, §7.2; fuori scope POC: PRD §10/§1.1). La decisione
+      è già formalmente sul tavolo in <strong>BRIEF §5 (topologia di deployment)</strong> con due opzioni:
+      <strong>(a)</strong> un'istanza/container per torneo (isolamento totale, costi × tornei) o
+      <strong>(b)</strong> un'unica istanza multi-torneo (isolamento logico per <code>tournament_id</code>,
+      canali/dati/scheduler condivisi). Da valutare: separazione dati (DB per torneo vs
+      <code>tournament_id</code>), routing dei messaggi per torneo, montepremi/payout per torneo,
+      osservabilità e costo della scalata. Vincolo già dichiarato: <strong>l'architettura della POC non
+      deve precludere nessuna delle due opzioni</strong> (BRIEF §5) — oggi è neutra (review §17). Da fare:
+      session di brainstorming dedicata + impatto su schema dati, canali e CLI.</p>
+    </div>
+
+    <div class="us">
+      <div class="us-head"><span class="us-title">5. Sistema di pagamento (quota e payout) + regole PayPal gaming/gambling</span></div>
+      <span class="tag aperta">Aperto — Fase 1 (non bloccante per la POC). Attenzione legale/finanziaria segnalata</span>
+      <p>Quota (default 5 EUR, BRIEF §3.6) e montepremi/payout (ipotesi 85%, BRIEF §3.9) sono fuori
+      scope POC (PRD §10) e inizializzati come placeholder nel LLD §4.1. Per la Fase 1 servono:
+      importo/configurazione, ripartizione, gestione arrotondamenti nei casi di vittoria condivisa
+      (BRIEF §5), e il <strong>vincolo del provider</strong>: per <strong>PayPal</strong> le transazioni
+      legate a competizioni devono rispettare la policy di <strong>gaming/gambling</strong> — in questo
+      contesto privato, <strong>closed loop 1-a-1</strong>, ovvero trasferimenti diretti tra persone del
+      gruppo, riferiti al <strong>giocatore</strong> (la persona reale) e <strong>non al profilo</strong>
+      (un giocatore può avere più profili — BRIEF §3.3). Va verificato anche il quadro normativo italiano
+      (ADM) per qualsiasi operatività pubblica con denaro reale (disclaimer <code>BRIEF/BRIEF.MD</code>),
+      prima del design di pagamenti/payout.</p>
+    </div>
+
+    <!-- ===================== DOCS ===================== -->
+    <h2 id="docs">Documenti correlati</h2>
+    <table>
+      <thead><tr><th>Documento</th><th>Ruolo</th></tr></thead>
+      <tbody>
+        <tr><td><code>BRIEF/BRIEF.MD</code></td><td>Storico congelato (raccolta requisiti, 2026-08-11) — non aggiornare; fa fede il design.</td></tr>
+        <tr><td><code>BRIEF/FUTURE_EXPLORATIONS.MD</code></td><td>Idee future fuori POC (chatbot, web, jolly, …).</td></tr>
+        <tr><td><code>docs/POC/POC_PRD.md</code></td><td>Requisiti di prodotto POC — fonte delle regole.</td></tr>
+        <tr><td><code>docs/POC/POC_HLD.md</code></td><td>Architettura di alto livello.</td></tr>
+        <tr><td><code>docs/POC/POC_LLD.md</code></td><td>Design di dettaglio (DB, CLI, env, test).</td></tr>
+        <tr><td><code>docs/POC/POC_PRD_timeline.excalidraw</code></td><td>Timeline TC/TT (link Excalidraw in §6.1).</td></tr>
+        <tr><td><code>docs/reviews/2026-08-11/architecture-review-2026-08-11.md</code></td><td>Review indipendente (fix in §16, domande PO §15).</td></tr>
+      </tbody>
+    </table>
+
+  </main>
+</div>
+
+<button id="toTop" aria-label="Torna in cima">↑</button>
+
+<footer>
+  <p>Design Status — POC Survivor League. Documento autonomo e cancellabile: rollback =
+  cancellare il file. I documenti autorevoli restano <code>POC_PRD.md</code>, <code>POC_HLD.md</code>, <code>POC_LLD.md</code>.</p>
+</footer>
+
+<script>
+
+(function(){
+  var root=document.documentElement;
+  // ---- theme ----
+  function apply(theme){root.setAttribute('data-theme',theme);}
+  var saved=null;
+  try{saved=localStorage.getItem('sl-theme');}catch(e){}
+  var t= saved || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark':'light');
+  apply(t);
+  var btn=document.getElementById('themeToggle');
+  if(btn){
+    btn.textContent = t==='dark' ? '☀' : '☾';
+    btn.addEventListener('click',function(){
+      t = (t==='dark' ? 'light':'dark');
+      apply(t);btn.textContent = t==='dark' ? '☀' : '☾';
+      try{localStorage.setItem('sl-theme',t);}catch(e){}
+    });
+  }
+  // ---- build TOC from headings ----
+  var main=document.getElementById('content');
+  var toc=document.querySelector('#toc nav ol');
+  var heads=main.querySelectorAll('h2,h3,h4');
+  var first=true;
+  heads.forEach(function(h,idx){
+    if(!h.id) h.id='sec-'+idx;
+    var li=document.createElement('li');
+    var a=document.createElement('a');
+    a.href='#'+h.id;a.textContent=h.textContent;
+    a.className = 'lvl-'+h.tagName.replace('H','');
+    li.appendChild(a);toc.appendChild(li);
+  });
+  // ---- scrollspy ----
+  var links=Array.prototype.slice.call(toc.querySelectorAll('a'));
+  var ids=links.map(function(a){return a.getAttribute('href').slice(1);});
+  function onScroll(){
+    var pos=window.scrollY + window.innerHeight*0.22, cur=null;
+    for(var i=0;i<ids.length;i++){
+      var el=document.getElementById(ids[i]);
+      if(el && (el.getBoundingClientRect().top + window.scrollY)<=pos) cur=i;
+    }
+    links.forEach(function(l,i){l.classList.toggle('active', i===cur);});
+  }
+  window.addEventListener('scroll',onScroll,{passive:true});onScroll();
+  // ---- header height -> CSS var (ancora il menu mobile e gli offset di scroll) ----
+  var header=document.querySelector('.site-header');
+  function setHeaderVar(){
+    if(header) root.style.setProperty('--header-h', header.offsetHeight+'px');
+  }
+  setHeaderVar();
+  window.addEventListener('resize',setHeaderVar,{passive:true});
+  window.addEventListener('orientationchange',setHeaderVar);
+  // ---- mobile menu ----
+  var mbtn=document.getElementById('menuToggle');
+  var tocBox=document.getElementById('toc');
+  var menuOpen=false;
+  function setMenu(open){
+    if(!mbtn||!tocBox) return;
+    if(open) setHeaderVar();
+    menuOpen=open;
+    tocBox.classList.toggle('open',open);
+    document.body.classList.toggle('menu-open',open);
+    mbtn.setAttribute('aria-expanded',open?'true':'false');
+    mbtn.textContent=open?'✕':'☰';
+  }
+  if(mbtn&&tocBox){
+    mbtn.addEventListener('click',function(){setMenu(!menuOpen);});
+    tocBox.querySelectorAll('a').forEach(function(a){a.addEventListener('click',function(){setMenu(false);});});
+    document.addEventListener('keydown',function(e){
+      if(e.key==='Escape'&&menuOpen){setMenu(false);mbtn.focus();}
+    });
+    document.addEventListener('click',function(e){
+      if(menuOpen&&!tocBox.contains(e.target)&&!mbtn.contains(e.target)) setMenu(false);
+    });
+    window.addEventListener('resize',function(){
+      if(menuOpen&&window.matchMedia('(min-width:921px)').matches) setMenu(false);
+    },{passive:true});
+  }
+  // ---- back to top ----
+  var topBtn=document.getElementById('toTop');
+  window.addEventListener('scroll',function(){
+    topBtn.classList.toggle('show', window.scrollY>500);
+  },{passive:true});
+  if(topBtn) topBtn.addEventListener('click',function(){window.scrollTo({top:0,behavior:'smooth'});});
+})();
+
+</script>
+</body>
+</html>
