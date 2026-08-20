@@ -321,6 +321,30 @@ describe('channel:email:process — CS1 simulato e flussi principali (Task 6.2)'
     expect(seen).toEqual(['1']);
   });
 
+  it('iscrizione via email senza round aperto → profilo creato (finestra aperta; CL3 non si applica all\'iscrizione)', async () => {
+    const { db, ctx, channel, generator, deps, seen } = makeHarness({ startTournament: false });
+    // Stato "finestra aperta, nessun round": equivale a tournament:register:open
+    // PRIMA di tournament:start/round:open (registration_open=1, nessun round_state).
+    db.prepare('INSERT INTO tournament_state (id, registration_open) VALUES (1, 1)').run();
+
+    const result = await processEmailBatch(
+      ctx,
+      [incoming('Nuovo Giocatore <new@test.it>', 'vorrei iscrivermi al torneo', T_PICK, '1')],
+      deps(new Set())
+    );
+
+    // Profilo creato anche senza round aperto: l'iscrizione non dipende dal round.
+    const player = ctx.db.prepare('SELECT email FROM player WHERE email = ?').get('new@test.it');
+    expect(player).toBeDefined();
+    // Nessun round aperto → welcome SENZA coppia TT/TC (D4: assente).
+    expect(generator.contexts[0]).toMatchObject({ type: 'welcome' });
+    expect(generator.contexts[0]?.tt).toBeUndefined();
+    expect(generator.contexts[0]?.tc).toBeUndefined();
+    expect(channel.sent[0]?.subject).toBe('Survivor League — Benvenuto');
+    expect(result.messages[0]).toMatchObject({ action: 'registration', seen: true });
+    expect(seen).toEqual(['1']);
+  });
+
   it('guard RF-31: pick oltre il kickoff effettivo → after_kickoff (receivedAt = internaldate)', async () => {
     const { db, ctx, channel, deps } = makeHarness();
     insertProfile(db, 'a@test.it');

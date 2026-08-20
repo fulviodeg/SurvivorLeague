@@ -130,9 +130,15 @@ async function sendReply(
   await ctx.channel.sendMessage(to, body, subjectFor(emailCtx));
 }
 
-/** Testo del rifiuto "torneo iniziato" (CL2/RF-03/RF-24): la coppia è iniettata dal ctx. */
-function startedRejectionReason(tc: number): string {
-  return `torneo iniziato al TT 1, TC ${tc}: la finestra di iscrizione è chiusa`;
+/**
+ * Testo del rifiuto "torneo iniziato" (CL2/RF-03/RF-24). Il TC può mancare
+ * quando la finestra di iscrizione è chiusa SENZA un round aperto (es. chiusura
+ * forzata prima di round:open): in tal caso il messaggio omette la coppia.
+ */
+function startedRejectionReason(tc: number | null | undefined): string {
+  return tc === null || tc === undefined
+    ? 'torneo iniziato: la finestra di iscrizione è chiusa'
+    : `torneo iniziato al TT 1, TC ${tc}: la finestra di iscrizione è chiusa`;
 }
 
 /**
@@ -151,44 +157,36 @@ async function processOne(
   const routed = classify(message, deps.knownEmails);
   const { identity, kind } = routed;
 
-  // D8/CL3: nessun round aperto → rifiuto e messaggio marcato letto (D7 esteso).
-  if (round === null) {
-    await sendReply(ctx, identity.identifier, {
-      type: 'pick_rejected',
-      reason: 'nessun turno è aperto in questo momento (round_not_open)'
-    });
-    await deps.markSeen(message);
-    return { from: message.from, kind, action: 'round_not_open', seen: true };
-  }
-
-  const { tt, tc } = turnFor(db, round);
-
   // --- Iscrizione (mittente ignoto + keyword, D6) ---
+  // Gestita PRIMA del gate CL3 (round_not_open): la finestra di iscrizione è
+  // indipendente dallo stato dei round (LLD §7.10), quindi un'iscrizione via
+  // email va accettata anche quando nessun round è ancora aperto. La coppia
+  // TT/TC è iniettata nelle email SOLO se esiste un round aperto (D4: assente
+  // → soggetto/corpo senza suffisso TTnTCm).
   if (kind === 'registration') {
+    const turn = round === null ? null : turnFor(db, round);
     const result = registerPlayer(ctx, { email: identity.identifier, identity });
     deps.logger.info(
       { email: identity.identifier, eligibility: result.eligibility, result: result.ok ? 'ok' : result.reason },
       'email:process: registrazione (eligibilità loggata)'
     );
     if (result.ok) {
-      await sendReply(ctx, identity.identifier, { type: 'welcome', tt, tc });
+      await sendReply(ctx, identity.identifier, { type: 'welcome', ...(turn ?? {}) });
       await deps.markSeen(message);
       return { from: message.from, kind, action: 'registration', seen: true };
     }
     if (result.reason === 'email_already_registered') {
       await sendReply(ctx, identity.identifier, {
         type: 'pick_rejected',
-        tt,
-        tc,
+        ...(turn ?? {}),
         reason: 'sei già registrato al torneo (email_already_registered)'
       });
     } else {
       // Finestra chiusa / non idoneo → rifiuto CL2 (RF-03).
       await sendReply(ctx, identity.identifier, {
         type: 'pick_rejected',
-        tt,
-        tc,
-        reason: startedRejectionReason(tc)
+        ...(turn ?? {}),
+        reason: startedRejectionReason(turn?.tc)
       });
     }
     await deps.markSeen(message);
@@ -200,6 +198,18 @@ async function processOne(
       seen: true
     };
   }
+
+  // D8/CL3: nessun round aperto → rifiuto e messaggio marcato letto (D7 esteso).
+  if (round === null) {
+    await sendReply(ctx, identity.identifier, {
+      type: 'pick_rejected',
+      reason: 'nessun turno è aperto in questo momento (round_not_open)'
+    });
+    await deps.markSeen(message);
+    return { from: message.from, kind, action: 'round_not_open', seen: true };
+  }
+
+  const { tt, tc } = turnFor(db, round);
 
   // --- Pick ---
   const isKnown = deps.knownEmails.has(identity.identifier);
