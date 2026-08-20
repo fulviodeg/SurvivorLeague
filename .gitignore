@@ -25,6 +25,9 @@ coverage/
 .env.local
 .env.*.local
 
+# --- Kilo agent: piani in plan-mode (scratch; la copia definitiva sta in tasks/) ---
+.kilo/plans/
+
 # --- Note personali (non fanno parte del progetto) ---
 note personali.txt
 
