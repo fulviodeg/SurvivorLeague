@@ -3,10 +3,10 @@
  * briefing Fase 7).
  *
  * Ruolo: espone l'orchestratore di produzione al cron:
- *   - `scheduler:tick` — esegue le azioni dovute (finestra di iscrizione,
- *     open/close/score round, chiusure di sicurezza RF-30) dopo un
- *     `data:refresh` reale; se `SCHEDULER_ENABLED=false` stampa e ESCE senza
- *     effetti (LLD §7.12: in sviluppo il commissioner usa i comandi manuali).
+ *   - `scheduler:tick` — esegue le azioni dovute (open/close/score round,
+ *     chiusure di sicurezza RF-30) dopo un `data:refresh` reale; se
+ *     `SCHEDULER_ENABLED=false` stampa e ESCE senza effetti (LLD §7.12: in
+ *     sviluppo il commissioner usa i comandi manuali).
  *     Ogni evento è loggato con pino (audit R5: warn per le chiusure di
  *     sicurezza e il refresh fallito);
  *   - `scheduler:status` — SEMPRE attivo (sola lettura, idempotente): stato
@@ -34,7 +34,7 @@ import {
   type SchedulerEvent
 } from '../../game/scheduler.js';
 import { createLogger, type Logger } from '../../logger.js';
-import { attachEmailToContext } from '../email-wiring.js';
+import { attachEmailToContext, attachPlatformToContext } from '../email-wiring.js';
 import { makeNow } from '../../clock.js';
 import { jsonWithTestMode, printTestModeBanner } from '../output.js';
 import { SKIP_IMPORT_REFRESH_TEST_MODE, refreshAllowedWarnMessage } from './data.js';
@@ -52,10 +52,11 @@ interface JsonArg {
   json: boolean;
 }
 
-/** Contesto di produzione dello scheduler: clock reale + email reali (R7/§G). */
+/** Contesto di produzione dello scheduler: clock reale + email reali + registry piattaforma (ADR-009, R7/§G). */
 function makeSchedulerContext(): {
   ctx: GameContext;
   db: ReturnType<typeof createConnection>;
+  platformDb: ReturnType<typeof createConnection>;
   config: AppConfig;
   logger: Logger;
 } {
@@ -63,12 +64,20 @@ function makeSchedulerContext(): {
   const db = createConnection(config.DB_PATH);
   migrate(db);
   const dataProvider = new DbSeasonDataProvider(db);
-  const base: GameContext = { db, dataProvider, config, now: makeNow(config) };
+  // Il logger pino del comando (audit R5, binding testMode dalla config) è
+  // iniettato ANCHE nel contesto di gioco: i fallimenti best-effort del Round
+  // Manager (es. riepilogo non inviato a un destinatario durante
+  // round:score, B2 decisione (b)) restano visibili nei log del tick senza
+  // far fallire l'azione.
+  const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode);
+  const base: GameContext = { db, dataProvider, config, now: makeNow(config), logger };
+  const { ctx, platformDb } = attachPlatformToContext(attachEmailToContext(base, config), config);
   return {
-    ctx: attachEmailToContext(base, config),
+    ctx,
     db,
+    platformDb,
     config,
-    logger: createLogger(config.LOG_LEVEL, undefined, config.testMode)
+    logger
   };
 }
 
@@ -85,7 +94,6 @@ function logEvent(logger: Logger, e: SchedulerEvent): void {
   };
   const warn =
     e.type === 'round_close_safety' ||
-    e.type === 'register_close_safety' ||
     e.type === 'refresh_failed' ||
     e.type === 'warn_not_calculable';
   if (warn) logger.warn(fields, `scheduler: ${e.type}`);
@@ -131,10 +139,10 @@ export function buildRefreshForTick(
 export const schedulerTickCommand: CommandModule<object, JsonArg> = {
   command: 'scheduler:tick',
   describe:
-    'Orchestratore sottile (LLD §1.4): refresh dati + azioni dovute (finestra iscrizione, open/close/score, chiusure di sicurezza RF-30); esce senza effetti se SCHEDULER_ENABLED=false',
+    'Orchestratore sottile (LLD §1.4): refresh dati + azioni dovute (open/close/score, chiusure di sicurezza RF-30); esce senza effetti se SCHEDULER_ENABLED=false',
   builder: jsonOption,
   handler: async (argv) => {
-    const { ctx, db, config, logger } = makeSchedulerContext();
+    const { ctx, db, platformDb, config, logger } = makeSchedulerContext();
     try {
       // LLD §7.12: in sviluppo/test lo scheduler non è attivo — il comando
       // esiste ma non esegue azioni automatiche.
@@ -178,6 +186,7 @@ export const schedulerTickCommand: CommandModule<object, JsonArg> = {
       }
     } finally {
       db.close();
+      platformDb.close();
     }
   }
 };
@@ -193,33 +202,39 @@ export const schedulerStatusCommand: CommandModule<object, JsonArg> = {
     try {
       migrate(db);
       const dataProvider = new DbSeasonDataProvider(db);
-      const ctx: GameContext = { db, dataProvider, config, now: makeNow(config) };
-      const status = await schedulerStatus(ctx);
+      const base: GameContext = { db, dataProvider, config, now: makeNow(config) };
+      // Registry piattaforma iniettato (ADR-009): platformSubscribers in output.
+      const { ctx, platformDb } = attachPlatformToContext(base, config);
+      try {
+        const status = await schedulerStatus(ctx);
 
-      if (argv.json) {
-        console.log(jsonWithTestMode(config, status));
-      } else {
-        printTestModeBanner(config);
-        console.log(
-          `Scheduler: ${status.enabled ? 'abilitato' : 'disabilitato'} (SCHEDULER_ENABLED) — torneo ${status.seasonStarted ? 'avviato' : 'non avviato'}, iscrizioni ${status.registrationOpen ? 'aperte' : 'chiuse'}, start TC ${status.startRound} (${status.totalRounds} TC)`
-        );
-        for (const r of status.rounds) {
-          console.log(
-            `  TC ${r.tc} (TT ${r.tt}): ${r.status}${r.deadline === null ? '' : ` (deadline ${r.deadline})`}`
-          );
-        }
-        for (const a of status.anomalies) {
-          console.log(`  Anomalia TC ${a.round}: ${a.type} (chiusura di sicurezza non applicabile, RF-30)`);
-        }
-        if (status.nextActions.length > 0) {
-          console.log(
-            `Prossime azioni: ${status.nextActions
-              .map((a) => ('round' in a ? `${a.type} (TC ${a.round})` : a.type))
-              .join(', ')}`
-          );
+        if (argv.json) {
+          console.log(jsonWithTestMode(config, status));
         } else {
-          console.log('Prossime azioni: nessuna');
+          printTestModeBanner(config);
+          console.log(
+            `Scheduler: ${status.enabled ? 'abilitato' : 'disabilitato'} (SCHEDULER_ENABLED) — torneo ${status.seasonStarted ? 'avviato' : 'non avviato'}, iscritti piattaforma (attivi): ${status.platformSubscribers}, start TC ${status.startRound} (${status.totalRounds} TC)`
+          );
+          for (const r of status.rounds) {
+            console.log(
+              `  TC ${r.tc} (TT ${r.tt}): ${r.status}${r.deadline === null ? '' : ` (deadline ${r.deadline})`}`
+            );
+          }
+          for (const a of status.anomalies) {
+            console.log(`  Anomalia TC ${a.round}: ${a.type} (chiusura di sicurezza non applicabile, RF-30)`);
+          }
+          if (status.nextActions.length > 0) {
+            console.log(
+              `Prossime azioni: ${status.nextActions
+                .map((a) => `${a.type} (TC ${a.round})`)
+                .join(', ')}`
+            );
+          } else {
+            console.log('Prossime azioni: nessuna');
+          }
         }
+      } finally {
+        platformDb.close();
       }
     } finally {
       db.close();

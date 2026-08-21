@@ -1,20 +1,23 @@
 /**
- * Comandi CLI del Pick Processor (LLD §7.4, piano Task 3.2).
+ * Comandi CLI del Pick Processor (LLD §7.4, piano Task 3.2/7).
  *
  * Ruolo: espone la validazione e la registrazione dei pick:
  *   - `pick:validate --round <n> --profileId <id> --team <name> --outcome <win|draw|lose>`
  *     — valida SENZA registrare; output JSON `{valid, reason}` (LLD §7.4);
  *   - `pick:register … [--reason <motivo>]` — valida SEMPRE (stesse regole dei
  *     pick automatici, decisione 9 del piano) e registra atomicamente; `--reason`
- *     è l'override US10 che bypassa SOLO i check temporali (RF-31/CL18); un pick
+ *     è l'override US10 che bypassa SOLO i check temporali (RF-31/CL18). Il
+ *     comando risolve l'EMAIL del profilo e verifica che l'account PIATTAFORMA
+ *     sia `active` (ADR-009, piano Task 7: nessun bypass del gate); un pick
  *     rifiutato esce con codice 1 e il motivo nel messaggio;
  *   - `pick:list [--round <n>] [--profileId <id>]` — lista pick (sola lettura,
  *     idempotente); almeno un filtro è richiesto.
  *
  * Pattern CLI consolidato (briefing §1-I): il comando costruisce il contesto
- * `{ db, dataProvider, config, now }` con `now = new Date()` come receivedAt
- * (la CLI del commissioner riceve "adesso"; nei test il timestamp è forzato,
- * CS4) e lo passa al modulo — mai `getConfig()` dentro il Pick Processor.
+ * `{ db, dataProvider, config, now, platform }` con `now = makeNow(config)`
+ * come receivedAt (la CLI del commissioner riceve "adesso"; nei test il
+ * timestamp è forzato, CS4) e lo passa al modulo — mai `getConfig()` dentro il
+ * Pick Processor.
  */
 import type { Argv, CommandModule } from 'yargs';
 
@@ -22,18 +25,31 @@ import { getConfig } from '../../config.js';
 import { DbSeasonDataProvider } from '../../data/db-provider.js';
 import { createConnection } from '../../db/connection.js';
 import { migrate } from '../../db/schema.js';
+import { migratePlatform } from '../../db/platform-schema.js';
+import { DbPlatformRegistry } from '../../platform/registry.js';
 import type { GameContext } from '../../game/context.js';
 import { listPicks, registerPick, validatePick } from '../../game/pick-processor.js';
 import { makeNow } from '../../clock.js';
 import { jsonWithTestMode, printTestModeBanner } from '../output.js';
 
-/** Costruisce il contesto di gioco con receivedAt = adesso (clock della CLI, offset test-only). */
-function makeGameContext(): { ctx: GameContext; db: ReturnType<typeof createConnection> } {
+/**
+ * Costruisce il contesto di gioco con receivedAt = adesso (clock della CLI,
+ * offset test-only) e il PlatformRegistry iniettato (ADR-009: il gate di
+ * `pick:register` legge lo stato dell'account piattaforma).
+ */
+function makeGameContext(): {
+  ctx: GameContext;
+  db: ReturnType<typeof createConnection>;
+  platformDb: ReturnType<typeof createConnection>;
+} {
   const config = getConfig();
   const db = createConnection(config.DB_PATH);
   migrate(db);
   const dataProvider = new DbSeasonDataProvider(db);
-  return { ctx: { db, dataProvider, config, now: makeNow(config) }, db };
+  const platformDb = createConnection(config.PLATFORM_DB_PATH);
+  migratePlatform(platformDb);
+  const platform = new DbPlatformRegistry(platformDb);
+  return { ctx: { db, dataProvider, config, now: makeNow(config), platform }, db, platformDb };
 }
 
 /** Opzione JSON condivisa dai comandi (LLD §7.13). */
@@ -97,7 +113,7 @@ export const pickValidateCommand: CommandModule<object, ValidateArgs> = {
   describe: 'Valida un pick senza registrarlo; output JSON {valid, reason} (LLD §7.4)',
   builder: pickBuilder,
   handler: async (argv) => {
-    const { ctx, db } = makeGameContext();
+    const { ctx, db, platformDb } = makeGameContext();
     try {
       const result = await validatePick(ctx, {
         profileId: argv.profileId,
@@ -118,6 +134,7 @@ export const pickValidateCommand: CommandModule<object, ValidateArgs> = {
       }
     } finally {
       db.close();
+      platformDb.close();
     }
   }
 };
@@ -133,8 +150,26 @@ export const pickRegisterCommand: CommandModule<object, RegisterArgs> = {
         "Motivo auditato dell'override del commissioner (obbligatorio fuori accettazione, US10/ADR-008)"
     }),
   handler: async (argv) => {
-    const { ctx, db } = makeGameContext();
+    const { ctx, db, platformDb } = makeGameContext();
     try {
+      // Gate piattaforma (ADR-009, piano Task 7): risolve l'email del profilo
+      // e verifica che l'account sia `active` — nessun bypass del gate dal CLI.
+      const profile = db
+        .prepare(
+          `SELECT COALESCE(pl.email, '') AS email FROM profile p
+           LEFT JOIN player pl ON pl.id = p.player_id WHERE p.id = ?`
+        )
+        .get(argv.profileId) as { email: string } | undefined;
+      if (profile === undefined || profile.email === '') {
+        throw new Error(`Profilo ${argv.profileId} inesistente`);
+      }
+      const account = ctx.platform?.find(profile.email);
+      if (account === undefined || account === null || account.status !== 'active') {
+        throw new Error(
+          `Account piattaforma non attivo per ${profile.email}: pick rifiutato (RF-P6/ADR-009)`
+        );
+      }
+
       const result = await registerPick(
         ctx,
         {
@@ -158,6 +193,7 @@ export const pickRegisterCommand: CommandModule<object, RegisterArgs> = {
       }
     } finally {
       db.close();
+      platformDb.close();
     }
   }
 };
@@ -176,7 +212,7 @@ export const pickListCommand: CommandModule<object, ListArgs> = {
         return true;
       }),
   handler: (argv) => {
-    const { ctx, db } = makeGameContext();
+    const { ctx, db, platformDb } = makeGameContext();
     try {
       const picks = listPicks(ctx.db, { round: argv.round, profileId: argv.profileId });
       if (argv.json) {
@@ -194,6 +230,7 @@ export const pickListCommand: CommandModule<object, ListArgs> = {
       }
     } finally {
       db.close();
+      platformDb.close();
     }
   }
 };

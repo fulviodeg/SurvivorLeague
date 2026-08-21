@@ -3,11 +3,11 @@
 > ⚠ **POC ONLY** — Questo documento descrive il sistema per la Proof of Concept. Non è il design del sistema di produzione.
 
 **Stato:** Revisionato
-**Data:** 2026-08-14
-**Versione:** 0.4.2
-**Revisione 0.4.2 (2026-08-14):** allineata al PRD v0.5.2 e ad ADR-008 (aggancio asincrono del torneo): finestra di iscrizione ancorata alla deadline del TT1 con auto-chiusura e chiusura forzata auditat; auto-iscrizione del mittente sconosciuto nel TT1 (§6.1, §6.2, §6.6); nota coppia TT/TC in tutte le comunicazioni; nota scheduler su finestra `[start_round..N]` (§5.4); guard anti-frode e chiusura di sicurezza (§6.3); seam eligibilità nel Game Engine (§5.1); casi limite CL2 riscritto e CL11/CL17/CL18 mappati (§5.5).
+**Data:** 2026-08-20
+**Versione:** 0.5.0
+**Revisione 0.5.0 (2026-08-20):** allineata al PRD v0.6.0 e ad ADR-009 (iscrizione a livello di piattaforma): nuovo componente **Platform Registry** (§2.2, §5.3); Message Router che smista sull'**intento LLM** (§5.3, §6.2); flussi riscritti — subscribe/unsubscribe a due passi, pick, silenzio anti-spam, auto-join al TT1 (§6.1, §6.2); notifiche con broadcast `tournament_open` e riepilogo `round_closed_survived` ai soli sopravvissuti (§6.3, §6.4); nessuna finestra di iscrizione (§5.4, §6.1); casi limite CL2/CL5 mappati sul nuovo modello (§5.5).
 
-> Documento di architettura di alto livello ("come" il sistema è strutturato). I requisiti di prodotto ("cosa/perché") sono nel [PRD](POC_PRD.md) v0.5.2; il dettaglio implementativo (schema DB, interfacce, CLI, configurazione) è nel [LLD](POC_LLD.md). Le decisioni difficili da invertire sono registrate nelle [ADR](../decisions/architecture-decisions.md).
+> Documento di architettura di alto livello ("come" il sistema è strutturato). I requisiti di prodotto ("cosa/perché") sono nel [PRD](POC_PRD.md) v0.6.0; il dettaglio implementativo (schema DB, interfacce, CLI, configurazione) è nel [LLD](POC_LLD.md). Le decisioni difficili da invertire sono registrate nelle [ADR](../decisions/architecture-decisions.md).
 
 ---
 
@@ -21,10 +21,11 @@
 - [4. Decisioni architetturali chiave](#4-decisioni-architetturali-chiave)
 - [5. Vista logica (componenti)](#5-vista-logica-componenti)
   - [5.1 Game Engine](#51-game-engine)
-  - [5.2 LLM Adapter](#52-llm-adapter)
-  - [5.3 Channel Adapter](#53-channel-adapter)
-  - [5.4 Scheduler](#54-scheduler)
-  - [5.5 Responsabilità sui casi limite](#55-responsabilità-sui-casi-limite)
+  - [5.2 Platform Registry](#52-platform-registry-adr-009)
+  - [5.3 LLM Adapter](#53-llm-adapter)
+  - [5.4 Channel Adapter](#54-channel-adapter)
+  - [5.5 Scheduler](#55-scheduler)
+  - [5.6 Responsabilità sui casi limite](#56-responsabilità-sui-casi-limite)
 - [6. Vista logica dei flussi](#6-vista-logica-dei-flussi)
   - [6.1 Iscrizione](#61-iscrizione)
   - [6.2 Ricezione pick](#62-ricezione-pick)
@@ -69,10 +70,12 @@ Principio architetturale vincolante (AGENTS.md): le responsabilità sono affidat
 | Componente | Ruolo (cosa fa) | Confine (cosa NON fa) |
 |---|---|---|
 | **Game Engine** (round, pick, eliminazioni, vincitore) | Definisce l'esito e lo stato di gioco: validazione, contabilizzazione, eliminazioni, determinazione del vincitore | Non interagisce direttamente coi giocatori, non interpreta linguaggio naturale, non fornisce dati stagione |
+| **Platform Registry** (archivio account piattaforma) | Sorgente degli iscritti: account persistente (`registerID` stabile, email, status `active`/`pending_unsubscribe`/`unsubscribed`), iscrizione/disiscrizione a due passi (ADR-009, RF-P1/P2); `activeEmails()` per le notifiche | Non conosce il torneo: nessuna scrittura su profili/pick; è **solo letto** dai flussi di torneo (gate) |
+| **Intent Classifier** (confine LLM) | Classifica l'intento di un messaggio (`subscribe`/`unsubscribe`/`pick`/`other`) ed estrae il pick in **una sola chiamata LLM** (ADR-004/009) | Non decide nulla di gioco: l'esito è poi filtrato dal check deterministico esatto sul pick |
 | **Contabilizzazione** (Round Manager) | Riceve i risultati e aggiorna lo stato dei pick in modo incrementale; decide gli stati `correct` / `wrong` / `frozen` e la chiusura del TT | Non decide il calendario, non trasporta messaggi, non genera testi |
-| **Canale di comunicazione** (EmailAdapter) | Consegna e riceve i messaggi (iscrizione, pick, notifiche) | Non prende alcuna decisione di gioco: trasporta solo messaggi |
+| **Canale di comunicazione** (EmailAdapter) | Consegna e riceve i messaggi (iscrizione, disiscrizione, pick, notifiche) | Non prende alcuna decisione di gioco: trasporta solo messaggi |
 | **Dati stagione** (SeasonDataProvider) | Fornisce calendario e risultati come fonte unica | Non decide nulla: espone dati già pronti |
-| **LLM** | Interpreta i messaggi in linguaggio naturale in input e genera risposte in output | Confinato al solo I/O: non prende decisioni di gioco, non accede allo stato del torneo |
+| **LLM** | Interpreta i messaggi in linguaggio naturale in input (intento + pick) e genera risposte in output | Confinato al solo I/O: non prende decisioni di gioco, non accede allo stato del torneo |
 | **Scheduler** (automazione) | Innesca le operazioni secondo il calendario (apre/chiude round, invoca la contabilizzazione) | Non implementa la logica di gioco: decide *quando*, non *cosa* |
 
 Questa separazione garantisce che ogni componente sia invocabile e verificabile in modo indipendente, con la stessa interfaccia usata dall'automazione e dall'operatore (ADR-006).
@@ -106,7 +109,8 @@ Le decisioni significative e difficili da invertire sono registrate, in forma co
 | **ADR-004** | Game Engine deterministico + LLM confinato all'I/O | Due domini separati (sez. 5.1, 5.2); l'LLM non prende decisioni di gioco |
 | **ADR-005** | Provider dati designato: football-data.org | `SeasonDataProvider` isola la sorgente (sez. 7); riconciliazione produttiva fuori POC |
 | **ADR-006** | Tutti i componenti gestibili da CLI | La CLI è il contratto operativo del sistema (sez. 5.4, sez. 8); orchestrabile da un agente in futuro |
-| **ADR-008** | Aggancio asincrono del torneo a un TC arbitrario e chiusure garantite | `tournament_state.start_round` deriva la mappatura TT↔TC (rf-20/25); finestra iscrizione ancorata alla deadline TT1 con auto-chiusura/chiusure forzate auditate; guard anti-frode al kickoff effettivo (RF-31); chiusura di sicurezza (RF-30); seam eligibilità (`checkEligibility`) (sez. 5.1, 6.1-6.3) |
+| **ADR-008** | Aggancio asincrono del torneo a un TC arbitrario e chiusure garantite | `tournament_state.start_round` deriva la mappatura TT↔TC (rf-20/25); guard anti-frode al kickoff effettivo (RF-31); chiusura di sicurezza (RF-30); seam eligibilità (`checkEligibility`) (sez. 5.1, 6.2-6.4) |
+| **ADR-009** | Iscrizione a livello di piattaforma con storage separato e auto-join al TT1 | Nuovo componente **Platform Registry** su DB separato (sez. 5); Message Router smista sull'intento LLM (sez. 5.3, 6.2); auto-join al TT1 (RF-P5); matrice notifiche con filtro account `active` (sez. 6.3-6.4); nessuna finestra di iscrizione (sez. 5.4) |
 
 ---
 
@@ -133,6 +137,11 @@ flowchart TB
         RE[Rules<br/>Engine]
     end
 
+    subgraph PLAT["Piattaforma (storage separato)"]
+        PR[Platform<br/>Registry]
+        PDB[(Platform DB)]
+    end
+
     subgraph SDP["Season Data Provider<br/>(interfaccia)"]
         SP[DbSeasonDataProvider<br/>legge dal DB]
         AP[ApiProvider<br/>futura, dati live]
@@ -140,7 +149,7 @@ flowchart TB
 
     subgraph LLM["LLM Adapter"]
         direction LR
-        PARSER[Parser<br/>email → pick]
+        IC[Intent Classifier<br/>intento + pick]
         GENERATOR[Generator<br/>contesto → email]
     end
 
@@ -153,10 +162,14 @@ flowchart TB
     end
 
     CLI --> GE
+    CLI --> PR
     SCH --> GE
     GE --> LLM
     GE --> CH
     GE --> SDP
+    GE -.solo lettura.-> PR
+    CH --> LLM
+    PR --> PDB
 ```
 
 ### 5.1 Game Engine
@@ -173,42 +186,49 @@ Il nucleo deterministico (ADR-004). Contiene:
 
 Il dettaglio delle query e delle regole di derivazione (es. squadre bruciate) è nell'LLD §1.1.
 
-**Seam eligibilità (ADR-008).** Il Game Engine espone `checkEligibility(identity: ExternalIdentity) → { eligible: boolean; reason?: string }` come gate **pre-registrazione**: l'identità (`ExternalIdentity { channel, identifier }`) è normalizzata dal ChannelAdapter (POC: `{channel: 'email', identifier: <email>}`); l'implementazione POC restituisce sempre `true` con log, in Fase 1 ospiterà il controllo quota. Gli override del commissioner passano dalla stessa funzione con esito forzabile + motivo (PRD §4.1, US10).
+**Seam eligibilità (ADR-008/009).** Il Game Engine espone `checkEligibility(identity: ExternalIdentity) → { eligible: boolean; reason?: string }` come gate **pre-partecipazione**: l'identità (`ExternalIdentity { channel, identifier }`) è normalizzata dal ChannelAdapter (POC: `{channel: 'email', identifier: <email>}`); l'implementazione POC è "**account piattaforma `active`**" (lettura dal Platform Registry, nessuna scrittura); in Fase 1 ospiterà il controllo quota (`ENTRY_FEE_EUR`). Gli override del commissioner passano dalla stessa funzione con esito forzabile + motivo (PRD §4.1, US10).
 
-### 5.2 LLM Adapter
+### 5.2 Platform Registry (ADR-009)
 
-Confinato al solo I/O (ADR-004): il **Parser** estrae `{team, outcome}` da email in linguaggio naturale (PRD §6, RF-07); il **Generator** produce email in italiano da contesto strutturato. Non prende decisioni di gioco, non accede allo stato del torneo; se l'estrazione è ambigua restituisce `null` e il pick viene respinto senza conseguenze (PRD §4.3). Contratti in LLD §6.2-6.3.
+**Archivio account della piattaforma** su storage separato (`PLATFORM_DB_PATH`, RF-P7): un account = `registerID` interno **stabile** + email univoca + status `active | pending_unsubscribe | unsubscribed` + date scritte dal clock iniettato (RF-P8). È la **sorgente degli iscritti** per tutte le notifiche (`activeEmails()`). Interfaccia in LLD §6.6; implementazione SQLite dedicata. Regole (RF-P1/P2/P3):
+- **iscrizione**: crea/riattiva l'account con lo stesso `registerID`; conferma `platform_registered`; già `active` → "già iscritto";
+- **disiscrizione a due passi**: primo unsubscribe → `pending_unsubscribe` + `platform_unsubscribe_confirm`; soft-delete solo sul secondo messaggio (intento `unsubscribe` o body `confermo`/`sì`/`si`/`yes`); da `unsubscribed`/sconosciuto → log silenzioso;
+- **solo lettura dai flussi di torneo**: il registry è il gate delle notifiche e del pick, mai una tabella scritta dal Game Engine (nessuna transazione cross-DB).
 
-### 5.3 Channel Adapter
+### 5.3 LLM Adapter
 
-Il Game Engine non dialoga direttamente con l'email ma con l'interfaccia astratta **`ChannelAdapter`** (`fetchMessages`, `sendMessage`). L'**`EmailAdapter`** è l'unica implementazione nella POC: contiene IMAP Client (che popola `receivedAt` con l'`internaldate`, ADR-001), Message Router (classifica i messaggi in ingresso: iscrizione / pick / sconosciuto, e normalizza l'identità del mittente in `ExternalIdentity { channel, identifier }`, ADR-008) e SMTP Client. Aggiungere un canale in futuro = nuovo adapter senza toccare la logica di gioco (PRD §10, FUTURE_EXPLORATIONS). Contratti in LLD §6.4.
+Confinato al solo I/O (ADR-004, ADR-009): l'**Intent Classifier** classifica l'intento del messaggio (`subscribe`/`unsubscribe`/`pick`/`other`) ed estrae `{team, outcome}` in **una sola chiamata LLM** (PRD §4.1/§6, RF-P1/RF-07); il **Generator** produce email in italiano da contesto strutturato. Non prende decisioni di gioco, non accede allo stato del torneo; contenuto ambiguo → `other`/`pick: null` (mai eccezioni di contenuto); l'estrazione del pick è poi filtrata dal check deterministico esatto (ADR-004). Contratti in LLD §6.2-6.3.
 
-### 5.4 Scheduler
+### 5.4 Channel Adapter
 
-**Orchestratore sottile** (ADR-003, ADR-006): in produzione decide *quando* agire in base al calendario e allo stato dei round e della finestra di iscrizione, invocando **gli stessi comandi CLI del Game Engine** usati manualmente nella POC (`tournament:register:close`, `round:open`, `round:close`, `round:score`). Non contiene logica di gioco: non confronta risultati, non valida pick, non tocca lo stato dei pick o delle iscrizioni. In sviluppo/test non è attivo: il commissioner usa la CLI (vedi sez. 6, LLD §7.12).
+Il Game Engine non dialoga direttamente con l'email ma con l'interfaccia astratta **`ChannelAdapter`** (`fetchMessages`, `sendMessage`). L'**`EmailAdapter`** è l'unica implementazione nella POC: contiene IMAP Client (che popola `receivedAt` con l'`internaldate`, ADR-001), **Message Router** (normalizza l'identità del mittente in `ExternalIdentity { channel, identifier }`, ADR-008, e produce `{ kind: 'classified', identity, body }` — la decisione di intento è dell'LLM, non del router) e SMTP Client. Aggiungere un canale in futuro = nuovo adapter senza toccare la logica di gioco (PRD §10, FUTURE_EXPLORATIONS). Contratti in LLD §6.4.
 
-**Finestra del torneo agganciato (ADR-008).** In Fase 1 lo scheduler opera sulla finestra `[start_round..N]` (ultimo TC della stagione): deriva la mappatura TT↔TC da `start_round` e apre il primo TT all'apertura del torneo; applica l'auto-chiusura della finestra di iscrizione alla deadline del TT1, la chiusura dei round a deadline scaduta (o la chiusura di sicurezza allo scadere del TC se la deadline manca) e la contabilizzazione incrementale (LLD §1.4).
+### 5.5 Scheduler
+
+**Orchestratore sottile** (ADR-003, ADR-006): in produzione decide *quando* agire in base al calendario e allo stato dei round, invocando **gli stessi comandi CLI del Game Engine** usati manualmente nella POC (`round:open`, `round:close`, `round:score`). Non contiene logica di gioco: non confronta risultati, non valida pick, non tocca lo stato dei pick o degli account. In sviluppo/test non è attivo: il commissioner usa la CLI (vedi sez. 6, LLD §7.12).
+
+**Finestra del torneo agganciato (ADR-008, ADR-009).** In Fase 1 lo scheduler opera sulla finestra `[start_round..N]` (ultimo TC della stagione): deriva la mappatura TT↔TC da `start_round` e apre il primo TT all'apertura del torneo; applica la chiusura dei round a deadline scaduta (o la chiusura di sicurezza allo scadere del TC se la deadline manca) e la contabilizzazione incrementale (LLD §1.4). **Non esiste più alcuna finestra di iscrizione da aprire/chiudere** (ADR-009): l'iscrizione piattaforma è sempre disponibile e la partecipazione è gated dalla deadline del TT1.
 
 **Due modalità operative con la stessa CLI** (PRD §4.8):
-- **Sviluppo/test (2025/26):** operazioni manuali del commissioner via CLI (avvio stagione, fase iscrizione, round, contabilizzazione, simulazione).
+- **Sviluppo/test (2025/26):** operazioni manuali del commissioner via CLI (avvio stagione, round, contabilizzazione, simulazione, gestione account piattaforma).
 - **Produzione (2026/27):** automazione completa via cron (`scheduler:tick`). Il commissioner conserva sempre l'override (US10).
 
-### 5.5 Responsabilità sui casi limite
+### 5.6 Responsabilità sui casi limite
 
 Mapping dei casi limite del PRD (sez. 8) ai componenti responsabili:
 
 | # | Caso | Componente responsabile | Meccanismo |
 |---|------|------------------------|------------|
 | CL1/CL7/CL8 | Partita rinviata (o sospesa) entro/fuori finestra TC | Round Manager + Season Data Provider | Regole di rinvio e Freeze (PRD §5.4, ADR-002); flusso §6.4 |
-| CL2 | Giocatore non iscritto invia un pick | Message Router + Pick Processor | Durante la finestra del TT1: auto-iscrizione atomica + validazione (PRD §4.1, RF-27); dal TT2: rifiuto senza registrazione (RF-24) |
+| CL2 | Mittente non iscritto invia un pick | Intent Classifier + Pick Processor + Platform Registry | Non iscritto → **log silenzioso, nessuna risposta** (RF-P4); iscritto senza profilo → auto-join nel TT1 (RF-P5) o rifiuto dal TT2 |
 | CL3 | Pick post-deadline | Pick Processor | Confronta `receivedAt` con l'istante di accettazione `min(deadline, kickoff effettivo)` → respinto (ADR-001, RF-31) |
 | CL4 | Squadra non in giornata | Pick Processor | Season Data Provider: squadra non in nessuna partita del round → respinto |
-| CL5 | Formato illeggibile | LLM Parser | Restituisce `null` → Pick Processor respinge con spiegazione (ADR-004); nel TT1 nessun profilo viene registrato (RF-27) |
+| CL5 | Formato illeggibile | Intent Classifier | Contenuto non interpretabile → `other`/`pick: null` → chiarimento o silenzio (ADR-004); nel TT1 nessun profilo viene creato (auto-join solo con pick valido, RF-P5) |
 | CL6 | Due pick concorrenti stesso profilo | Pick Processor + DB | Vincolo `UNIQUE(profile_id, round)` → solo il primo viene registrato |
 | CL11 | Aggancio a TC passato/in corso | Win Engine (avvio) | `tournament:start`: validazioni RF-21, rifiuto atomico senza stato parziale |
-| CL17 | Deadline mancante/non registrata | Pick Processor + Round Manager + Scheduler | Guard anti-frode blocca i pick dopo il kickoff effettivo (RF-31); consolidamento via chiusura di sicurezza allo scadere del TC, log `safety_close` (RF-30); uscita = chiusura forzata (RF-28/RF-29) |
+| CL17 | Deadline mancante/non registrata | Pick Processor + Round Manager + Scheduler | Guard anti-frode blocca i pick dopo il kickoff effettivo (RF-31); consolidamento via chiusura di sicurezza allo scadere del TC, log `safety_close` (RF-30); uscita = chiusura forzata (RF-29) |
 | CL18 | Calendario anticipa partita dopo l'apertura | Pick Processor | La deadline nominale resta fissa (RF-14) ma il guard anti-frode rifiuta i pick dopo il kickoff effettivo (RF-31); rimedio = override US10 con `--reason` |
-| CL9/CL10 | Override commissioner (correzione/iscrizione manuale) | Game Engine (stessi comandi) | Stessa interfaccia per operatore e automazione (ADR-006) |
+| CL9/CL10 | Override commissioner (correzione/gestione account) | Game Engine + Platform Registry (stessi comandi) | Stessa interfaccia per operatore e automazione (ADR-006) |
 
 ---
 
@@ -216,70 +236,89 @@ Mapping dei casi limite del PRD (sez. 8) ai componenti responsabili:
 
 I diagrammi mostrano il percorso ad alto livello dei principali flussi. Le **regole** di comportamento (criteri di validazione, freezato, eliminazioni) sono nel PRD §4-5; qui non viene ripetuto il dettaglio normativo.
 
-### 6.1 Iscrizione
+### 6.1 Iscrizione e disiscrizione (piattaforma)
 
-*La finestra di iscrizione è `[apertura del torneo, deadline del TT 1]` e si **chiude da sola** alla deadline del TT 1; il commissioner può chiuderla forzatamente in qualunque momento con `tournament:register:close --reason <motivo>` (PRD §4.1, US7/US8, RF-22/RF-28). In sviluppo l'apertura è innescata dal commissioner, in produzione dallo Scheduler. Regole in PRD §4.1.*
+*L'iscrizione alla piattaforma è **sempre disponibile** via email (ADR-009, RF-P1): non esiste una finestra da aprire/chiudere. La **disiscrizione è a due passi** (RF-P2): primo unsubscribe → `pending_unsubscribe` + `platform_unsubscribe_confirm`; soft-delete (`unsubscribed`) solo sul secondo messaggio con intento `unsubscribe` o body di conferma (`confermo`/`sì`/`si`/`yes`). Da `unsubscribed`/sconosciuto → log silenzioso. `subscribe`/`pick` da `pending_unsubscribe` → ritorno ad `active` con lo stesso `registerID`. Regole in PRD §4.1.*
 
 ```mermaid
 flowchart TD
     A[Email in arrivo] --> B[IMAP Client]
-    B --> C{Message Router:<br/>identità normalizzata<br/>ExternalIdentity}
-    C -->|Iscrizione esplicita| D{Finestra di iscrizione<br/>aperta?}
-    C -->|Pick / sconosciuto| P[Flusso 6.2 Ricezione pick]
-    D -->|Sì| E{Eligibilità<br/>checkEligibility}
-    D -->|No| F[Email di rifiuto:<br/>torneo iniziato al TT 1 / TC n;<br/>solo ingresso manuale commissioner]
-    E -->|false + reason| F
-    E -->|true| G[Crea Player + Profile<br/>atomico + log]
-    G --> H[LLM Generator:<br/>template welcome<br/>con coppia TT/TC]
-    H --> I[SMTP Client]
-    I --> J[Email di benvenuto]
+    B --> C{Message Router:<br/>identità normalizzata<br/>ExternalIdentity + corpo}
+    C -->|corpo vuoto| U[unknown: marcato letto,<br/>nessuna risposta]
+    C -->|classificato| I{Intent Classifier<br/>LLM: intento + pick}
+    I -->|subscribe| S1{Stato account}
+    S1 -->|nuovo| S2[register: crea account<br/>registerID stabile]
+    S1 -->|active| S3[Risposta: già iscritto]
+    S1 -->|pending_unsubscribe<br/>o unsubscribed| S4[reactivate: stesso registerID]
+    S2 --> R1[Email platform_registered]
+    S4 --> R1
+    S3 --> R1
+    I -->|unsubscribe| W1{Stato account}
+    W1 -->|active| W2[beginUnsubscribe:<br/>pending_unsubscribe]
+    W1 -->|pending_unsubscribe| W3{Secondo messaggio?<br/>intento unsubscribe o body<br/>confermo/sì/si/yes}
+    W1 -->|unsubscribed o ignoto| W4[Log silenzioso,<br/>nessuna risposta]
+    W3 -->|sì| W5[confirmUnsubscribe:<br/>soft-delete unsubscribed]
+    W3 -->|no| W2
+    W2 --> R2[Email platform_unsubscribe_confirm]
+    W5 --> R3[Email platform_unsubscribed]
+    I -->|pick| P[Flusso 6.2 Ricezione pick]
+    I -->|other| O1{Account noto?}
+    O1 -->|sì| O2[Chiarimento via email]
+    O1 -->|no| O3[Log silenzioso,<br/>nessuna risposta]
 ```
 
 ### 6.2 Ricezione pick
 
-*Regole di validazione e "primo pick valido": PRD §4.3. Auto-iscrizione del mittente sconosciuto: solo nella finestra del TT 1 (PRD §4.1, RF-27/RF-24). Classificazione messaggi: LLD §1.3.*
+*Regole di validazione e "primo pick valido": PRD §4.3. Auto-join del mittente senza profilo: solo nel TT 1 (PRD §4.1, RF-P5); pick da mittente non iscritto: log silenzioso (RF-P4). Classificazione messaggi: LLD §1.3. Ogni email in uscita è inviata SOLO ad account `active` al momento dell'invio (RF-P6).*
 
 ```mermaid
 flowchart TD
     A[Email in arrivo] --> B[IMAP Client]
-    B --> C{Message Router:<br/>classifica + identità normalizzata}
-    C -->|Iscrizione esplicita| D[Registration Handler<br/>6.1]
-    C -->|Pick da mittente<br/>conosciuto| E{LLM Parser}
-    C -->|Sconosciuto| X{Contenuto nella<br/>finestra del TT 1?}
-    X -->|Sì, interpretabile| Z[Auto-iscrizione atomica:<br/>crea profilo + valida pick (RF-27)]
-    X -->|Sì, non interpretabile| X1[Richiesta chiarimento,<br/>nessun profilo creato (CL5)]
-    X -->|No: dal TT 2| X2[Email di rifiuto:<br/>torneo iniziato, nessuna<br/>registrazione (RF-24)]
-    Z --> E
-    E -->|{team, outcome}| F{Pick Processor}
-    E -->|null| G[Email di rifiuto]
-    F -->|Squadra non in giornata| G
-    F -->|Squadra già bruciata| G
-    F -->|Esito non valido| G
-    F -->|Pick già inviato| G
-    F -->|Fuori accettazione<br/>min(deadline, kickoff) (RF-31)| G
-    F -->|Valido| H[Pick registrato]
-    H --> I[Email di conferma]
+    B --> C{Message Router:<br/>identità normalizzata + corpo}
+    C -->|corpo vuoto| U[unknown: marcato letto]
+    C -->|classificato| I{Intent Classifier<br/>LLM: intento + pick}
+    I -->|subscribe/unsubscribe| D[Flusso 6.1<br/>Iscrizione/disiscrizione]
+    I -->|other| O{Account noto?}
+    O -->|sì| OC[Chiarimento via email]
+    O -->|no| OS[Log silenzioso]
+    I -->|pick| K{Account piattaforma}
+    K -->|sconosciuto / unsubscribed| SIL[LOG INTERNO, nessuna risposta<br/>marcato letto (RF-P4)]
+    K -->|pending_unsubscribe| RA[reactivate → active<br/>stesso registerID]
+    K -->|active| AP{Profilo nel torneo?}
+    AP -->|no| TT1{Round = TT 1<br/>aperto?}
+    TT1 -->|sì| Z[Auto-join atomico:<br/>profilo + valida pick (RF-P5)]
+    TT1 -->|no| X2[Email di rifiuto:<br/>torneo iniziato (dal TT 2)]
+    AP -->|sì| F{Pick Processor}
+    RA --> AP
+    Z -->|pick valido| F
+    Z -->|pick invalido| G2[Rollback: nessun profilo<br/>+ rifiuto con motivo]
+    F -->|{team, outcome}| V{Cascata di validazione<br/>+ guard RF-31}
+    V -->|rifiuto (motivo)| G[Email di rifiuto]
+    V -->|valido| H[Pick registrato]
+    H --> I2[Email pick_confirmed<br/>unica per auto-join (D5)]
 ```
 
 ### 6.3 Apertura e chiusura round
 
-*In sviluppo: via CLI (`round:open`, `round:close [--force --reason]`). In produzione: automatico dallo Scheduler alla finestra del TC (deadline = inizio prima partita − anticipo, PRD §5.3). Il **primo TT si apre all'apertura del torneo** (RF-23). La registrazione del pick e la bruciatura della squadra avvengono **all'invio valido** (sez. 6.2, PRD §4.3): la chiusura **consolida** soltanto lo stato (elimina i profili senza pick, invia notifiche) e non registra nulla; la contabilizzazione è invocata separatamente (sez. 6.4). La chiusura può essere **forzata** dal commissioner (`round:close --force --reason <motivo>`, RF-29) o applicata in **sicurezza** allo scadere del TC se la deadline è NULL/non innescata (RF-30, log `safety_close`); l'istante di accettazione dei pick è `min(deadline registrata, kickoff effettivo)` (RF-31). Tutte le email portano la coppia **TT/TC** (RF-25).*
+*In sviluppo: via CLI (`round:open`, `round:close [--force --reason]`). In produzione: automatico dallo Scheduler alla finestra del TC (deadline = inizio prima partita − anticipo, PRD §5.3). Il **primo TT si apre all'apertura del torneo** (RF-23) e all'avvio parte il broadcast `tournament_open` a **tutti gli iscritti attivi** della piattaforma (RF-P6, sostituisce l'invito a una lista di contatti). La registrazione del pick e la bruciatura della squadra avvengono **all'invio valido** (sez. 6.2, PRD §4.3): la chiusura **consolida** soltanto lo stato (elimina i profili senza pick, notifica `pick_missing_elimination` ai soli account `active`) e non registra nulla; la contabilizzazione è invocata separatamente (sez. 6.4). La chiusura può essere **forzata** dal commissioner (`round:close --force --reason <motivo>`, RF-29) o applicata in **sicurezza** allo scadere del TC se la deadline è NULL/non innescata (RF-30, log `safety_close`); l'istante di accettazione dei pick è `min(deadline registrata, kickoff effettivo)` (RF-31). Tutte le email portano la coppia **TT/TC** (RF-25) e sono filtrate sullo stato `active` dell'account al momento dell'invio (RF-P6).*
 
 ```mermaid
 flowchart TD
     A["Trigger: round:open<br/>(TT1: apertura torneo)"] --> B[Round Manager]
-    B --> C[Carica profili attivi]
+    B --> C[Carica profili attivi<br/>eliminated = 0]
     B --> D[Determina deadline<br/>Season Data Provider]
     B --> E[Per ogni profilo:<br/>calcola squadre disponibili]
-    E --> F[LLM Generator<br/>coppia TT/TC nel contesto]
-    F --> G[SMTP Client]
-    G --> H[Email a ogni profilo]
+    E --> F[Filtro account piattaforma:<br/>solo active (RF-P6)]
+    F --> G[LLM Generator<br/>coppia TT/TC nel contesto]
+    G --> H[SMTP Client]
+    H --> I[Email pick a ogni<br/>partecipante attivo]
 
-    I["Trigger chiusura:<br/>deadline scaduta<br/>| round:close --force --reason<br/>| safety close (deadline NULL)"] --> J{Round Manager<br/>per ogni profilo attivo}
-    J -->|Pick presente| K[Pick già registrato<br/>all'invio valido (6.2)]
-    J -->|Pick mancante| L[Elimina profilo + notifica]
-    K --> M[Notifica riepilogo]
+    J["Trigger chiusura:<br/>deadline scaduta<br/>| round:close --force --reason<br/>| safety close (deadline NULL)"] --> K{Round Manager<br/>per ogni profilo attivo}
+    K -->|Pick presente| L[Pick già registrato<br/>all'invio valido (6.2)]
+    K -->|Pick mancante| M[Elimina profilo + notifica<br/>pick_missing_elimination<br/>solo account active]
 ```
+
+**Broadcast di apertura torneo (`tournament:start`, RF-P6).** Dopo le scritture atomiche di avvio, il comando legge `activeEmails()` dal **Platform Registry** e invia `tournament_open` a tutti gli iscritti attivi (canale+generatore iniettati; no-op se assenti). Un account `unsubscribed`/`pending_unsubscribe` non riceve alcuna email.
 
 ### 6.4 Contabilizzazione
 
@@ -304,9 +343,13 @@ flowchart TD
     J --> K
     K -->|No| L["Round resta closed<br/>(prossimo tick)"]
     K -->|"Sì"| M[Round -> scored]
-    M --> N[Winner Engine<br/>torneo finito?]
-    N --> O[Email riepilogo]
+    M --> N{summary_sent = 0?<br/>transizione closed→scored}
+    N -->|sì| O[Email round_closed_survived<br/>SOLO ai sopravvissuti<br/>eliminated = 0, account active]
+    N -->|no| O2[nessun riepilogo<br/>(idempotente)]
+    M --> P[Winner Engine<br/>torneo finito?]
 ```
+
+**Riepilogo di chiusura round (RF-P6).** Alla transizione `closed → scored` — e solo lì, con guardia `round_state.summary_sent` per l'invio **unica volta** (le riaperture di `round:score` non rinviano) — il sistema invia `round_closed_survived` **ai soli sopravvissuti** (`eliminated = 0`) con account piattaforma `active`. Gli eliminati ricevono **solo** le notifiche puntuali: `pick_missing_elimination` (alla chiusura) e `round_result_wrong` (alla contabilizzazione); l'eliminazione a posteriori da Freeze produce **solo** `round_result_wrong`, nessun riepilogo. Non esiste alcun `round_closed_eliminated` né alcun criterio `eliminated_at >= opened_at`.
 
 **Nota sul rinvio:** la classificazione "dentro/fuori finestra" è deterministica e dipende solo dal calendario programmato e dalla data di recupero (PRD §5.4, RNF7). Il TC close non è il trigger della contabilizzazione: è la finestra di riferimento per le decisioni sui rinvii (ADR-003).
 
@@ -336,10 +379,12 @@ sequenceDiagram
     participant S as Il Sistema
     participant R as Risultati Serie A
     G->>S: "Roma, vince" (email)
-    alt Profilo non iscritto — finestra TT 1 (RF-27)
-        S->>S: auto-iscrizione atomica: crea profilo + valida il pick
-    else Profilo non iscritto — dal TT 2 (RF-24)
-        S-->>G: rifiuto: torneo iniziato, nessuna registrazione
+    alt Iscritto senza profilo — TT 1 (RF-P5)
+        S->>S: auto-join atomico: crea profilo + valida il pick
+    else Iscritto senza profilo — dal TT 2
+        S-->>G: rifiuto: torneo iniziato, nessun profilo creato
+    else Mittente non iscritto (RF-P4)
+        S->>S: log interno, nessuna risposta (anti-spam)
     end
     S->>S: valida: squadra in giornata, esito valido, squadra non usata, entro min(deadline, kickoff effettivo)
     alt Pick valido
@@ -482,7 +527,7 @@ Allineate al PRD §13: le decisioni già acquisite non compaiono più come apert
 
 | Documento | Ruolo |
 |-----------|-------|
-| [PRD](POC_PRD.md) v0.5.2 | Requisiti di prodotto: regole, RF, CL, CS, metriche |
+| [PRD](POC_PRD.md) v0.6.0 | Requisiti di prodotto: regole, RF, CL, CS, metriche |
 | [LLD](POC_LLD.md) | Design di dettaglio: modello dati, interfacce TS, CLI, configurazione, test |
-| [ADR](../decisions/architecture-decisions.md) | Decisioni architetturali registrate (ADR-001…008) |
+| [ADR](../decisions/architecture-decisions.md) | Decisioni architetturali registrate (ADR-001…009) |
 | `docs/reviews/2026-08-11/architecture-review-2026-08-11.md` | Revisione architetturale indipendente (fix in §16, domande PO §15) |

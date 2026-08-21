@@ -11,24 +11,24 @@
  * chiarire al prompt la lega sintetica (mai mischiare Serie A e B, CS7).
  *
  * Doppia barriera (D2/C): il filtro deterministico esatto (squadra non nella
- * lista → null) vive QUI (confine I/O: nessun nome spurio esce dall'I/O); il
- * check del Game Engine (Pick Processor, passo 2 della cascata → motivo
- * `unknown_team`) resta come seconda barriera di difesa in profondità.
+ * lista → null) vive nel classificatore di intento (confine I/O: nessun nome
+ * spurio esce dall'I/O); il check del Game Engine (Pick Processor, passo 2
+ * della cascata → motivo `unknown_team`) resta come seconda barriera di
+ * difesa in profondità.
  *
  * Contratto d'errore (D3): null SOLO per contenuto ambiguo/irriconoscibile/
  * malformato (mai eccezioni, CS7); `LLMError` (src/llm/errors.ts) per
  * trasporto/HTTP/timeout (rilanciata dal client). Lista vuota → null
  * deterministico senza chiamare l'API.
  *
- * Prompt di sistema: ruolo + lista canonica + contenuto aliases + istruzione
- * "team DEVE essere esattamente un nome della lista; se ambiguo/assente →
- * {"team": null}" + "mai inventare nomi". Output vincolato con `response_format
- * json_object` e validato con zod.
+ * ADR-009 (piano Task 6): l'estrazione è delegata al classificatore di
+ * intento (`src/llm/intent-classifier.ts`) — intento + pick in UNA chiamata
+ * LLM con output vincolato `json_object` e validazione zod — e il Parser
+ * espone il solo contratto storico `extractPick` per `llm:parse`.
  */
 import { readFile } from 'node:fs/promises';
 
-import { z } from 'zod';
-
+import { OpenAIIntentClassifier } from './intent-classifier.js';
 import { OpenAIClient } from './openai-client.js';
 
 /** Esito dell'estrazione: nome CANONICO della squadra + esito previsto. */
@@ -57,12 +57,6 @@ export interface LLMParser {
   extractPick(emailBody: string, opts: PickParseOptions): Promise<PickExtraction | null>;
 }
 
-/** Schema zod dell'output LLM: team/outcome nullable (l'assenza è "ambiguo"). */
-const extractionSchema = z.object({
-  team: z.string().nullable(),
-  outcome: z.enum(['win', 'draw', 'lose']).nullable()
-});
-
 /** Percorso della risorsa alias di PRODUZIONE (Serie A 2025/26, legata all'API). */
 const PROD_ALIASES_URL = new URL('./team-aliases.md', import.meta.url);
 /** Percorso della risorsa alias SINTETICA (Serie B, test-only, NON legata all'API). */
@@ -83,6 +77,12 @@ export async function loadTeamAliasesFor(testMode: boolean): Promise<string> {
  * Compone il prompt di sistema del Parser: ruolo, istruzioni sul formato,
  * lista canonica iniettata, contenuto aliases iniettato, vincoli (esatto nome
  * della lista, mai inventare, null su ambiguo). Funzione pura (testabile).
+ *
+ * Nota (ADR-009, piano Task 6): il prompt effettivamente usato dall'estrazione
+ * è ora quello del classificatore di intento (`buildClassifySystemPrompt`,
+ * src/llm/intent-classifier.ts — intento + pick in UNA chiamata LLM): il
+ * Parser ne riusa l'implementazione e questa funzione resta SOLO come helper
+ * documentale/di test del formato di estrazione storico.
  */
 export function buildParseSystemPrompt(opts: PickParseOptions): string {
   const list = opts.teams.map((t, i) => `${i + 1}. ${t}`).join('\n');
@@ -119,50 +119,33 @@ export function buildParseSystemPrompt(opts: PickParseOptions): string {
 /**
  * Implementazione POC del Parser via API OpenAI-compatibile (client condiviso).
  * Nessun accesso a DB/stato/config: il client è iniettato dal chiamante.
+ *
+ * RIUSA internamente il classificatore di intento (ADR-009, piano Task 6):
+ * l'estrazione del pick è delegata a `OpenAIIntentClassifier` (intento + pick
+ * in UNA chiamata LLM con filtro deterministico esatto) e qui viene esposto
+ * solo il contratto storico `extractPick` per `llm:parse` e i chiamanti
+ * esistenti — nessuna duplicazione della logica di estrazione.
  */
 export class OpenAIParser implements LLMParser {
-  private readonly client: OpenAIClient;
+  private readonly classifier: OpenAIIntentClassifier;
 
   constructor(client: OpenAIClient) {
-    this.client = client;
+    this.classifier = new OpenAIIntentClassifier(client);
   }
 
   /**
-   * Estrae il pick: prompt di sistema (lista+alias iniettati) + testo email →
-   * JSON validato con zod → filtro deterministico esatto. Contenuto ambiguo/
-   * malformato → null (mai eccezioni, CS7); lista vuota → null senza chiamare
-   * l'API; errori di trasporto/HTTP → LLMError rilanciata (D3).
+   * Estrae il pick delegando al classificatore: contenuto ambiguo/malformato
+   * → null (mai eccezioni, CS7); errori di trasporto/HTTP → LLMError
+   * rilanciata (D3). Lista squadre vuota (es. DB senza dati stagione) → null
+   * deterministico SENZA chiamare l'API: senza nomi canonici nessun pick è
+   * estraibile, quindi la chiamata sarebbe inutile (contratto storico del
+   * parser; la classificazione degli intenti di piattaforma — subscribe/
+   * unsubscribe — vive nel classificatore, che invece chiama SEMPRE l'LLM
+   * per non inghiottire quei flussi, vedi src/llm/intent-classifier.ts).
    */
   async extractPick(emailBody: string, opts: PickParseOptions): Promise<PickExtraction | null> {
-    // Lista vuota (es. DB senza dati stagione): esito null deterministico, nessuna chiamata API.
     if (opts.teams.length === 0) return null;
-
-    const raw = await this.client.chatCompletion(
-      { system: buildParseSystemPrompt(opts), user: emailBody },
-      'json_object'
-    );
-
-    return this.parseExtraction(raw, opts.teams);
-  }
-
-  /**
-   * Valida il testo restituito dall'LLM: JSON → zod → filtro esatto sulla
-   * lista canonica. Qualsiasi scostamento (JSON malformato, campi mancanti,
-   * nome fuori lista, esito invalido) → null senza eccezioni (CS7).
-   */
-  private parseExtraction(raw: string, teams: string[]): PickExtraction | null {
-    let data: unknown;
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      return null;
-    }
-    const parsed = extractionSchema.safeParse(data);
-    if (!parsed.success) return null;
-    const { team, outcome } = parsed.data;
-    // Filtro deterministico esatto (D2): solo nomi canonici; l'LLM propone, il check dispone.
-    if (team === null || outcome === null) return null;
-    if (!teams.includes(team)) return null;
-    return { team, outcome };
+    const result = await this.classifier.classify(emailBody, opts);
+    return result.pick;
   }
 }

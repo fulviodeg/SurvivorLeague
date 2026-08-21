@@ -22,9 +22,6 @@ import {
   tournamentExportCommand,
   tournamentHistoryCommand,
   tournamentLeaderboardCommand,
-  tournamentRegisterCloseCommand,
-  tournamentRegisterCommand,
-  tournamentRegisterOpenCommand,
   tournamentStartCommand,
   tournamentStatusCommand
 } from './commands/tournament.js';
@@ -34,7 +31,7 @@ import {
   rulesCheckHalfCommand
 } from './commands/rules.js';
 import { winnerCheckCommand } from './commands/winner.js';
-import { llmGenerateCommand, llmParseCommand } from './commands/llm.js';
+import { llmClassifyCommand, llmGenerateCommand, llmParseCommand } from './commands/llm.js';
 import {
   channelEmailFetchCommand,
   channelEmailProcessCommand,
@@ -42,12 +39,19 @@ import {
 } from './commands/channel.js';
 import { simulateFullCommand, simulateRoundCommand } from './commands/simulate.js';
 import { schedulerStatusCommand, schedulerTickCommand } from './commands/scheduler.js';
+import {
+  platformListCommand,
+  platformMigrateCommand,
+  platformRegisterCommand,
+  platformUnregisterCommand
+} from './commands/platform.js';
 
 /**
  * Registrazione dei comandi CLI (LLD §7).
- * Registrati: setup e dati stagione (db:migrate, data:*), Game Engine
- * (rules:*, pick:*, elimination:*, winner:*, round:*, tournament:*), LLM
- * Adapter (llm:parse, llm:generate — Fase 5), Channel Adapter
+ * Registrati: setup e dati stagione (db:migrate, platform:migrate, data:*),
+ * Game Engine (rules:*, pick:*, elimination:*, winner:*, round:*,
+ * tournament:*), Piattaforma (platform:*, ADR-009), LLM Adapter (llm:parse,
+ * llm:generate, llm:classify — Fase 5/8), Channel Adapter
  * (channel:email:fetch/process/send — Fase 6), Simulazione (simulate:full,
  * simulate:round) e Scheduler (scheduler:tick, scheduler:status — Fase 7).
  * Ogni comando vive in src/cli/commands/ e segue il pattern consolidato
@@ -58,6 +62,10 @@ export function createCli(argv: string[] = hideBin(process.argv)) {
     .scriptName('survivor')
     .usage('Survivor League — CLI di amministrazione della POC')
     .command(dbMigrateCommand)
+    .command(platformMigrateCommand)
+    .command(platformRegisterCommand)
+    .command(platformUnregisterCommand)
+    .command(platformListCommand)
     .command(dataImportCommand)
     .command(dataRefreshCommand)
     .command(dataCalendarCommand)
@@ -82,10 +90,8 @@ export function createCli(argv: string[] = hideBin(process.argv)) {
     .command(tournamentHistoryCommand)
     .command(tournamentLeaderboardCommand)
     .command(tournamentExportCommand)
-    .command(tournamentRegisterOpenCommand)
-    .command(tournamentRegisterCloseCommand)
-    .command(tournamentRegisterCommand)
     .command(llmParseCommand)
+    .command(llmClassifyCommand)
     .command(llmGenerateCommand)
     .command(channelEmailFetchCommand)
     .command(channelEmailProcessCommand)

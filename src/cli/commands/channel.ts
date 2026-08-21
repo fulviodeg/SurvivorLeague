@@ -22,9 +22,10 @@ import { getConfig } from '../../config.js';
 import { DbSeasonDataProvider } from '../../data/db-provider.js';
 import { createConnection } from '../../db/connection.js';
 import { migrate } from '../../db/schema.js';
+import { migratePlatform } from '../../db/platform-schema.js';
+import { DbPlatformRegistry } from '../../platform/registry.js';
 import { createLogger } from '../../logger.js';
 import { processEmailBatch } from '../../channel/email-processor.js';
-import { normalizeEmail } from '../../channel/email-adapter/message-router.js';
 import { buildEmailComponents } from '../email-wiring.js';
 import { loadTeamAliasesFor } from '../../llm/parser.js';
 import { makeNow } from '../../clock.js';
@@ -114,27 +115,36 @@ export const channelEmailProcessCommand: CommandModule<object, JsonArg> = {
   handler: async (argv) => {
     const config = getConfig();
     const db = createConnection(config.DB_PATH);
+    const platformDb = createConnection(config.PLATFORM_DB_PATH);
     const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode);
     try {
+      // Migra ENTRAMBI i DB (ADR-009): torneo + piattaforma.
       migrate(db);
+      migratePlatform(platformDb);
       const provider = new DbSeasonDataProvider(db);
-      const { channel, generator, parser } = buildEmailComponents(config);
+      const platform = new DbPlatformRegistry(platformDb);
+      const { channel, generator, classifier } = buildEmailComponents(config);
 
-      // Dati letti UNA VOLTA per batch (M): lista canonica + alias (D7: risorsa
-      // sintetica in test mode) + mittenti noti.
+      // Dati letti UNA volta per batch (M): lista canonica + alias (D7: risorsa
+      // sintetica in test mode). I mittenti NON sono più uno snapshot: lo stato
+      // dell'account è riletto dal registry a ogni messaggio (HIGH-2, ADR-009).
       const teams = await provider.getTeams();
       const aliases = await loadTeamAliasesFor(config.testMode);
-      const knownEmails = new Set(
-        (db.prepare('SELECT email FROM player').all() as Array<{ email: string }>).map((r) =>
-          normalizeEmail(r.email)
-        )
-      );
 
       const messages = await channel.fetchMessages();
       const result = await processEmailBatch(
-        { db, dataProvider: provider, config, now: makeNow(config), channel, generator, parser },
+        {
+          db,
+          dataProvider: provider,
+          config,
+          now: makeNow(config),
+          channel,
+          generator,
+          classifier,
+          platform
+        },
         messages,
-        { teams, aliases, knownEmails, markSeen: (m) => channel.markSeen(m), logger, testMode: config.testMode }
+        { teams, aliases, markSeen: (m) => channel.markSeen(m), logger, testMode: config.testMode }
       );
 
       if (argv.json) {
@@ -152,6 +162,7 @@ export const channelEmailProcessCommand: CommandModule<object, JsonArg> = {
       }
     } finally {
       db.close();
+      platformDb.close();
     }
   }
 };

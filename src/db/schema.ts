@@ -2,8 +2,9 @@
  * Schema del database (DDL di LLD §3) e migrazione.
  *
  * Ruolo: definisce l'intero modello dati della POC — player, profile (con
- * eliminated_at/eliminated_reason, decisione 10 del piano), pick, match,
- * round_state, tournament_state (con start_round, ADR-008) — e lo applica
+ * eliminated_at/eliminated_reason, decisione 10 del piano, e register_id
+ * replicato, ADR-009), pick, match, round_state (con summary_sent, RF-P6),
+ * tournament_state (con start_round, ADR-008) — e lo applica
  * con migrate(). I vincoli applicativi (squadre bruciate per girone,
  * deadline, freeze, guard anti-frode RF-31) NON vivono qui: sono gestiti
  * dal Game Engine (LLD §3.1).
@@ -25,17 +26,19 @@ import type Database from 'better-sqlite3';
 export const SCHEMA_DDL = `
 -- Giocatore (persona reale)
 CREATE TABLE IF NOT EXISTS player (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  email      TEXT NOT NULL UNIQUE,
-  name       TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  email       TEXT NOT NULL UNIQUE,
+  name        TEXT,
+  register_id INTEGER,  -- riferimento REPLICATO all'account piattaforma (ADR-009, RF-P7)
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Profilo (iscrizione al torneo)
--- Nella PoC: 1 profilo per giocatore
+-- Profilo (partecipazione al torneo)
+-- Nella PoC: 1 profilo per giocatore; nasce per AUTO-JOIN al primo pick valido nel TT 1 (RF-P5)
 CREATE TABLE IF NOT EXISTS profile (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   player_id         INTEGER NOT NULL UNIQUE REFERENCES player(id),
+  register_id       INTEGER,  -- riferimento REPLICATO all'account piattaforma (RF-P7, come player)
   eliminated        INTEGER NOT NULL DEFAULT 0,
   eliminated_at     TEXT,  -- timestamp dell'eliminazione (ISO 8601), NULL se in gara
   eliminated_reason TEXT CHECK (eliminated_reason IN ('missing_pick', 'wrong_pick')),
@@ -69,25 +72,27 @@ CREATE TABLE IF NOT EXISTS match (
 
 -- Stato round
 CREATE TABLE IF NOT EXISTS round_state (
-  round      INTEGER PRIMARY KEY,
-  status     TEXT NOT NULL CHECK (status IN ('pending', 'open', 'closed', 'scored')),
-  deadline   TEXT,
-  opened_at  TEXT,
-  closed_at  TEXT,
-  scored_at  TEXT
+  round         INTEGER PRIMARY KEY,
+  status        TEXT NOT NULL CHECK (status IN ('pending', 'open', 'closed', 'scored')),
+  deadline      TEXT,
+  opened_at     TEXT,
+  closed_at     TEXT,
+  scored_at     TEXT,
+  summary_sent  INTEGER NOT NULL DEFAULT 0  -- riepilogo round_closed_survived inviato UNA volta
+                                            -- alla transizione closed→scored (RF-P6, ADR-009)
 );
 
 -- Stato del torneo (riga singola nell'istanza: PoC monoutente)
--- Gestisce la finestra di iscrizione (PRD §4.1, US7/US8), l'avvio della
--- stagione (US6) e l'aggancio del torneo a un TC arbitrario (ADR-008, RF-20)
+-- Gestisce l'avvio della stagione (US6) e l'aggancio del torneo a un TC
+-- arbitrario (ADR-008, RF-20). registration_open/registration_notified sono
+-- DEPRECATE (ADR-009): non esiste più una finestra di iscrizione.
 CREATE TABLE IF NOT EXISTS tournament_state (
   id                INTEGER PRIMARY KEY CHECK (id = 1),
   season_started    INTEGER NOT NULL DEFAULT 0,  -- stagione avviata (operazioni preliminari concluse, US6)
-  registration_open INTEGER NOT NULL DEFAULT 0,  -- finestra di iscrizione aperta: si accettano iscrizioni automatiche;
-                                                 -- si chiude da sola alla deadline del TT1 (RF-22) o per chiusura forzata (RF-28)
+  registration_open INTEGER NOT NULL DEFAULT 0,  -- DEPRECATA (ADR-009): resta per compatibilità dello schema
   start_round       INTEGER,                     -- TC di aggancio del torneo (NULL = TC 1 legacy, ADR-008);
                                                  -- da esso si deriva TT = TC - start_round + 1 (RF-20, RF-25)
-  registration_notified INTEGER NOT NULL DEFAULT 0 -- invito all'iscrizione inviato una sola volta (tournament:register:open, US7)
+  registration_notified INTEGER NOT NULL DEFAULT 0 -- DEPRECATA (ADR-009): non più letta/scritta
 );
 `;
 
@@ -115,6 +120,32 @@ export function applyAdditiveMigrations(db: Database.Database): void {
     db.exec(
       'ALTER TABLE tournament_state ADD COLUMN registration_notified INTEGER NOT NULL DEFAULT 0'
     );
+  }
+
+  // register_id su player: riferimento REPLICATO all'account piattaforma
+  // (ADR-009, RF-P7) — colonna additiva senza vincoli cross-DB.
+  const playerColumns = (db.prepare('PRAGMA table_info(player)').all() as Array<{
+    name: string;
+  }>).map((c) => c.name);
+  if (!playerColumns.includes('register_id')) {
+    db.exec('ALTER TABLE player ADD COLUMN register_id INTEGER');
+  }
+
+  // register_id su profile: come sopra (RF-P7).
+  const profileColumns = (db.prepare('PRAGMA table_info(profile)').all() as Array<{
+    name: string;
+  }>).map((c) => c.name);
+  if (!profileColumns.includes('register_id')) {
+    db.exec('ALTER TABLE profile ADD COLUMN register_id INTEGER');
+  }
+
+  // summary_sent su round_state: guardia del riepilogo round_closed_survived
+  // (RF-P6, ADR-009) — invio UNA volta alla transizione closed→scored.
+  const roundColumns = (db.prepare('PRAGMA table_info(round_state)').all() as Array<{
+    name: string;
+  }>).map((c) => c.name);
+  if (!roundColumns.includes('summary_sent')) {
+    db.exec('ALTER TABLE round_state ADD COLUMN summary_sent INTEGER NOT NULL DEFAULT 0');
   }
 }
 

@@ -23,7 +23,11 @@
  *     la cui partita ORA ha punteggio (→ `correct`/`wrong`, eliminazione a
  *     posteriori — anche su round già `scored`, LLD §1.4). Il round passa a
  *     `scored` quando non restano `pending` (RF-16; i `frozen` sono terminali
- *     per il TT). Idempotente (RF-17).
+ *     per il TT). Idempotente (RF-17). Alla transizione `closed→scored` invia
+ *     il riepilogo ai sopravvissuti con account `active` (RF-P6): la guardia
+ *     `summary_sent` è scritta atomicamente INSIEME allo stato (B2, decisione
+ *     (b)) e l'invio è best-effort per destinatario (fallimenti loggati con
+ *     warn pino in inglese, la contabilizzazione non fallisce).
  *   - `round:status` / `round:deadline` — sola lettura; espongono la coppia
  *     TT/TC derivata (RF-25) e, per deadline, ENTRAMBE le sorgenti temporali
  *     (deadline registrata + kickoff effettivo = istante di accettazione RF-31).
@@ -49,6 +53,7 @@ interface RoundStateRow {
   opened_at: string | null;
   closed_at: string | null;
   scored_at: string | null;
+  summary_sent: number;
 }
 
 /** Riga `pick` letta dal DB. */
@@ -66,6 +71,23 @@ interface ActiveProfile {
   id: number;
   email: string;
   playerName: string;
+}
+
+/**
+ * L'account piattaforma dell'email è `active`? (ADR-009, RF-P6): ogni
+ * notifica di round è filtrata sullo stato dell'account al momento
+ * dell'invio — `unsubscribed` e `pending_unsubscribe` non ricevono alcuna
+ * email. Senza registry iniettato nel contesto il filtro FALLISCE CHIUSO
+ * (B3, decisione (c)): ritorna `false` e le notifiche NON partono — nessun
+ * bypass silenzioso, simmetria con `checkEligibility`
+ * (`platform_unavailable`). Tutte le CLI reali che inviano email
+ * (`round:*`, `tournament:start`) iniettano già il registry, quindi il
+ * comportamento di produzione non cambia.
+ */
+function isAccountActive(ctx: GameContext, email: string): boolean {
+  if (ctx.platform === undefined) return false;
+  const account = ctx.platform.find(email);
+  return account !== null && account.status === 'active';
 }
 
 /** Esito di `round:open`. */
@@ -146,7 +168,9 @@ export interface RoundDeadlineResult {
 /** Legge la riga round_state (undefined se il round non è mai stato aperto). */
 function getRoundState(db: Database.Database, round: number): RoundStateRow | undefined {
   return db
-    .prepare('SELECT round, status, deadline, opened_at, closed_at, scored_at FROM round_state WHERE round = ?')
+    .prepare(
+      'SELECT round, status, deadline, opened_at, closed_at, scored_at, summary_sent FROM round_state WHERE round = ?'
+    )
     .get(round) as RoundStateRow | undefined;
 }
 
@@ -164,13 +188,16 @@ function getActiveProfiles(db: Database.Database): ActiveProfile[] {
 }
 
 /**
- * Invia una notifica email via ChannelAdapter+LLMGenerator iniettati. Se uno dei
- * due manca (CLI di Fase 3) è un no-op: le email reali arrivano nelle Fasi 5–6
- * (briefing §6.5). Restituisce true se l'email è stata effettivamente inviata.
- * Il soggetto è composto deterministicamente con `subjectFor` (D1, RF-25).
+ * Invia una notifica email via ChannelAdapter+LLMGenerator iniettati, SOLO se
+ * l'account piattaforma del destinatario è `active` (RF-P6, ADR-009). Se uno
+ * dei componenti manca (CLI di Fase 3) è un no-op: le email reali arrivano
+ * nelle Fasi 5–6 (briefing §6.5). Restituisce true se l'email è stata
+ * effettivamente inviata. Il soggetto è composto deterministicamente con
+ * `subjectFor` (D1, RF-25).
  */
 async function notify(ctx: GameContext, to: string, emailCtx: EmailContext): Promise<boolean> {
   if (ctx.channel === undefined || ctx.generator === undefined) return false;
+  if (!isAccountActive(ctx, to)) return false;
   const body = await ctx.generator.generate(emailCtx);
   await ctx.channel.sendMessage(to, body, subjectFor(emailCtx));
   return true;
@@ -304,7 +331,12 @@ export async function closeRound(
  * senza punteggio → frozen se oltre tcClose (CL1/CL8), altrimenti resta pending
  * (CL7); frozen con punteggio ora disponibile → valutato (anche su round già
  * scored, LLD §1.4). Il round passa a `scored` quando non restano pending
- * (RF-16; i frozen sono terminali per il TT).
+ * (RF-16; i frozen sono terminali per il TT). La transizione a `scored` e la
+ * guardia `summary_sent` sono scritte in UN'UNICA istruzione UPDATE (B2,
+ * decisione (b)): non esiste mai `scored` con summary_sent=0. L'invio del
+ * riepilogo che segue è BEST-EFFORT per destinatario (vedi blocco 3): un
+ * errore SMTP/LLM viene loggato con warn pino in inglese via `ctx.logger`
+ * (quando iniettato) e NON fa fallire la contabilizzazione.
  */
 export async function scoreRound(ctx: GameContext, round: number): Promise<RoundScoreResult> {
   const { db, dataProvider, config, now } = ctx;
@@ -406,11 +438,49 @@ export async function scoreRound(ctx: GameContext, round: number): Promise<Round
   const rs = getRoundState(db, round);
   let status = rs?.status ?? 'unknown';
   if (rs !== undefined && rs.status === 'closed' && remainingPending === 0) {
-    db.prepare("UPDATE round_state SET status = 'scored', scored_at = ? WHERE round = ?").run(
-      now.toISOString(),
-      round
-    );
+    // B2 (decisione (b)): transizione a `scored` e guardia `summary_sent`
+    // scritte INSIEME, in un'unica istruzione UPDATE, PRIMA del loop di invio
+    // del riepilogo. Prima di questa correzione `scored_at` era scritto prima
+    // del loop e `summary_sent=1` DOPO: un'eccezione durante l'invio lasciava
+    // il round `scored` con summary_sent=0 e il riepilogo perso per sempre
+    // (le riaperture saltano il blocco perché lo stato non è più `closed`).
+    // Ora lo stato intermedio non esiste: la guardia non si perde MAI.
+    db.prepare(
+      "UPDATE round_state SET status = 'scored', scored_at = ?, summary_sent = 1 WHERE round = ?"
+    ).run(now.toISOString(), round);
     status = 'scored';
+    // RF-P6 (ADR-009): riepilogo `round_closed_survived` SOLO alla transizione
+    // closed→scored e UNA SOLA volta — la guardia È la transizione stessa: lo
+    // stato passa a `scored` nell'UPDATE atomico sopra, quindi le riaperture
+    // di round:score saltano l'intero blocco (nessun check separato su
+    // summary_sent: vale 0 per OGNI riga in stato `closed`, è scritta a 1
+    // solo insieme a `scored`). Destinatari: SOLO i sopravvissuti
+    // (eliminated = 0) con account piattaforma `active` (filtro in notify).
+    // BEST-EFFORT per destinatario (B2, decisione (b)): ogni invio è avvolto
+    // in try/catch — un errore SMTP/LLM su un destinatario viene loggato con
+    // warn pino in INGLESE (via `ctx.logger`, quando iniettato dalla CLI) e il
+    // loop continua coi destinatari successivi; `scoreRound` risolve
+    // normalmente anche con invii falliti. Il fallimento NON viene ritentato
+    // (trade-off POC accettato, rischio §8 del piano): resta visibile nei log.
+    const survivors = getActiveProfiles(db);
+    for (const survivor of survivors) {
+      try {
+        await notify(ctx, survivor.email, {
+          type: 'round_closed_survived',
+          playerName: survivor.playerName,
+          tt,
+          tc
+        });
+      } catch (error) {
+        ctx.logger?.warn(
+          {
+            email: survivor.email,
+            error: error instanceof Error ? error.message : String(error)
+          },
+          `round:score: summary not sent to ${survivor.email} — continuing (best-effort)`
+        );
+      }
+    }
   }
 
   return { round, tt, tc, status, evaluated, newlyFrozen, newlyEliminated };

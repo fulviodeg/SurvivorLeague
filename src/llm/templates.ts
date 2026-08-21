@@ -1,11 +1,15 @@
 /**
- * Template di sistema del LLM Generator (LLD §6.3, piano Task 5.2; briefing
- * Fase 5-6 §3, D4/D9).
+ * Template di sistema del LLM Generator (LLD §6.3 v0.5.0, piano Task 5.2;
+ * briefing Fase 5-6 §3, D4/D9; ADR-009).
  *
- * Ruolo: testi STATICI in italiano per ogni `EmailType` (12 tipi, incluso
- * `auto_registered` — D5). Ogni template è un prompt di sistema che istruisce
- * l'LLM su tono, uso dei campi di contesto (arrivano nel messaggio utente,
- * serializzati da `serializeEmailContext`) e vincoli di output.
+ * Ruolo: testi STATICI in italiano per ogni `EmailType` (15 tipi, allineati
+ * ad ADR-009: entrano `platform_registered`, `platform_unsubscribe_confirm`,
+ * `platform_unsubscribed`, `platform_already_registered`, `tournament_open`,
+ * `round_closed_survived`; escono `welcome`, `registration_open_invite`,
+ * `auto_registered`). Ogni template è
+ * un prompt di sistema che istruisce l'LLM su tono, uso dei campi di contesto
+ * (arrivano nel messaggio utente, serializzati da `serializeEmailContext`) e
+ * vincoli di output.
  *
  * Vincoli (RF-25/ADR-004, D4):
  *   - i numeri TT/TC NON entrano MAI nel prompt: dove serve la coppia il
@@ -42,20 +46,47 @@ const COMMON_HEADER = [
 const ACTION_CLOSING = `\n\nChiudi ricordando al giocatore di inviare la sua scelta prima della scadenza (${TURN_PLACEHOLDER_EXTENDED} se presente).`;
 
 /**
+ * Parole di conferma della barriera unsubscribe (RF-P2, decisione (a)/B1):
+ * UNICA fonte della lista. Il match esatto del Message Processor
+ * (`isUnsubscribeConfirmation`, src/channel/email-processor.ts), il template
+ * `platform_unsubscribe_confirm` (qui sotto) e gli esempi del prompt del
+ * classificatore (src/llm/intent-classifier.ts) derivano tutti da questa
+ * costante: niente copie indipendenti che possono divergere sulla barriera.
+ * Il confronto è ESATTO sul corpo normalizzato (trim, minuscolo).
+ */
+export const UNSUBSCRIBE_CONFIRM_WORDS = ['confermo', 'sì', 'si', 'yes'] as const;
+
+/**
  * Template per ogni tipo di email (LLD §6.3). La chiave DEVE coprire tutti i
  * valori di `EmailType` (garanzia compilativa con Record<EmailType, string>).
  */
 export const EMAIL_TEMPLATES: Record<EmailType, string> = {
-  welcome: `${COMMON_HEADER}
-Scrivi il messaggio di BENVENUTO per un nuovo iscritto: conferma l'iscrizione al torneo,
-spiega in breve il formato del pick (prima di ogni turno si sceglie una squadra tra quelle
-disponibili e un esito: vittoria, pareggio o sconfitta), il limite di una squadra per girone
-e l'invito a inviare la prima scelta${ACTION_CLOSING}`,
+  platform_registered: `${COMMON_HEADER}
+Scrivi la CONFERMA DI ISCRIZIONE alla piattaforma: dai il benvenuto al giocatore, spiega in
+breve il formato del pick (prima di ogni turno si sceglie una squadra tra quelle disponibili
+e un esito: vittoria, pareggio o sconfitta), il limite di una squadra per girone e che per
+partecipare al torneo basta inviare la prima scelta entro la scadenza del primo turno${ACTION_CLOSING}`,
 
-  registration_open_invite: `${COMMON_HEADER}
-Scrivi l'INVITO ad iscriversi al torneo appena aperto: spiega che le iscrizioni sono aperte,
-come si partecipa (basta rispondere con una squadra e un esito nel primo turno) e che
-l'iscrizione chiude alla scadenza del primo turno${ACTION_CLOSING}`,
+  platform_unsubscribe_confirm: `${COMMON_HEADER}
+Scrivi la RICHIESTA DI CONFERMA per la disiscrizione: spiega che per completare la
+disiscrizione dalla piattaforma serve un secondo messaggio di conferma (basta rispondere
+"${UNSUBSCRIBE_CONFIRM_WORDS[0]}" o "${UNSUBSCRIBE_CONFIRM_WORDS[1]}") e che la disiscrizione ferma
+le comunicazioni e i pick, senza toccare lo storico del torneo in corso${ACTION_CLOSING}`,
+
+  platform_unsubscribed: `${COMMON_HEADER}
+Scrivi la CONFERMA DI DISISCRIZIONE: comunica che l'account è stato disiscritto, che non
+riceverà più comunicazioni, che può re-iscriversi in qualunque momento rispondendo a questa
+email con una richiesta di iscrizione, e che lo storico del torneo non è stato cancellato`,
+
+  platform_already_registered: `${COMMON_HEADER}
+Scrivi il messaggio "SEI GIÀ ISCRITTO ALLA PIATTAFORMA": comunica che l'account del giocatore
+è già attivo e che non serve re-iscriversi; spiega che per partecipare al torneo basta
+inviare la prima scelta (squadra + esito) entro la scadenza del primo turno${ACTION_CLOSING}`,
+
+  tournament_open: `${COMMON_HEADER}
+Scrivi l'ANNUNCIO DI APERTURA DEL TORNEO: comunica che il torneo è iniziato, spiega che per
+partecipare basta inviare la propria scelta (squadra + esito) entro la scadenza del primo
+turno (segnaposto), il formato del pick e il limite di una squadra per girone${ACTION_CLOSING}`,
 
   pick_instructions: `${COMMON_HEADER}
 Scrivi le ISTRUZIONI PER IL PICK del turno: elenca le squadre disponibili del giocatore
@@ -93,11 +124,10 @@ Scrivi la NOTIFICA DI PARTITA RINVIATA: la partita della squadra scelta (campo "
 è stata rinviata/sospesa; il pick resta in attesa (Freeze) e sarà valutato quando la
 partita sarà giocata${ACTION_CLOSING}`,
 
-  auto_registered: `${COMMON_HEADER}
-Scrivi il messaggio UNICO di auto-iscrizione (RF-27): il giocatore è stato iscritto
-automaticamente al torneo con la sua prima email; conferma che il pick è stato
-registrato (squadra e esito dal contesto) e spiega brevemente le regole del torneo
-(una squadra per girone, prima della scadenza di ogni turno)${ACTION_CLOSING}`,
+  round_closed_survived: `${COMMON_HEADER}
+Scrivi il RIEPILOGO DI CHIUSURA DEL TURNO per un giocatore SOPRAVVISSUTO: il turno
+(segnaposto) è chiuso e il giocatore resta in gara; ricorda che riceverà le istruzioni
+per la prossima scelta all'apertura del prossimo turno${ACTION_CLOSING}`,
 
   tournament_won: `${COMMON_HEADER}
 Scrivi il messaggio di VITTORIA del torneo: congratulazioni al giocatore, ha vinto

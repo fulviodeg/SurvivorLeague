@@ -6,6 +6,11 @@
  * in-memory (mock solo ai confini esterni): registrano i messaggi e i contesti
  * email per verificare il contratto di notifica (coppia TT/TC iniettata, RF-25).
  *
+ * Il contesto inietta anche un PlatformRegistry su DB piattaforma in-memory
+ * (ADR-009): le notifiche partono SOLO per gli account `active` registrati nel
+ * test (filtro fail-closed, B3/decisione (c) — senza registry nessuna email,
+ * come fanno le CLI reali che lo iniettano sempre).
+ *
  * Copre: idempotenza di round:score (RF-17); CL1/CL7/CL8 (rinvii, fixture);
  * frozen valutato a recupero concluso; chiusura forzata con/senza --reason
  * (RF-29); contabilizzazione incrementale; round → scored solo quando nessun
@@ -18,10 +23,12 @@ import type { ChannelAdapter, IncomingMessage } from '../../src/channel/adapter.
 import { parseConfig } from '../../src/config.js';
 import { DbSeasonDataProvider } from '../../src/data/db-provider.js';
 import { migrate } from '../../src/db/schema.js';
+import { migratePlatform } from '../../src/db/platform-schema.js';
 import type { GameContext } from '../../src/game/context.js';
 import { checkElimination } from '../../src/game/elimination.js';
 import type { EmailContext, LLMGenerator } from '../../src/llm/generator.js';
 import { registerPick } from '../../src/game/pick-processor.js';
+import { DbPlatformRegistry } from '../../src/platform/registry.js';
 import {
   closeRound,
   openRound,
@@ -71,6 +78,8 @@ interface Harness {
   db: Database.Database;
   channel: FakeChannel;
   generator: FakeGenerator;
+  /** Registry account PIATTAFORMA (ADR-009) su DB dedicato in-memory. */
+  platform: DbPlatformRegistry;
   ctxAt: (now: Date) => GameContext;
 }
 
@@ -80,6 +89,12 @@ function makeHarness(): Harness {
   migrate(db);
   loadBaseSeason(db);
   const dataProvider = new DbSeasonDataProvider(db);
+  // DB PIATTAFORMA in-memory dedicato + registry iniettato nel contesto
+  // (ADR-009): senza registry il filtro notifiche fallisce chiuso (B3,
+  // decisione (c)) e nessuna email parte — le CLI reali lo iniettano sempre.
+  const platformDb = new Database(':memory:');
+  migratePlatform(platformDb);
+  const platform = new DbPlatformRegistry(platformDb);
   const config = parseConfig({
     IMAP_USER: 'u',
     IMAP_PASS: 'p',
@@ -99,7 +114,8 @@ function makeHarness(): Harness {
     db,
     channel,
     generator,
-    ctxAt: (now: Date) => ({ db, dataProvider, config, now, channel, generator })
+    platform,
+    ctxAt: (now: Date) => ({ db, dataProvider, config, now, channel, generator, platform })
   };
 }
 
@@ -113,9 +129,13 @@ function insertProfile(db: Database.Database, email: string, name = ''): number 
 
 describe('flusso open → pick → close → score (RF-16)', () => {
   it('apre il round, registra un pick, elimina i mancanti al close e contabilizza', async () => {
-    const { db, channel, generator, ctxAt } = makeHarness();
+    const { db, channel, generator, platform, ctxAt } = makeHarness();
     const a = insertProfile(db, 'a@test.it', 'Aldo');
     const b = insertProfile(db, 'b@test.it', 'Beppe');
+    // Account piattaforma `active` per i due profili (ADR-009/RF-P6): senza
+    // registry o senza account le notifiche non partono (filtro fail-closed).
+    platform.register('a@test.it', T_OPEN);
+    platform.register('b@test.it', T_OPEN);
 
     // OPEN: deadline fissa 15:30; entrambi i profili attivi notificati.
     const opened = await openRound(ctxAt(T_OPEN), 1);
@@ -179,8 +199,9 @@ describe('flusso open → pick → close → score (RF-16)', () => {
   });
 
   it('pick sbagliato → wrong + eliminazione wrong_pick (con notifica)', async () => {
-    const { db, generator, ctxAt } = makeHarness();
+    const { db, generator, platform, ctxAt } = makeHarness();
     const a = insertProfile(db, 'a@test.it');
+    platform.register('a@test.it', T_OPEN); // account active → notifica attesa
     await openRound(ctxAt(T_OPEN), 1);
     await registerPick(ctxAt(T_PICK), {
       profileId: a,
@@ -223,8 +244,9 @@ describe('rinvii: CL7 (entro finestra), CL1/CL8 (oltre tcClose), recupero (froze
   });
 
   it('CL1/CL8: rinviata oltre tcClose → frozen (con notifica pick_postponed)', async () => {
-    const { db, generator, ctxAt } = makeHarness();
+    const { db, generator, platform, ctxAt } = makeHarness();
     const a = insertProfile(db, 'a@test.it');
+    platform.register('a@test.it', T_OPEN); // account active → notifica attesa
     await openRound(ctxAt(T_OPEN), 1);
     await registerPick(ctxAt(T_PICK), {
       profileId: a,

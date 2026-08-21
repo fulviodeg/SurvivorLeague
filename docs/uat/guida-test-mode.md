@@ -204,9 +204,11 @@ cima al corpo il banner `[TEST MODE] This email was sent by a test instance of S
    `.env.uat.example` (copia e compila le credenziali vuote copiandole dal
    `.env` reale: casella Gmail del progetto e chiave LLM). Il file `.env.uat`
    è **escluso dal versionamento** (in `.gitignore`): contiene segreti.
-2. **Predisponi un database dedicato**: `.env.uat` imposta
-   `DB_PATH=./data/uat-synthetic.db` (NON il DB di produzione). La directory
-   `data/` viene creata se manca.
+2. **Predisponi due database dedicati** (torneo e piattaforma): `.env.uat`
+   imposta `DB_PATH=./data/uat-synthetic.db` (DB del **torneo**, NON quello di
+   produzione) e `PLATFORM_DB_PATH=./data/uat-platform.db` (DB degli **account
+   piattaforma**, ADR-009, anch'esso NON quello di produzione
+   `./data/platform.db`). La directory `data/` viene creata se manca.
 3. **Attiva il test mode** anteponendo `ENV_FILE=.env.uat` al comando:
 
    ```bash
@@ -231,7 +233,7 @@ Ci sono due modalità operative, trattate in dettaglio nel §3:
   fase (seed → iscrizioni → avvio → per ogni giornata: apri → raccogli pick →
   chiudi → contabilizza → verifica);
 - **modalità cron** — l'orchestrazione è automatica (lo scheduler apre/chiude/
-  contabilizza le giornate e la finestra di iscrizione in base al calendario).
+  contabilizza le giornate in base al calendario).
 
 ### 2.3 Come si disattiva
 
@@ -251,7 +253,8 @@ unset ENV_FILE
 **FAI:**
 
 - usa un **database dedicato** (`DB_PATH=./data/uat-synthetic.db` o uno di
-  scarto);
+  scarto) e un **DB piattaforma dedicato** (`PLATFORM_DB_PATH=./data/uat-platform.db`,
+  mai `./data/platform.db`);
 - controlla sempre il banner `TEST MODE` a inizio output prima di procedere;
 - alla fine di ogni sessione, **ripulisci la casella Gmail condivisa** dalle
   email di test (vedi §8).
@@ -278,8 +281,10 @@ unset ENV_FILE
 **Avvio del test (una volta):**
 
 ```bash
-# 1. Crea/migra il DB dedicato (idempotente)
+# 1. Crea/migra il DB torneo dedicato (idempotente)
 ENV_FILE=.env.uat npm run cli -- db:migrate
+# 1b. Crea/migra il DB piattaforma dedicato (idempotente, ADR-009)
+ENV_FILE=.env.uat npm run cli -- platform:migrate
 # 2. Genera e carica il calendario sintetico (esempio 2h: vedi §5.1)
 ENV_FILE=.env.uat npm run cli -- data:seed-synthetic --teams 4 --rounds 2 --spacing-min 45 --first-kickoff-offset-min 60 --seed 42
 # 3. Verifica il calendario e il banner TEST MODE
@@ -297,7 +302,7 @@ ENV_FILE=.env.uat npm run cli -- data:calendar
 # Apre la giornata: registra la deadline e invia le email di pick ai profili attivi
 ENV_FILE=.env.uat npm run cli -- round:open --round <N>
 # (i giocatori inviano i pick via email entro la deadline)
-# Processa le email in ingresso (iscrizioni automatiche e pick)
+# Processa le email in ingresso (iscrizioni, disiscrizioni e pick)
 ENV_FILE=.env.uat npm run cli -- channel:email:process
 # Chiude la giornata (auto alla deadline) OPPURE forzata subito (override RF-29):
 ENV_FILE=.env.uat npm run cli -- round:close --round <N> --force --reason "chiusura forzata per test"
@@ -343,13 +348,13 @@ indipendentemente da `SCHEDULER_ENABLED`.
 **Flusso completo (semplificato):**
 
 ```
-db:migrate  →  data:seed-synthetic  →  tournament:register:open [--contacts]
-→  (iscrizioni via email: channel:email:process)  →  tournament:register:close
-→  tournament:start [--start-round <n>]
+db:migrate → platform:migrate → data:seed-synthetic
+→  iscrizioni piattaforma (via email: channel:email:process, o CLI: platform:register)
+→  tournament:start [--start-round <n>]   (invia tournament_open agli iscritti attivi)
 →  per ogni round N:
      round:open --round N  →  channel:email:process  →  round:close --round N [--force --reason]
      →  round:score --round N  →  (verifica: round:status, round:deadline, data:results)
-→  verifica finale: tournament:status / leaderboard / history / export
+→  verifica finale: tournament:status / leaderboard / history / export / platform:list
 ```
 
 **Aggancio asincrono (RF-20).** `tournament:start [--start-round <n>]` avvia
@@ -360,14 +365,54 @@ Dopo l'avvio verifichi l'aggancio con:
 - `tournament:status` → riga `Stagione: avviata (start TC <n>, <N> TC, confine <b>)`;
 - `tournament:history --email <email>` → righe `TTnTCm` (es. `TT1TC3`) per ogni pick.
 
-**Iscrizioni.** Si aprono con `tournament:register:open`; con `--contacts
-"alice@example.com,bob@example.com"` il sistema invia l'invito (una sola volta,
-best-effort). I giocatori possono anche auto-iscriversi rispondendo a un'email
-(iscrizione automatica nel TT1). Per registrare un giocatore a finestra
-già chiusa si usa `tournament:register --email <email> [--name <nome>] --reason
-<motivo>` (override US10, auditato; il `--reason` è obbligatorio a finestra
-chiusa). La chiusura avviene con `tournament:register:close` (senza `--reason`
-= chiusura automatica alla deadline del TT1; con `--reason` = chiusura forzata).
+**Iscrizione alla piattaforma (ADR-009).** Non esiste più una finestra di
+iscrizione da aprire/chiudere: l'iscrizione alla **piattaforma** è **sempre
+disponibile** via email (intento classificato dall'LLM) o via CLI, e la
+**partecipazione al torneo** nasce **da sola al primo pick valido nel TT 1**
+(auto-join, RF-P5):
+
+- **via email:** il giocatore scrive "voglio iscrivermi" → il sistema crea
+  l'account (con un `registerID` stabile, riusato a ogni re-iscrizione) e
+  risponde `platform_registered`; il suo **primo pick valido nel
+  TT1** lo rende partecipante (risposta `pick_confirmed`, nessuna conferma di
+  iscrizione separata);
+- **già iscritto:** un account `active` che riscrive "voglio iscrivermi"
+  riceve la risposta `platform_already_registered` (oggetto "Già iscritto
+  alla piattaforma"), nessun account duplicato;
+- **via CLI (unico comando di creazione account, NON crea profili):**
+  `platform:register --email <email> [--name <nome>] [--reason <motivo>]`;
+- **disiscrizione a due passi (RF-P2):** primo "voglio disiscrivermi" →
+  account `pending_unsubscribe` + email `platform_unsubscribe_confirm`
+  (nessuna cancellazione); la cancellazione effettiva (soft-delete
+  `unsubscribed` + email `platform_unsubscribed`) avviene **solo** quando il
+  **secondo** messaggio ha il body nella lista di conferma
+  (`confermo`/`sì`/`si`/`yes`) — indipendentemente da come l'LLM classifica
+  il messaggio (un "confermo" completa la disiscrizione anche se letto come
+  "non ho capito"); un body NON in lista mantiene `pending_unsubscribe` e
+  richiede di nuovo la conferma; da account già disiscritto o da mittente
+  mai iscritto → nessuna risposta (log interno);
+- **re-iscrizione (RF-P3):** un `subscribe` o un `pick` mentre l'account è
+  `pending_unsubscribe` lo riporta `active`; da `unsubscribed`, una nuova
+  iscrizione riattiva lo **stesso** `registerID` (lo storico torneo non è
+  toccato);
+- **disiscrizione dal commissioner:** `platform:unregister --email <email>
+  [--reason <motivo>]` (soft-delete diretto, il profilo torneo resta intatto);
+- **consultazione:** `platform:list [--json]` (registerID, email, status,
+  date);
+- **anti-spam (RF-P4):** un pick da un mittente non iscritto (mai iscritto o
+  disiscritto) produce solo un log interno, **nessuna risposta**; anche il
+  chiarimento "non ho capito" (intento `other`) parte **solo** verso account
+  `active`: da account `unsubscribed` o `pending_unsubscribe` → nessuna
+  risposta (log interno).
+
+**Matrice notifiche (RF-P6).** Ogni email in uscita va **solo ad account
+`active`**: apertura torneo (`tournament_open`) a **tutti gli iscritti
+attivi**; apertura round (`pick_instructions`) ai **soli partecipanti attivi**
+(`eliminated = 0`); chiusura round → riepilogo `round_closed_survived` **ai
+soli sopravvissuti** (inviato **una sola volta** alla contabilizzazione); gli
+eliminati ricevono **solo** `pick_missing_elimination` (alla chiusura) e
+`round_result_wrong` (alla contabilizzazione). Un account `unsubscribed` o
+`pending_unsubscribe` **non riceve alcuna email di torneo**.
 
 **Chiusura di una giornata.** In commissioner puoi lasciare che la giornata si
 chiuda da sola al superamento della deadline (l'operatore non fa nulla) oppure
@@ -385,16 +430,17 @@ interagiscono solo via email.
 crontab del sistema (ogni minuto):
 
 ```cron
-# Orchestrazione delle giornate e della finestra di iscrizione
+# Orchestrazione delle giornate (apertura/chiusura/contabilizzazione)
 */1 * * * * cd /home/fulvio/dev/SurvivorLeague && ENV_FILE=.env.uat npm run cli -- scheduler:tick >> /var/log/survivor-uat.log 2>&1
-# Lettura e processamento delle email in ingresso (iscrizioni e pick)
+# Lettura e processamento delle email in ingresso (iscrizioni, disiscrizioni e pick)
 */1 * * * * cd /home/fulvio/dev/SurvivorLeague && ENV_FILE=.env.uat npm run cli -- channel:email:process >> /var/log/survivor-uat-mail.log 2>&1
 ```
 
 > **Importante — due cron, non uno.** `scheduler:tick` orchestra le giornate
-> (apre/chiude/contabilizza e gestisce la finestra di iscrizione) ma **non
+> (apre/chiude/contabilizza) ma **non
 > legge la casella email**: è un orchestratore "sottile", senza logica di
-> gioco oltre al decidere *quando* agire. Le email in ingresso (iscrizioni e
+> gioco oltre al decidere *quando* agire. Le email in ingresso (iscrizioni,
+> disiscrizioni e
 > pick dei giocatori) sono lette e processate da `channel:email:process`, che
 > va therefore schedulato a parte. Senza la seconda riga, i pick inviati dai
 > giocatori non verrebbero mai acquisiti.
@@ -404,9 +450,11 @@ crontab del sistema (ogni minuto):
 - apre la giornata (round) quando la precedente è contabilizzata (`scored`);
   la prima si apre all'avvio del torneo;
 - chiude la giornata al superamento della deadline (auto-chiusura);
-- contabilizza le giornate chiuse (`round:score`, se `SCHEDULER_AUTO_SCORE=true`);
-- gestisce la finestra di iscrizione (auto-chiusura alla deadline del TT1,
-  chiusura di sicurezza se la deadline manca).
+- contabilizza le giornate chiuse (`round:score`, se `SCHEDULER_AUTO_SCORE=true`).
+- **Nota ADR-009:** non esiste più alcuna finestra di iscrizione da
+  aprire/chiudere — le azioni `register_close_auto`/`register_close_safety`
+  sono rimosse: l'iscrizione piattaforma è sempre aperta e la partecipazione
+  è gated dalla deadline del TT1 (auto-join).
 
 **Vincolo fondamentale (cron):** in modalità cron su calendario sintetico,
 `TEST_REFRESH_ALLOWED` deve restare `false` (il default). Così il refresh
@@ -545,17 +593,21 @@ data:seed-synthetic --teams 4 --rounds 2 --spacing-min 45 --first-kickoff-offset
 
 ```bash
 ENV_FILE=.env.uat npm run cli -- db:migrate
+ENV_FILE=.env.uat npm run cli -- platform:migrate
 ENV_FILE=.env.uat npm run cli -- data:seed-synthetic --teams 4 --rounds 2 --spacing-min 45 --first-kickoff-offset-min 60 --seed 42
 ENV_FILE=.env.uat npm run cli -- data:calendar
 ```
 
-**Iscrizioni:**
+**Iscrizioni piattaforma (ADR-009: nessuna finestra da aprire/chiudere):**
 
 ```bash
-ENV_FILE=.env.uat npm run cli -- tournament:register:open --contacts "alice@example.com,bob@example.com"
-# i giocatori rispondono via email; processa le iscrizioni:
+# (i giocatori si iscrivono via email "voglio iscrivermi"; processa le email:)
 ENV_FILE=.env.uat npm run cli -- channel:email:process
-ENV_FILE=.env.uat npm run cli -- tournament:register:close
+# oppure iscrizione diretta via CLI (l'unico comando di creazione account):
+ENV_FILE=.env.uat npm run cli -- platform:register --email alice@example.com --reason "test smoke 2h"
+ENV_FILE=.env.uat npm run cli -- platform:register --email bob@example.com --reason "test smoke 2h"
+# verifica degli account:
+ENV_FILE=.env.uat npm run cli -- platform:list
 ```
 
 **Avvio stagione:**
@@ -613,16 +665,23 @@ data:seed-synthetic --teams 8 --rounds 6 --spacing-min 45 --first-kickoff-offset
 
 ```bash
 ENV_FILE=.env.uat npm run cli -- db:migrate
+ENV_FILE=.env.uat npm run cli -- platform:migrate
 ENV_FILE=.env.uat npm run cli -- data:seed-synthetic --teams 8 --rounds 6 --spacing-min 45 --first-kickoff-offset-min 60 --seed 42
 ENV_FILE=.env.uat npm run cli -- data:calendar
 ```
 
-**Iscrizioni e avvio:**
+**Iscrizioni piattaforma e avvio (ADR-009):**
 
 ```bash
-ENV_FILE=.env.uat npm run cli -- tournament:register:open --contacts "alice@example.com,bob@example.com,carol@example.com,dave@example.com"
+# (i giocatori si iscrivono via email; processa le email:)
 ENV_FILE=.env.uat npm run cli -- channel:email:process
-ENV_FILE=.env.uat npm run cli -- tournament:register:close
+# oppure via CLI:
+ENV_FILE=.env.uat npm run cli -- platform:register --email alice@example.com --reason "test standard 4h30"
+ENV_FILE=.env.uat npm run cli -- platform:register --email bob@example.com --reason "test standard 4h30"
+ENV_FILE=.env.uat npm run cli -- platform:register --email carol@example.com --reason "test standard 4h30"
+ENV_FILE=.env.uat npm run cli -- platform:register --email dave@example.com --reason "test standard 4h30"
+ENV_FILE=.env.uat npm run cli -- platform:list
+# l'avvio invia tournament_open a tutti gli iscritti attivi:
 ENV_FILE=.env.uat npm run cli -- tournament:start
 ```
 
@@ -683,16 +742,20 @@ prevista** dal sistema.
 
 ```bash
 ENV_FILE=.env.uat npm run cli -- db:migrate
+ENV_FILE=.env.uat npm run cli -- platform:migrate
 ENV_FILE=.env.uat npm run cli -- data:seed-synthetic --teams 8 --rounds 8 --spacing-min 45 --first-kickoff-offset-min 60 --seed 42
 ENV_FILE=.env.uat npm run cli -- data:calendar
 ```
 
-**Iscrizioni e avvio:**
+**Iscrizioni piattaforma e avvio (ADR-009):**
 
 ```bash
-ENV_FILE=.env.uat npm run cli -- tournament:register:open --contacts "alice@example.com,bob@example.com,carol@example.com,dave@example.com"
 ENV_FILE=.env.uat npm run cli -- channel:email:process
-ENV_FILE=.env.uat npm run cli -- tournament:register:close
+ENV_FILE=.env.uat npm run cli -- platform:register --email alice@example.com --reason "test completa 6h30"
+ENV_FILE=.env.uat npm run cli -- platform:register --email bob@example.com --reason "test completa 6h30"
+ENV_FILE=.env.uat npm run cli -- platform:register --email carol@example.com --reason "test completa 6h30"
+ENV_FILE=.env.uat npm run cli -- platform:register --email dave@example.com --reason "test completa 6h30"
+ENV_FILE=.env.uat npm run cli -- platform:list
 ENV_FILE=.env.uat npm run cli -- tournament:start
 ```
 
@@ -735,24 +798,29 @@ data:seed-synthetic --teams 8 --rounds 6 --spacing-min 45 --first-kickoff-offset
 **Vincolo temporale (RF-21).** Con offset 60 e spacing 45, la deadline di
 TC 3 cade **~120 minuti dopo il seed** (kickoff di TC 3 = 60 + 45×2 = 150
 minuti, meno l'anticipo di 30). `tournament:start --start-round 3` e le
-iscrizioni vanno quindi fatti **entro quel lasso**: altrimenti l'avvio viene
+iscrizioni piattaforma (che dovranno poi entrare in torneo con un pick nel TT1, auto-join)
+vanno quindi fatti **entro quel lasso**: altrimenti l'avvio viene
 rifiutato con `Deadline del TT 1 non futura (<ISO>): avvio rifiutato (RF-21)`.
 
 **Setup (una volta):**
 
 ```bash
 ENV_FILE=.env.uat npm run cli -- db:migrate
+ENV_FILE=.env.uat npm run cli -- platform:migrate
 ENV_FILE=.env.uat npm run cli -- data:seed-synthetic --teams 8 --rounds 6 --spacing-min 45 --first-kickoff-offset-min 60 --seed 42
 ENV_FILE=.env.uat npm run cli -- data:calendar
 ```
 
-**Iscrizioni e avvio (entro ~120 minuti dal seed):**
+**Iscrizioni piattaforma e avvio (entro ~120 minuti dal seed):**
 
 ```bash
-ENV_FILE=.env.uat npm run cli -- tournament:register:open --contacts "alice@example.com,bob@example.com,carol@example.com,dave@example.com"
 ENV_FILE=.env.uat npm run cli -- channel:email:process
-ENV_FILE=.env.uat npm run cli -- tournament:register:close
-# Avvio asincrono: il torneo parte dal TC 3 (TT1 = TC 3)
+ENV_FILE=.env.uat npm run cli -- platform:register --email alice@example.com --reason "test aggancio TC3"
+ENV_FILE=.env.uat npm run cli -- platform:register --email bob@example.com --reason "test aggancio TC3"
+ENV_FILE=.env.uat npm run cli -- platform:register --email carol@example.com --reason "test aggancio TC3"
+ENV_FILE=.env.uat npm run cli -- platform:register --email dave@example.com --reason "test aggancio TC3"
+ENV_FILE=.env.uat npm run cli -- platform:list
+# Avvio asincrono: il torneo parte dal TC 3 (TT1 = TC 3); invia tournament_open
 ENV_FILE=.env.uat npm run cli -- tournament:start --start-round 3
 ```
 
@@ -798,7 +866,9 @@ ENV_FILE=.env.uat npm run cli -- simulate:full --start-round 3
 
 ### 6.1 Cosa si PUÒ dimostrare in test mode (UAT su calendario sintetico)
 
-- **Flusso email completo:** iscrizione (anche automatica), invio del pick,
+- **Flusso email completo:** iscrizione/disiscrizione piattaforma (due
+  passi) e re-iscrizione (stesso account), risposta "già iscritto" a chi si
+  re-iscrive da `active`, invio del pick (auto-join al TT1),
   conferma o rifiuto con motivazione, il tutto via Gmail reale e LLM reale.
 - **Guard anti-frode su timestamp veri:** l'orologio e i timestamp di
   ricezione delle email sono reali (`TEST_OFFSET_DAYS=0`), quindi un pick
@@ -883,6 +953,9 @@ con giocatori veri) si usa un **file env dedicato**: `.env.uat-replay`
 - `DB_PATH=./data/uat-replay.db` — database **dedicato** e separato (NON il
   sintetico, NON quello di produzione), contenente la stagione 2025/26 reale
   importata.
+- `PLATFORM_DB_PATH=./data/uat-replay-platform.db` — DB **piattaforma**
+  dedicato e separato (ADR-009), distinto dal DB torneo e dal valore di
+  produzione (`./data/platform.db`).
 
 **Attivazione:**
 
@@ -986,5 +1059,9 @@ test) e dal fatto che sono state inviate durante la sessione di test.
 | **start-round / TC di aggancio** | Il turno di campionato da cui parte il torneo, che diventa il **TT1** del torneo. Con `--start-round 3`, la prima giornata di gioco è "TT1 = TC 3". |
 | **TTnTCm** | Il token compatto che identifica un turno: `TT` numero del turno di torneo, `TC` numero della giornata di campionato (es. `TT2TC7` = secondo turno di gioco, agganciato alla giornata 7). Compare nell'oggetto delle email e nelle righe di `tournament:history`. |
 | **Pool (rosa)** | L'insieme di squadre ancora utilizzabili da un giocatore nel girone corrente. Si resetta al confine di girone (andata/ritorno). |
+| **Account piattaforma / registerID** | L'account persistente creato dall'iscrizione alla piattaforma (ADR-009): identificato da un `registerID` interno stabile (riusato a ogni re-iscrizione), con email e stato `active`/`pending_unsubscribe`/`unsubscribed`. Vive in un DB separato (`PLATFORM_DB_PATH`). |
+| **Iscritto vs partecipante** | L'**iscritto** è chi ha un account piattaforma; il **partecipante** è l'iscritto che ha un `profile` nel torneo. Si diventa partecipanti **solo** inviando il primo pick valido nel TT1 (auto-join). |
+| **Auto-join (RF-P5)** | L'ingresso automatico nel torneo al **primo pick valido** nel TT1: crea profilo + pick in un'unica operazione. Sostituisce la vecchia "auto-iscrizione" (RF-27, deprecata). |
+| **Soft-delete / disiscrizione a due passi** | La disiscrizione non cancella l'account: lo marca `unsubscribed` (soft-delete) solo dopo una **conferma** esplicita (secondo messaggio con body `confermo`/`sì`/`si`/`yes`). Lo storico non si perde e la re-iscrizione riusa lo stesso `registerID`. |
 | **UAT** | User Acceptance Test: il collaudo finale con utenti veri per accettare il sistema. |
 | **Env file** | Un file di configurazione (`.env`, `.env.uat`, `.env.uat-replay`) con i parametri del sistema. Si seleziona con la variabile `ENV_FILE`. |

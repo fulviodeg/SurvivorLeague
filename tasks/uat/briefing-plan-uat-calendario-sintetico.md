@@ -1,14 +1,14 @@
 # Briefing di peer review — Piano UAT test mode + calendario sintetico
 
 > **Ruolo del documento.** Peer review indipendente (Principal Product & System
-> Architect) di `tasks/plan-uat-calendario-sintetico.md`, svolta PRIMA
+> Architect) di `tasks/uat/plan-uat-calendario-sintetico.md`, svolta PRIMA
 > dell'esecuzione del piano e dell'implementazione delle modifiche previste.
 > Obiettivo: elencare incongruenze, problemi, rischi di regressione e modifiche
 > necessarie emerse dal confronto del piano con le spec (PRD/HLD/LLD) e con la
 > codebase attuale. Bozza di lavoro in lingua italiana (convenzione briefing del
 > repo). **Non esegue il piano e non modifica alcun file di produzione.**
 
-> **Fonti verificate.** Piano: `tasks/plan-uat-calendario-sintetico.md`. Spec:
+> **Fonti verificate.** Piano: `tasks/uat/plan-uat-calendario-sintetico.md`. Spec:
 > `docs/POC/POC_PRD.md` (v0.5.2), `docs/POC/POC_HLD.md` (v0.4.2),
 > `docs/POC/POC_LLD.md` (v0.4.0). Codice: `src/config.ts`, `src/logger.ts`,
 > `src/cli/commands/*`, `src/cli/email-wiring.ts`, `src/channel/*`,

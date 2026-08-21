@@ -1,12 +1,14 @@
 /**
- * Unit test del Message Router (piano Task 6.1, LLD §1.3/§6.4; briefing
- * Fase 5-6 §4.5, D6/K).
+ * Unit test del Message Router (piano Task 8, LLD §1.3/§6.4 v0.5.0; briefing
+ * Fase 5-6 §4.5, D6/K; ADR-009).
  *
- * Verificano la regola deterministica di classificazione (mittente noto →
- * pick; ignoto + keyword iscrizione → registration; ignoto → pick; corpo/
- * mittente vuoto → unknown), la normalizzazione dell'identità (trim,
- * minuscolo, rimozione del nome visualizzato — K/RNF2) e il vincolo "il
- * router NON decide nulla di gioco" (output = {kind, identity, body}).
+ * Verificano il nuovo contratto di PREPARAZIONE (ADR-009): il router NON usa
+ * più keyword (`REGISTRATION_KEYWORDS` rimossa) né l'insieme dei mittenti
+ * noti — la decisione di intento è dell'LLM. Ogni messaggio processabile
+ * produce `{ kind: 'classified', identity, body }`; corpo/mittente vuoto →
+ * `{ kind: 'unknown' }` (nessuna chiamata LLM). Verificano inoltre la
+ * normalizzazione dell'identità (trim, minuscolo, rimozione del nome
+ * visualizzato — K/RNF2) e il vincolo "il router NON decide nulla di gioco".
  */
 import { describe, expect, it } from 'vitest';
 
@@ -28,44 +30,43 @@ describe('normalizeEmail (K)', () => {
   });
 });
 
-describe('classify (D6) — mittente noto vs ignoto', () => {
-  const known = new Set(['a@test.it']);
-
-  it('mittente noto → pick (anche con display name)', () => {
-    const routed = classify(msg('Aldo <A@test.it>', 'scelgo la Juve win'), known);
+describe('classify (ADR-009) — preparazione senza decisione di intento', () => {
+  it('qualsiasi messaggio con corpo e mittente → classified con identità normalizzata (anche display name)', () => {
+    const routed = classify(msg('Aldo <A@test.it>', 'scelgo la Juve win'));
     expect(routed).toMatchObject({
-      kind: 'pick',
+      kind: 'classified',
       identity: { channel: 'email', identifier: 'a@test.it' },
       body: 'scelgo la Juve win'
     });
   });
 
-  it('mittente ignoto + keyword di iscrizione → registration (case-insensitive)', () => {
+  it('le keyword di iscrizione NON classificano più (ADR-009): la decisione è dell\'LLM', () => {
     for (const body of [
       'vorrei iscrivermi al torneo',
       'MI ISCRIVO al torneo!',
       'partecipo alla Survivor League',
       'vorrei giocare, come funziona?',
-      'registrami al torneo'
+      'registrami al torneo',
+      'Juventus win'
     ]) {
-      const routed = classify(msg('new@test.it', body), known);
-      expect(routed.kind, `body: ${body}`).toBe('registration');
+      const routed = classify(msg('new@test.it', body));
+      expect(routed.kind, `body: ${body}`).toBe('classified');
+      expect(routed.identity.identifier).toBe('new@test.it');
     }
   });
 
-  it('mittente ignoto SENZA keyword → pick (il wiring decide auto-iscrizione/chiarimento/rifiuto)', () => {
-    const routed = classify(msg('new@test.it', 'Juventus win'), known);
-    expect(routed.kind).toBe('pick');
-    expect(routed.identity.identifier).toBe('new@test.it');
+  it('corpo vuoto o mittente vuoto → unknown (nessuna chiamata LLM)', () => {
+    expect(classify(msg('a@test.it', '   ')).kind).toBe('unknown');
+    expect(classify(msg('', 'Juventus win')).kind).toBe('unknown');
   });
 
-  it('corpo vuoto o mittente vuoto → unknown (non processabile)', () => {
-    expect(classify(msg('a@test.it', '   '), known).kind).toBe('unknown');
-    expect(classify(msg('', 'Juventus win'), known).kind).toBe('unknown');
+  it('corpo trimmato per il classificatore', () => {
+    const routed = classify(msg('a@test.it', '  Roma vince  '));
+    expect(routed.body).toBe('Roma vince');
   });
 
   it('non decide nulla di gioco: esito = {kind, identity, body} (nessun altro campo)', () => {
-    const routed = classify(msg('x@test.it', 'iscrivimi'), new Set());
+    const routed = classify(msg('x@test.it', 'iscrivimi'));
     expect(Object.keys(routed).sort()).toEqual(['body', 'identity', 'kind']);
   });
 });

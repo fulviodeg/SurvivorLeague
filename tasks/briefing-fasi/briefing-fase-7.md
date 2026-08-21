@@ -430,7 +430,7 @@ CL13/CL12) + documenti aggiornati.
 ## 8. Prompt pronto per l'agente implementatore
 
 > Implementa la Fase 7 del piano (`tasks/plan.md` Task 7.1–7.3) seguendo
-> **prioritariamente** il briefing `tasks/briefing-fase-7.md` (decisioni R1–R8
+> **prioritariamente** il briefing `tasks/briefing-fasi/briefing-fase-7.md` (decisioni R1–R8
 > e Decisione A) e le sezioni LLD/PRD ivi citate come autorità. Prima di
 > scrivere codice: (1) applica la Decisione A (fix determinismo `created_at`
 > in `pick-processor.ts`/`registration.ts` con i suoi test), (2) applica le

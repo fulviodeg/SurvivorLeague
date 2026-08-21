@@ -3,7 +3,7 @@
  *
  * Ruolo: valida un pick con la CASCATA di regole (LLD §3.1) con motivo dedicato
  * e registra atomicamente sulla tabella `pick`. È il modulo a cui delegano il
- * Round Manager (Task 3.5) e l'auto-iscrizione (Task 4.2): stesse regole per
+ * Round Manager (Task 3.5) e l'auto-join (RF-P5, ADR-009): stesse regole per
  * pick automatici e manuali (decisione 9 del piano, US10).
  *
  * La cascata (ordine = base dei messaggi di risposta, briefing §1-F):
@@ -165,7 +165,7 @@ export async function checkAcceptance(
 
 /**
  * Inserimento ATOMICO della riga pick (stato pending) — usato da registerPick e
- * dall'auto-iscrizione RF-27 (profilo+pick in un'unica transazione, Task 4.2).
+ * dall'auto-join RF-P5 (profilo+pick in un'unica transazione, ADR-009).
  * Rilanciata la violazione UNIQUE: il chiamante decide la semantica (motivo).
  *
  * `createdAt` (ISO-8601) è scritto esplicitamente dal chiamante (= clock

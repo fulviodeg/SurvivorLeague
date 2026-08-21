@@ -3,7 +3,7 @@
  * §3, D1/D4/D9).
  *
  * HTTP mockato (fetch iniettato, LLD §8). Coprono: un contract test per OGNI
- * tipo di email (12, incluso `auto_registered` — D5): testo in italiano con
+ * tipo di email (15, allineati ad ADR-009): testo in italiano con
  * la coppia TT/TC esatta (RF-25: iniezione deterministica post-generazione,
  * mai numeri nel prompt); soggetto `subjectFor` con forma compatta (D1);
  * template senza numeri letterali (D4); sostituzione a stringa vuota senza
@@ -121,7 +121,7 @@ describe('LLM Generator — contract test per ogni tipo (LLD §6.3)', () => {
   });
 
   it('ctx.subject esplicito ha priorità in subjectFor (D1)', () => {
-    const ctx: EmailContext = { type: 'welcome', tt: 1, tc: 1, subject: 'Oggetto custom' };
+    const ctx: EmailContext = { type: 'platform_registered', tt: 1, tc: 1, subject: 'Oggetto custom' };
     expect(subjectFor(ctx)).toBe('Oggetto custom');
   });
 
@@ -138,7 +138,7 @@ describe('LLM Generator — contract test per ogni tipo (LLD §6.3)', () => {
     const { generator } = makeGenerator(() =>
       Promise.resolve(new Response('boom', { status: 500 }))
     );
-    await expect(generator.generate(ctxFor('welcome'))).rejects.toBeInstanceOf(LLMError);
+    await expect(generator.generate(ctxFor('platform_registered'))).rejects.toBeInstanceOf(LLMError);
   });
 });
 
@@ -153,7 +153,7 @@ describe('LLM Generator — non-regressione failover (D3: mai failover su rispos
       fetchImpl
     });
     const generator = new OpenAIGenerator(client);
-    const body = await generator.generate(ctxFor('welcome'));
+    const body = await generator.generate(ctxFor('platform_registered'));
     expect(body).toBe('testo valido');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });

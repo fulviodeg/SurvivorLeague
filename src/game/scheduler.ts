@@ -1,16 +1,13 @@
 /**
- * Scheduler (LLD §1.4, piano Task 7.2; decisioni R5–R7 del briefing Fase 7).
+ * Scheduler (LLD §1.4 v0.5.0, piano Task 7.2/10; decisioni R5–R7 del briefing
+ * Fase 7; ADR-009).
  *
  * Ruolo: ORCHESTRATORE sottile della produzione — decide QUANDO agire in base
  * al calendario e allo stato del torneo, e invoca esclusivamente i comandi
- * del Game Engine esistenti (`closeRegistration`, `openRound`, `closeRound`,
- * `scoreRound`): nessuna logica di gioco qui (LLD §1.4, AGENTS.md §1.3).
+ * del Game Engine esistenti (`openRound`, `closeRound`, `scoreRound`):
+ * nessuna logica di gioco qui (LLD §1.4, AGENTS.md §1.3).
  *
- * Azioni (LLD §1.4, finestra `[start_round..N]`, ADR-008):
- *   - finestra di iscrizione: `register_close_auto` alla deadline del TT 1
- *     (RF-22); `register_close_safety` alla chiusura del TC se la deadline
- *     del TT 1 manca (RF-30, causa `deadline_missing`); `warn_not_calculable`
- *     se nemmeno la chiusura del TC è calcolabile (uscita manuale RF-28);
+ * Azioni (LLD §1.4, finestra `[start_round..N]`, ADR-008/009):
  *   - `round_open`: TT 1 all'apertura del torneo (RF-23), poi un `pending`
  *     quando il TC precedente è `scored`;
  *   - `round_close`: round `open` con deadline registrata scaduta;
@@ -21,6 +18,11 @@
  *   - `round_score`: round `closed` non `scored` (se `SCHEDULER_AUTO_SCORE`);
  *   - `round_score_frozen`: round `scored` con pick `frozen` (`SELECT
  *     DISTINCT round FROM pick WHERE status='frozen'`).
+ *
+ * NON esistono più azioni sulla finestra di iscrizione (ADR-009):
+ * `register_close_auto`/`register_close_safety` e i relativi rami sono
+ * RIMOSSI — l'iscrizione piattaforma è sempre disponibile e la
+ * partecipazione è gated dalla deadline del TT1 (auto-join, RF-P5).
  *
  * Design (R5–R7): nessuno stato persistito (l'audit sta nel log pino della
  * CLI, non nei moduli); `computeActions` è pura (sola lettura, decisione);
@@ -33,15 +35,12 @@
 import type Database from 'better-sqlite3';
 
 import type { GameContext } from './context.js';
-import { closeRegistration } from './registration.js';
 import { closeRound, openRound, scoreRound } from './round-manager.js';
 import { computeTcClose } from './round-time.js';
 import { getStartRound, turnFor } from './turn.js';
 
 /** Un'azione pendente calcolata dallo stato (decisione pura, nessuna scrittura). */
 export type PendingAction =
-  | { type: 'register_close_auto' }
-  | { type: 'register_close_safety' }
   | { type: 'round_open'; round: number }
   | { type: 'round_close'; round: number }
   | { type: 'round_close_safety'; round: number }
@@ -56,8 +55,6 @@ export type SchedulerEvent =
   | { type: 'round_close_safety'; round: number; cause: 'deadline_missing' }
   | { type: 'round_score'; round: number }
   | { type: 'round_score_frozen'; round: number }
-  | { type: 'register_close_auto' }
-  | { type: 'register_close_safety'; cause: 'deadline_missing' }
   | { type: 'refresh_failed' }
   | { type: 'warn_not_calculable'; round: number };
 
@@ -79,9 +76,10 @@ export interface SchedulerTickResult {
 export interface SchedulerStatusResult {
   enabled: boolean;
   seasonStarted: boolean;
-  registrationOpen: boolean;
   startRound: number;
   totalRounds: number;
+  /** Iscritti ATTIVI della piattaforma (dal PlatformRegistry, ADR-009). */
+  platformSubscribers: number;
   rounds: Array<{
     round: number;
     tt: number;
@@ -99,7 +97,6 @@ export interface SchedulerStatusResult {
 interface TournamentStateRow {
   season_started: number;
   start_round: number | null;
-  registration_open: number;
 }
 
 /** Riga `round_state` letta dal DB (sola lettura). */
@@ -112,7 +109,7 @@ interface RoundStateRow {
 /** Legge lo stato registrato del torneo. */
 function getTournamentState(db: Database.Database): TournamentStateRow | undefined {
   return db
-    .prepare('SELECT season_started, start_round, registration_open FROM tournament_state WHERE id = 1')
+    .prepare('SELECT season_started, start_round FROM tournament_state WHERE id = 1')
     .get() as TournamentStateRow | undefined;
 }
 
@@ -141,9 +138,9 @@ async function computeRoundTcClose(ctx: GameContext, round: number): Promise<Dat
 /**
  * Decisione pura (sola lettura, nessuna scrittura): calcola le azioni da
  * eseguire dallo stato corrente al clock `ctx.now`, nell'ordine LLD §1.4 —
- * finestra di iscrizione, poi i round della finestra in ordine crescente
- * (determinismo). Ogni round produce al più un'azione (open/close/safety/
- * score/score_frozen a seconda dello stato).
+ * i round della finestra in ordine crescente (determinismo). Ogni round
+ * produce al più un'azione (open/close/safety/score/score_frozen a seconda
+ * dello stato). Nessuna azione sulla finestra di iscrizione (ADR-009).
  */
 export async function computeActions(ctx: GameContext): Promise<PendingAction[]> {
   const { db, dataProvider, config, now } = ctx;
@@ -153,23 +150,6 @@ export async function computeActions(ctx: GameContext): Promise<PendingAction[]>
   const totalRounds = await dataProvider.getTotalRounds();
   const startRound = state?.start_round ?? getStartRound(db);
   const rounds = getRoundStates(db, startRound, totalRounds);
-
-  // Finestra di iscrizione: aperta dall'avvio del torneo (RF-22), si
-  // auto-chiude alla deadline del TT 1; di sicurezza se la deadline manca.
-  if (state?.season_started === 1 && state.registration_open === 1) {
-    const tt1 = rounds.find((r) => r.round === startRound);
-    const tt1Deadline = tt1?.deadline != null ? new Date(tt1.deadline) : null;
-    if (tt1Deadline !== null && now > tt1Deadline) {
-      actions.push({ type: 'register_close_auto' });
-    } else if (tt1Deadline === null) {
-      const tcClose = await computeRoundTcClose(ctx, startRound);
-      if (tcClose !== null && now > tcClose) {
-        actions.push({ type: 'register_close_safety' });
-      } else if (tcClose === null) {
-        actions.push({ type: 'warn_not_calculable', round: startRound });
-      }
-    }
-  }
 
   // Round della finestra [start_round..N] (ADR-008).
   for (let i = 0; i < rounds.length; i++) {
@@ -212,12 +192,6 @@ export async function computeActions(ctx: GameContext): Promise<PendingAction[]>
 /** Esegue un'azione e produce l'evento di audit corrispondente. */
 async function executeAction(ctx: GameContext, action: PendingAction): Promise<SchedulerEvent> {
   switch (action.type) {
-    case 'register_close_auto':
-      closeRegistration(ctx);
-      return { type: 'register_close_auto' };
-    case 'register_close_safety':
-      closeRegistration(ctx);
-      return { type: 'register_close_safety', cause: 'deadline_missing' };
     case 'round_open':
       await openRound(ctx, action.round);
       return { type: 'round_open', round: action.round };
@@ -274,7 +248,8 @@ export async function schedulerTick(
 
 /**
  * Stato COMPUTATO dello scheduler (R5, LLD §7.12): nessuna persistenza — il
- * comando `scheduler:status` riporta lo stato del torneo, le anomalie
+ * comando `scheduler:status` riporta lo stato del torneo, gli iscritti attivi
+ * della piattaforma (ADR-009: NESSUN campo registrationOpen), le anomalie
  * (RF-30) e le prossime azioni calcolate al volo.
  */
 export async function schedulerStatus(ctx: GameContext): Promise<SchedulerStatusResult> {
@@ -287,9 +262,9 @@ export async function schedulerStatus(ctx: GameContext): Promise<SchedulerStatus
   return {
     enabled: config.SCHEDULER_ENABLED,
     seasonStarted: state?.season_started === 1,
-    registrationOpen: state?.registration_open === 1,
     startRound,
     totalRounds,
+    platformSubscribers: ctx.platform?.activeEmails().length ?? 0,
     rounds: rounds.map((r) => {
       const { tt, tc } = turnFor(db, r.round);
       return { round: r.round, tt, tc, status: r.status, deadline: r.deadline };

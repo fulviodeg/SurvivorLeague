@@ -14,15 +14,17 @@
  *     torneo collassano, RF-26);
  *   - inizializza le righe `round_state` della finestra `[start_round..N]` in
  *     stato `pending` (LLD §7.10) e la riga `tournament_state` con
- *     `season_started=1`, `start_round` e `registration_open=1` (RF-22: la
- *     finestra di iscrizione si apre all'avvio del torneo).
+ *     `season_started=1` e `start_round`. La colonna `registration_open` è
+ *     DEPRECATA (ADR-009, B8a): non esiste più una finestra di iscrizione,
+ *     resta nello schema solo per compatibilità e NON viene più scritta
+ *     (vale sempre il default 0).
  *   - `allowPastDeadline` è una SEAM per la simulazione su dati storici
  *     (Task 7.1): in produzione il vincolo RF-21 resta sempre attivo.
  *
  * Viste (sola lettura):
- *   - `tournament:status` — finestra di iscrizione, round corrente, profili
- *     attivi/eliminati, vincitore (via Winner Engine), anomalie (es. chiusure
- *     di sicurezza non applicabili: round `open` con deadline NULL, RF-30);
+ *   - `tournament:status` — round corrente, profili attivi/eliminati,
+ *     vincitore (via Winner Engine), anomalie (es. chiusure di sicurezza non
+ *     applicabili: round `open` con deadline NULL, RF-30);
  *   - `tournament:history <email>` — storico pick del profilo con coppie TT/TC;
  *   - `tournament:leaderboard` — classifica dei profili ancora in gara
  *     (attivi ordinati per pick corretti, poi eliminati), con coppia TT/TC del
@@ -33,6 +35,7 @@
  */
 import type Database from 'better-sqlite3';
 
+import { subjectFor } from '../llm/generator.js';
 import type { GameContext } from './context.js';
 import { halfBoundary } from './rules.js';
 import { getStartRound, ttFor, turnFor } from './turn.js';
@@ -62,6 +65,11 @@ export interface StartTournamentResult {
   initializedRounds: number;
   /** CL12: true se l'aggancio è all'ultimo TC (warning informativo). */
   lastRoundWarning: boolean;
+  /**
+   * Broadcast `tournament_open` (RF-P6, ADR-009): iscritti attivi notificati
+   * (0 se canale/generatore/registry assenti nel contesto).
+   */
+  notified: number;
 }
 
 /** Riga `round_state` letta dal DB. */
@@ -78,9 +86,10 @@ interface RoundStateRow {
 export interface TournamentStatusResult {
   seasonStarted: boolean;
   startRound: number;
-  registrationOpen: boolean;
   totalRounds: number;
   halfBoundary: number;
+  /** Iscritti ATTIVI della piattaforma (dal PlatformRegistry, RF-P6/ADR-009). */
+  platformSubscribers: number;
   /** Round corrente: il primo `open` della finestra; altrimenti il prossimo `pending`. */
   currentRound: { tc: number; tt: number; status: string } | null;
   activeProfiles: number;
@@ -235,13 +244,14 @@ export async function startTournament(
   // CL12: aggancio all'ultimo TC → warning informativo (i casi collassano, RF-26).
   const lastRoundWarning = startRound === totalRounds;
 
-  // Scritture atomiche.
+  // Scritture atomiche. `registration_open` NON è scritta (colonna DEPRECATA,
+  // ADR-009, B8a): non esiste più una finestra di iscrizione da aprire, la
+  // colonna resta al default 0 per compatibilità dello schema.
   const init = db.transaction(() => {
     db.prepare(
-      `INSERT INTO tournament_state (id, season_started, start_round, registration_open)
-       VALUES (1, 1, ?, 1)
-       ON CONFLICT(id) DO UPDATE SET season_started = 1, start_round = excluded.start_round,
-         registration_open = 1`
+      `INSERT INTO tournament_state (id, season_started, start_round)
+       VALUES (1, 1, ?)
+       ON CONFLICT(id) DO UPDATE SET season_started = 1, start_round = excluded.start_round`
     ).run(startRound);
     const insertPending = db.prepare(
       "INSERT INTO round_state (round, status) VALUES (?, 'pending')"
@@ -252,6 +262,23 @@ export async function startTournament(
   });
   init();
 
+  // Broadcast `tournament_open` (RF-P6, ADR-009): DOPO le scritture atomiche, a
+  // TUTTI gli iscritti ATTIVI della piattaforma (sostituisce l'invito a una
+  // lista di contatti). No-op senza channel/generator/registry nel contesto
+  // (es. simulazione, R1).
+  let notified = 0;
+  if (ctx.channel !== undefined && ctx.generator !== undefined && ctx.platform !== undefined) {
+    for (const email of ctx.platform.activeEmails()) {
+      const body = await ctx.generator.generate({ type: 'tournament_open' });
+      await ctx.channel.sendMessage(
+        email,
+        body,
+        subjectFor({ type: 'tournament_open' })
+      );
+      notified += 1;
+    }
+  }
+
   return {
     startRound,
     totalRounds,
@@ -259,7 +286,8 @@ export async function startTournament(
     tt1Kickoff: tt1Kickoff.toISOString(),
     tt1Deadline: tt1Deadline.toISOString(),
     initializedRounds: totalRounds - startRound + 1,
-    lastRoundWarning
+    lastRoundWarning,
+    notified
   };
 }
 
@@ -293,7 +321,7 @@ export async function tournamentStatus(ctx: GameContext): Promise<TournamentStat
   return {
     seasonStarted: state?.season_started === 1,
     startRound,
-    registrationOpen: state?.registration_open === 1,
+    platformSubscribers: ctx.platform?.activeEmails().length ?? 0,
     totalRounds,
     halfBoundary: halfBoundary(totalRounds),
     currentRound,

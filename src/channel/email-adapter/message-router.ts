@@ -1,31 +1,40 @@
 /**
- * Message Router (LLD §1.3/§6.4, piano Task 6.1; briefing Fase 5-6 §4.5, D6/K).
+ * Message Router (LLD §1.3/§6.4 v0.5.0, piano Task 6.1/8; briefing Fase 5-6
+ * §4.5, D6/K; ADR-009).
  *
- * Ruolo: funzione PURA di classificazione dei messaggi in ingresso +
- * normalizzazione dell'identità. Regola deterministica (D6):
- *   - mittente NOTO (in `knownEmails`) → `pick`;
- *   - mittente IGNOTO con keyword di iscrizione nel corpo (lista costante
- *     documentata sotto) → `registration`;
- *   - mittente ignoto senza keyword → `pick` (il wiring decide
- *     auto-iscrizione/chiarimento/rifiuto, mai il router);
- *   - corpo vuoto o mittente vuoto → `unknown` (non processabile).
+ * Ruolo: funzione PURA di PREPARAZIONE dei messaggi in ingresso +
+ * normalizzazione dell'identità. La decisione di INTENTO è dell'LLM
+ * (ADR-009): il router NON usa più keyword (`REGISTRATION_KEYWORDS` rimossa)
+ * e NON conosce più l'insieme dei mittenti noti — produce per ogni messaggio
+ * processabile `{ kind: 'classified', identity, body }`, che il wiring
+ * (src/channel/email-processor.ts) passa all'Intent Classifier LLM.
  *
- * Il router NON decide NULLA di gioco (LLD §1.3): produce
- * `{ kind, identity, body }`; auto-iscrizione e rifiuti sono del Game Engine.
+ * Regola deterministica (D6/K):
+ *   - corpo VUOTO o mittente vuoto → `{ kind: 'unknown' }` (non processabile,
+ *     nessuna chiamata LLM);
+ *   - altrimenti → `{ kind: 'classified' }` con identità normalizzata.
+ *
+ * Il router NON decide NULLA di gioco (LLD §1.3): subscribe/unsubscribe/pick/
+ * silenzio/auto-join sono decisi dal wiring sui moduli di gioco e sul
+ * PlatformRegistry.
  *
  * Normalizzazione identità (K): `normalizeEmail` applica trim, minuscolo e
  * rimozione del nome visualizzato ("Mario Rossi <mario@x.it>" →
  * "mario@x.it"); Gmail non distingue maiuscole. La STESSA normalizzazione è
- * applicata da `tournament:register` (CLI) — identità coerente su tutto il
- * sistema (RNF2).
+ * applicata dai comandi CLI (`platform:register`, `pick:register`) — identità
+ * coerente su tutto il sistema (RNF2).
  */
 import type { IncomingMessage } from '../adapter.js';
 import type { ExternalIdentity } from '../../game/eligibility.js';
 
-/** Esito della classificazione del router (nessuna decisione di gioco). */
-export type MessageKind = 'pick' | 'registration' | 'unknown';
+/**
+ * Esito della preparazione del router (nessuna decisione di gioco, ADR-009):
+ * `classified` = da passare all'Intent Classifier LLM; `unknown` = corpo/
+ * mittente vuoto (nessuna chiamata LLM).
+ */
+export type MessageKind = 'classified' | 'unknown';
 
-/** Messaggio classificato: identità normalizzata + tipo di azione candidata. */
+/** Messaggio preparato: identità normalizzata + corpo. */
 export interface RoutedMessage {
   kind: MessageKind;
   /** Identità normalizzata del mittente (channel + indirizzo minuscolo, K). */
@@ -33,19 +42,6 @@ export interface RoutedMessage {
   /** Corpo del messaggio (trim); vuoto solo per kind 'unknown'. */
   body: string;
 }
-
-/**
- * Keyword esplicite di intenzione di iscrizione (lista COSTANTE documentata,
- * D6): la presenza nel corpo di un mittente ignoto classifica il messaggio
- * come `registration`. Match case-insensitive su sottostringa.
- */
-export const REGISTRATION_KEYWORDS = [
-  'iscriv',
-  'mi iscrivo',
-  'partecipo',
-  'vorrei giocare',
-  'registr'
-] as const;
 
 /**
  * Normalizza un indirizzo email grezzo: rimuove il nome visualizzato
@@ -59,11 +55,13 @@ export function normalizeEmail(raw: string): string {
 }
 
 /**
- * Classifica un messaggio in ingresso (regola deterministica D6) e ne
- * normalizza l'identità. Nessuna logica di gioco (LLD §1.3): il wiring
- * (src/channel/email-processor.ts) decide le azioni sui moduli di gioco.
+ * Prepara un messaggio in ingresso (D6/K): identità normalizzata + corpo
+ * trim. La classificazione dell'INTENTO è demandata all'LLM (ADR-009): il
+ * router distingue solo il caso non processabile (corpo/mittente vuoto →
+ * `unknown`, nessuna chiamata LLM) da quello processabile (`classified`).
+ * Nessuna logica di gioco (LLD §1.3).
  */
-export function classify(message: IncomingMessage, knownEmails: Set<string>): RoutedMessage {
+export function classify(message: IncomingMessage): RoutedMessage {
   const identifier = normalizeEmail(message.from);
   const body = message.body.trim();
   const identity: ExternalIdentity = { channel: message.channel, identifier };
@@ -71,14 +69,5 @@ export function classify(message: IncomingMessage, knownEmails: Set<string>): Ro
   if (identifier === '' || body === '') {
     return { kind: 'unknown', identity, body };
   }
-  if (knownEmails.has(identifier)) {
-    return { kind: 'pick', identity, body };
-  }
-  const hasRegistrationIntent = REGISTRATION_KEYWORDS.some((keyword) =>
-    body.toLowerCase().includes(keyword)
-  );
-  if (hasRegistrationIntent) {
-    return { kind: 'registration', identity, body };
-  }
-  return { kind: 'pick', identity, body };
+  return { kind: 'classified', identity, body };
 }

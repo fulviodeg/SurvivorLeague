@@ -1,21 +1,29 @@
 /**
- * Seam di eligibilità (ADR-008 n. 8, LLD §6.5; piano Task 4.2).
+ * Seam di eligibilità (ADR-008 n. 8 + ADR-009, LLD §6.5; piano Task 7).
  *
- * Ruolo: gate PRE-registrazione: ogni iscrizione (automatica o manuale) passa
- * da `checkEligibility(ExternalIdentity)`. L'identità è normalizzata dal canale
- * (`ExternalIdentity {channel, identifier}` — per l'email: `{channel:'email',
- * identifier: <indirizzo>}`, mai più "email = identificativo" come identità
- * grezza).
+ * Ruolo: gate PRE-partecipazione: ogni ingresso nel torneo (auto-join al TT1,
+ * RF-P5) passa da `checkEligibility(ctx, identity)`. L'identità è normalizzata
+ * dal canale (`ExternalIdentity {channel, identifier}` — per l'email:
+ * `{channel:'email', identifier: <indirizzo>}`, mai più "email = identificativo"
+ * come identità grezza).
  *
- * Implementazione POC: SEMPRE `eligible` + motivo assente (nessuna quota/lista
- * nera). L'esito è esposto nei risultati di registrazione perché il chiamante
- * lo LOGGHI (verifica del piano: "eligibilità loggata"); in Fase 1 l'impl
- * diventerà la quota (`ENTRY_FEE_EUR`) senza cambiare il contratto.
+ * Implementazione POC (ADR-009): **account piattaforma `active`** — il gate
+ * legge lo stato dal PlatformRegistry iniettato nel contesto (SOLA LETTURA,
+ * nessuna scrittura cross-DB):
+ *   - account `active` → `{ eligible: true }`;
+ *   - account `pending_unsubscribe`/`unsubscribed` o mai iscritto →
+ *     `{ eligible: false, reason: 'account_not_active' }`;
+ *   - registry assente nel contesto (comando puramente di torneo) →
+ *     `{ eligible: false, reason: 'platform_unavailable' }` (nessun bypass
+ *     silenzioso: il chiamante deve iniettare la piattaforma).
+ * In Fase 1 l'impl diventerà "attivo + quota pagata" (`ENTRY_FEE_EUR`) senza
+ * cambiare il contratto.
  *
  * Override US10 (ADR-008): l'iscrizione manuale del commissioner a finestra
  * chiusa passa per la STESSA funzione con `forceEligible` + motivo auditato —
  * mai un bypass fuori dal modulo.
  */
+import type { GameContext } from './context.js';
 
 /** Identità normalizzata di un mittente sul canale (ADR-008 n. 8). */
 export interface ExternalIdentity {
@@ -44,11 +52,14 @@ export interface EligibilityOptions {
 }
 
 /**
- * Gate di eligibilità pre-registrazione (ADR-008 n. 8). Impl POC: sempre
- * eligible; con forceEligible richiede il motivo e lo restituisce come reason
- * (il chiamante lo logga). Il rifiuto esplicito resta per Fase 1 (quota).
+ * Gate di eligibilità pre-partecipazione (ADR-008/009, LLD §6.5): account
+ * piattaforma `active` (lettura dal registry iniettato). Con forceEligible
+ * richiede il motivo e lo restituisce come reason (il chiamante lo logga);
+ * senza registry nel contesto → rifiuto esplicito `platform_unavailable`
+ * (nessun bypass: il chiamante inietta la piattaforma quando serve il gate).
  */
 export function checkEligibility(
+  ctx: GameContext,
   identity: ExternalIdentity,
   opts: EligibilityOptions = {}
 ): EligibilityResult {
@@ -58,6 +69,13 @@ export function checkEligibility(
     }
     return { eligible: true, reason: opts.reason };
   }
-  // Impl POC: nessuna quota/lista nera → sempre eligible (ADR-008 n. 8).
+  // Gate piattaforma (ADR-009): nessun registry iniettato → rifiuto esplicito.
+  if (ctx.platform === undefined) {
+    return { eligible: false, reason: 'platform_unavailable' };
+  }
+  const account = ctx.platform.find(identity.identifier);
+  if (account === null || account.status !== 'active') {
+    return { eligible: false, reason: 'account_not_active' };
+  }
   return { eligible: true };
 }

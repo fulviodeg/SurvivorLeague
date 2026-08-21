@@ -30,6 +30,7 @@ coverage/
 
 # --- Note personali (non fanno parte del progetto) ---
 note personali.txt
+note personali.md
 
 # --- OS ---
 .DS_Store
