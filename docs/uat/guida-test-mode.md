@@ -408,9 +408,11 @@ disponibile** via email (intento classificato dall'LLM) o via CLI, e la
 **Matrice notifiche (RF-P6).** Ogni email in uscita va **solo ad account
 `active`**: apertura torneo (`tournament_open`) a **tutti gli iscritti
 attivi**; apertura round (`pick_instructions`) ai **soli partecipanti attivi**
-(`eliminated = 0`); chiusura round → riepilogo `round_closed_survived` **ai
-soli sopravvissuti** (inviato **una sola volta** alla contabilizzazione); gli
-eliminati ricevono **solo** `pick_missing_elimination` (alla chiusura) e
+(`eliminated = 0`) e, **all'apertura del TT 1**, anche agli **iscritti attivi
+senza profilo** (amendment 2026-08-21: al round 1 i profili non esistono
+ancora, auto-join RF-P5); chiusura round → riepilogo `round_closed_survived`
+**ai soli sopravvissuti** (inviato **una sola volta** alla contabilizzazione);
+gli eliminati ricevono **solo** `pick_missing_elimination` (alla chiusura) e
 `round_result_wrong` (alla contabilizzazione). Un account `unsubscribed` o
 `pending_unsubscribe` **non riceve alcuna email di torneo**.
 

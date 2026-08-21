@@ -8,6 +8,9 @@
  * `active`:
  *   - round:open → pick_instructions ai soli partecipanti attivi
  *     (eliminated = 0) con account `active`;
+ *   - round:open al TT 1 → pick_instructions ANCHE agli account `active`
+ *     SENZA profilo (amendment RF-P6, 2026-08-21), con dedup sui profili e
+ *     squadre in giornata; dal TT 2 nessun invio ai senza-profilo;
  *   - round:close → pick_missing_elimination ai soli account `active`;
  *   - round:score → round_result_correct/wrong ai soli account `active`;
  *   - round:score alla transizione closed→scored → round_closed_survived ai
@@ -44,7 +47,7 @@ import { startTournament } from '../../../src/game/tournament.js';
 import { createLogger } from '../../../src/logger.js';
 import { FIXTURE_TEAMS, loadBaseSeason } from '../../fixtures/season.js';
 
-const [IM, JU] = FIXTURE_TEAMS;
+const [IM, AC, JU, MA] = FIXTURE_TEAMS;
 
 const NOW = new Date('2026-09-01T10:00:00.000Z');
 const T_PICK = new Date('2026-09-12T15:00:00.000Z'); // entro deadline TT1
@@ -118,8 +121,12 @@ function insertProfile(db: Database.Database, email: string, registerId: number 
     .run(pid, registerId).lastInsertRowid as number;
 }
 
-/** Banco di prova con DB torneo + DB piattaforma + fake I/O + TT1 aperto. */
-async function makeHarness(): Promise<Harness> {
+/**
+ * Banco di prova con DB torneo + DB piattaforma + fake I/O, SENZA aprire
+ * round né avviare il torneo: usato dai test che preparano account/profili
+ * PRIMA dell'apertura (amendment RF-P6 al TT 1).
+ */
+async function makeContext(): Promise<Harness> {
   const db = new Database(':memory:');
   migrate(db);
   loadBaseSeason(db);
@@ -147,9 +154,15 @@ async function makeHarness(): Promise<Harness> {
     generator,
     platform
   };
-  await startTournament(ctx);
-  await openRound(ctx, 1);
   return { db, platformDb, platform, ctx, channel, generator };
+}
+
+/** Banco di prova con DB torneo + DB piattaforma + fake I/O + TT1 aperto. */
+async function makeHarness(): Promise<Harness> {
+  const harness = await makeContext();
+  await startTournament(harness.ctx);
+  await openRound(harness.ctx, 1);
+  return harness;
 }
 
 describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
@@ -178,6 +191,60 @@ describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
     // L'unico destinatario è a@test.it (active + in gara): pending, unsubscribed,
     // senza account ed eliminati sono esclusi (RF-P6).
     expect(recipients).toHaveLength(1);
+  });
+
+  it('TT1: account active SENZA profilo ricevono pick_instructions con le squadre in giornata (amendment RF-P6, dedup sui profili)', async () => {
+    const { db, platform, ctx, channel, generator } = await makeContext();
+    // a: account active SENZA profilo → deve ricevere (amendment RF-P6).
+    platform.register('a@test.it', NOW);
+    // b: account active CON profilo → UNA sola email (dedup col loop profili).
+    const b = platform.register('b@test.it', NOW);
+    insertProfile(db, 'b@test.it', b.registerId);
+    // c (pending_unsubscribe) e d (unsubscribed): SENZA profilo ma esclusi.
+    platform.register('c@test.it', NOW);
+    platform.beginUnsubscribe('c@test.it', NOW);
+    platform.register('d@test.it', NOW);
+    platform.beginUnsubscribe('d@test.it', NOW);
+    platform.confirmUnsubscribe('d@test.it', NOW);
+
+    const result = await openRound(ctx, 1);
+
+    expect(result).toMatchObject({ round: 1, tt: 1, tc: 1, notified: 1, registeredNotified: 1 });
+    const invites = generator.byType('pick_instructions');
+    expect(invites).toHaveLength(2);
+    // L'email del senza-profilo ha le squadre in giornata (stessa fonte di
+    // getAvailableTeams, ordinate come getTeams()) e NESSUN playerName:
+    // l'account piattaforma non ha nome e il template omette i dati assenti.
+    const noProfile = invites.find((c) => !('playerName' in c));
+    expect(noProfile).toMatchObject({
+      type: 'pick_instructions',
+      tt: 1,
+      tc: 1,
+      availableTeams: [AC, MA, IM, JU]
+    });
+    // Dedup: il profilo di b riceve UNA sola email (dal loop profili).
+    expect(channel.sent.filter((s) => s.to === 'b@test.it')).toHaveLength(1);
+    // pending_unsubscribe/unsubscribed (senza profilo) non ricevono nulla.
+    expect(channel.sent.map((s) => s.to)).toEqual(expect.not.arrayContaining(['c@test.it', 'd@test.it']));
+  });
+
+  it('TT2: account SENZA profilo NON ricevono nulla (amendment RF-P6 solo al TT 1)', async () => {
+    const { db, platform, ctx, channel, generator } = await makeContext();
+    platform.register('a@test.it', NOW); // SENZA profilo
+    const b = platform.register('b@test.it', NOW);
+    insertProfile(db, 'b@test.it', b.registerId); // CON profilo
+
+    // TT1: anche il senza-profilo a viene notificato (comportamento atteso).
+    await openRound(ctx, 1);
+    channel.sent = [];
+    generator.contexts = [];
+
+    // TT2: solo i profili attivi — a (senza profilo) non riceve nulla.
+    const result = await openRound(ctx, 2);
+
+    expect(result).toMatchObject({ tt: 2, notified: 1, registeredNotified: 0 });
+    expect(generator.byType('pick_instructions')).toHaveLength(1);
+    expect(channel.sent.map((s) => s.to)).toEqual(['b@test.it']);
   });
 
   it('round:close → pick_missing_elimination ai soli account active (pending/unsubscribed/senza account esclusi)', async () => {

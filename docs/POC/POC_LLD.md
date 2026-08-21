@@ -967,7 +967,7 @@ Casi aggiuntivi al set di test già definito, da distribuire tra unit/integratio
 
 **Notifiche filtrate (unit/integration, Task 9):**
 - `tournament:start` → `tournament_open` a tutti gli `activeEmails()` (una sola volta); no-op senza componenti email
-- `round:open` → `pick_instructions` ai soli partecipanti attivi (`eliminated = 0`) con account `active`
+- `round:open` → `pick_instructions` ai soli partecipanti attivi (`eliminated = 0`) con account `active`; **all'apertura del TT 1 anche agli account `active` SENZA profilo** (emendamento RF-P6, 2026-08-21), con dedup sulle email dei profili
 - `round:close` → `pick_missing_elimination` ai soli account `active`
 - `round:score` → `round_result_correct`/`round_result_wrong` ai soli account `active`; alla transizione `closed→scored` `round_closed_survived` ai soli sopravvissuti con `summary_sent = 1`; riapertura `round:score` → nessun ri-invio (idempotente)
 - `unsubscribed` e `pending_unsubscribe` esclusi da OGNI email; nessun `round_closed_eliminated`, nessun criterio `eliminated_at >= opened_at`

@@ -10,7 +10,9 @@
  *   - `round:open`   — crea `round_state` (status `open`, opened_at = clock) con
  *     deadline FISSA = kickoff − DEADLINE_ADVANCE_MIN (RF-14); invia l'email
  *     pick ai profili attivi con le sole squadre disponibili (decisione 12).
- *     Errore se il round è già aperto o in stato non riapribile.
+ *     All'apertura del SOLO TT 1 notifica anche gli account piattaforma
+ *     `active` senza profilo (amendment RF-P6, 2026-08-21). Errore se il
+ *     round è già aperto o in stato non riapribile.
  *   - `round:close`  — CONSOLIDA: elimina i profili attivi senza pick
  *     (`missing_pick`), notifica, `closed_at`, status `closed`. Con `--force`
  *     richiede `--reason` (audit obbligatorio, RF-29): stessa identica
@@ -100,6 +102,12 @@ export interface RoundOpenResult {
   deadline: string;
   /** Profili attivi notificati con l'email pick. */
   notified: number;
+  /**
+   * Registrati alla piattaforma SENZA profilo notificati all'apertura del
+   * TT 1 (amendment RF-P6, 2026-08-21): 0 per i round successivi o senza
+   * registry nel contesto.
+   */
+  registeredNotified: number;
 }
 
 /** Esito di `round:close`. */
@@ -236,10 +244,15 @@ export async function openRound(ctx: GameContext, round: number): Promise<RoundO
 
   const { tt, tc } = turnFor(db, round);
 
-  // Email pick ai profili attivi: solo squadre disponibili del profilo (decisione 12).
+  // Email pick ai profili attivi: solo squadre disponibili del profilo
+  // (decisione 12). Le email dei profili attivi finiscono in un Set
+  // normalizzato lowercase: serve da dedup per il blocco RF-P6 che segue
+  // (un iscritto con profilo non deve ricevere una seconda email).
   const active = getActiveProfiles(db);
+  const notifiedEmails = new Set<string>();
   let notified = 0;
   for (const profile of active) {
+    notifiedEmails.add(profile.email.toLowerCase());
     const availableTeams = await getAvailableTeams(db, dataProvider, profile.id, round);
     const sent = await notify(ctx, profile.email, {
       type: 'pick_instructions',
@@ -252,7 +265,43 @@ export async function openRound(ctx: GameContext, round: number): Promise<RoundO
     if (sent) notified += 1;
   }
 
-  return { round, tt, tc, status: 'open', deadline: deadline.toISOString(), notified };
+  // Amendment RF-P6 (decisione 2026-08-21): all'apertura del SOLO TT 1
+  // l'email pick_instructions va anche agli account piattaforma `active`
+  // che NON hanno ancora un profilo (i profili nascono con l'auto-join al
+  // primo pick, RF-P5): senza questo blocco un iscritto senza profilo non
+  // verrebbe MAI informato dell'apertura del round 1 (UAT del 21/08). Dal
+  // round 2 in poi il blocco è saltato (tt !== 1): i partecipanti sono
+  // già profili e il loop qui sopra li copre. Le squadre in giornata sono
+  // calcolate UNA volta per l'intero blocco (stessa fonte di
+  // getAvailableTeams, ma senza profilo non esistono bruciate) e ordinate
+  // come getTeams() per output deterministico. `playerName` è omesso: un
+  // account piattaforma senza profilo non ha nome (il template omette i
+  // dati assenti). Il filtro sullo stato `active` resta dentro `notify`
+  // (isAccountActive, fail-closed); senza registry iniettato
+  // (ctx.platform undefined, es. simulazione o chiamante senza registry)
+  // il blocco è saltato: nessun crash, coerenza col test "senza registry
+  // → nessuna email". Senza channel/generator `notify` è no-op e il
+  // conteggio resta 0.
+  let registeredNotified = 0;
+  if (tt === 1 && ctx.platform !== undefined) {
+    const matches = await dataProvider.getMatchesForRound(round);
+    const inRound = new Set(matches.flatMap((m) => [m.homeTeam, m.awayTeam]));
+    const inRoundTeams = (await dataProvider.getTeams()).filter((team) => inRound.has(team));
+    for (const email of ctx.platform.activeEmails()) {
+      // Dedup: l'account ha già ricevuto la mail del loop profili.
+      if (notifiedEmails.has(email.toLowerCase())) continue;
+      const sent = await notify(ctx, email, {
+        type: 'pick_instructions',
+        tt,
+        tc,
+        availableTeams: inRoundTeams,
+        deadline
+      });
+      if (sent) registeredNotified += 1;
+    }
+  }
+
+  return { round, tt, tc, status: 'open', deadline: deadline.toISOString(), notified, registeredNotified };
 }
 
 /**

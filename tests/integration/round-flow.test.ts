@@ -9,7 +9,9 @@
  * Il contesto inietta anche un PlatformRegistry su DB piattaforma in-memory
  * (ADR-009): le notifiche partono SOLO per gli account `active` registrati nel
  * test (filtro fail-closed, B3/decisione (c) — senza registry nessuna email,
- * come fanno le CLI reali che lo iniettano sempre).
+ * come fanno le CLI reali che lo iniettano sempre). All'apertura del TT 1
+ * `round:open` notifica anche gli account `active` SENZA profilo (amendment
+ * RF-P6, 2026-08-21); dal TT 2 il comportamento è invariato.
  *
  * Copre: idempotenza di round:score (RF-17); CL1/CL7/CL8 (rinvii, fixture);
  * frozen valutato a recupero concluso; chiusura forzata con/senza --reason
@@ -136,18 +138,33 @@ describe('flusso open → pick → close → score (RF-16)', () => {
     // registry o senza account le notifiche non partono (filtro fail-closed).
     platform.register('a@test.it', T_OPEN);
     platform.register('b@test.it', T_OPEN);
+    // c@test.it: account `active` SENZA profilo — all'apertura del TT 1 riceve
+    // comunque pick_instructions (amendment RF-P6, 2026-08-21).
+    platform.register('c@test.it', T_OPEN);
 
-    // OPEN: deadline fissa 15:30; entrambi i profili attivi notificati.
+    // OPEN: deadline fissa 15:30; i 2 profili attivi + il registrato senza
+    // profilo vengono notificati.
     const opened = await openRound(ctxAt(T_OPEN), 1);
-    expect(opened).toMatchObject({ round: 1, tt: 1, tc: 1, status: 'open', notified: 2 });
+    expect(opened).toMatchObject({
+      round: 1,
+      tt: 1,
+      tc: 1,
+      status: 'open',
+      notified: 2,
+      registeredNotified: 1
+    });
     expect(opened.deadline).toBe('2026-09-12T15:30:00.000Z');
     const invites = generator.contexts.filter((c) => c.type === 'pick_instructions');
-    expect(invites).toHaveLength(2);
+    expect(invites).toHaveLength(3);
     // Coppia TT/TC iniettata deterministicamente (RF-25) + sole squadre disponibili.
     expect(invites[0]).toMatchObject({ tt: 1, tc: 1 });
     // (getTeams() è ordinata alfabeticamente: AC Milan, AS Roma, Inter, Juventus)
     expect(invites[0]?.availableTeams).toEqual([AC, MA, IM, JU]);
-    expect(channel.sent).toHaveLength(2);
+    // Il contesto del senza-profilo (ultimo invio): stesse squadre in giornata,
+    // nessun playerName (account piattaforma senza nome).
+    expect(invites[2]).toMatchObject({ tt: 1, tc: 1, availableTeams: [AC, MA, IM, JU] });
+    expect('playerName' in (invites[2] ?? {})).toBe(false);
+    expect(channel.sent).toHaveLength(3);
 
     // PICK: A registra IM win entro la deadline.
     const reg = await registerPick(
