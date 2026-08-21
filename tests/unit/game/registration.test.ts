@@ -1,17 +1,16 @@
 /**
- * Test di registrazione e auto-iscrizione (piano Task 4.2, LLD §7.10).
+ * Test di auto-join ed eligibilità (piano Task 7/10, ADR-009, RF-P5).
  *
- * Su DB reale SQLite in-memory + provider reale con la mini-stagione (LLD §8).
- * Verificano:
- * - registrazione manuale (US8): univocità email (RNF2), gate finestra con
- *   override US10 a finestra chiusa (--reason), eligibilità esposta e loggata;
- * - register:open/close (US7/RF-28): apertura/chiusura finestra, notifica
- *   best-effort UNA SOLA volta, chiusura forzata con motivo, finestre
- *   indipendenti (pick TT1 ancora accettati a finestra chiusa);
- * - auto-iscrizione RF-27 (CL2): profilo+pick ATOMICI nel TT1; CL5 (contenuto
- *   non interpretabile → nessun profilo); RF-24 (dal TT2 → rifiuto senza
- *   registrazione); pick rifiutato → nessun profilo orfano; mittente già
- *   registrato (difensivo).
+ * Su DB reale SQLite in-memory (torneo + PIATTAFORMA) + provider reale con la
+ * mini-stagione (LLD §8). Verificano:
+ * - auto-join RF-P5 (CL2/CL5/RF-24): profilo+pick ATOMICI nel TT1 con
+ *   `register_id` replicato (RF-P7); pick invalido → ROLLBACK senza profilo
+ *   orfano; post-TT1 → rifiuto; round non aperto → rifiuto;
+ * - gate eligibilità ADR-009: account `pending_unsubscribe`/`unsubscribed`/
+ *   sconosciuto → `not_eligible`; re-iscrizione con lo stesso `registerID`
+ *   (RF-P3); `checkEligibility` senza registry → `platform_unavailable`.
+ * (Le funzionalità legacy registerPlayer/openRegistration/closeRegistration/
+ * autoRegisterFromPick sono RIMOSSE nel Task 10, ADR-009.)
  */
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
@@ -20,15 +19,13 @@ import type { ChannelAdapter, IncomingMessage } from '../../../src/channel/adapt
 import { parseConfig } from '../../../src/config.js';
 import { DbSeasonDataProvider } from '../../../src/data/db-provider.js';
 import { migrate } from '../../../src/db/schema.js';
+import { migratePlatform } from '../../../src/db/platform-schema.js';
+import { DbPlatformRegistry } from '../../../src/platform/registry.js';
 import type { GameContext } from '../../../src/game/context.js';
 import type { LLMGenerator } from '../../../src/llm/generator.js';
 import { openRound } from '../../../src/game/round-manager.js';
-import {
-  autoRegisterFromPick,
-  closeRegistration,
-  openRegistration,
-  registerPlayer
-} from '../../../src/game/registration.js';
+import { autoJoinFromPick } from '../../../src/game/registration.js';
+import { checkEligibility } from '../../../src/game/eligibility.js';
 import { startTournament } from '../../../src/game/tournament.js';
 import { FIXTURE_TEAMS, loadBaseSeason } from '../../fixtures/season.js';
 
@@ -96,116 +93,27 @@ async function openTT1(h: Pick<Harness, 'db' | 'ctx'>): Promise<void> {
   await openRound(h.ctx, 1);
 }
 
-describe('registrazione manuale (US8, RNF2, override US10)', () => {
-  it('a finestra aperta registra senza motivo (eligibilità esposta)', async () => {
-    const { db, ctx } = await makeHarness();
-    const res = registerPlayer(ctx, { email: 'a@test.it', name: 'Aldo' });
-    expect(res).toMatchObject({ ok: true, eligibility: { eligible: true } });
-    if (res.ok) {
-      expect(db.prepare('SELECT email FROM player WHERE id = (SELECT player_id FROM profile WHERE id = ?)').get(res.profileId)).toEqual({ email: 'a@test.it' });
-    }
-  });
+describe('auto-join RF-P5 (ADR-009) — eligibilità piattaforma + profilo+pick atomici', () => {
+  /** Banco di prova con PlatformRegistry iniettato (account registrabili). */
+  async function makePlatformHarness(): Promise<
+    Harness & { platformDb: Database.Database; platform: DbPlatformRegistry }
+  > {
+    const base = await makeHarness();
+    const platformDb = new Database(':memory:');
+    migratePlatform(platformDb);
+    const platform = new DbPlatformRegistry(platformDb);
+    base.ctx.platform = platform;
+    return { ...base, platformDb, platform };
+  }
 
-  it('univocità email (RNF2): il secondo invio è rifiutato', async () => {
-    const { ctx } = await makeHarness();
-    expect(registerPlayer(ctx, { email: 'a@test.it' })).toMatchObject({ ok: true });
-    expect(registerPlayer(ctx, { email: 'a@test.it' })).toMatchObject({
-      ok: false,
-      reason: 'email_already_registered',
-      eligibility: { eligible: true }
-    });
-  });
-
-  it('a finestra chiusa senza --reason → registration_closed', async () => {
-    const { ctx } = await makeHarness();
-    closeRegistration(ctx);
-    const res = registerPlayer(ctx, { email: 'b@test.it' });
-    expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.reason).toBe('registration_closed');
-  });
-
-  it('a finestra chiusa con --reason (override US10) → registra ed espone il motivo', async () => {
-    const { db, ctx } = await makeHarness();
-    closeRegistration(ctx);
-    const res = registerPlayer(ctx, { email: 'b@test.it', reason: 'ingresso manuale commissione' });
-    expect(res).toMatchObject({
-      ok: true,
-      eligibility: { eligible: true, reason: 'ingresso manuale commissione' }
-    });
-    if (res.ok) {
-      expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 1 });
-    }
-  });
-
-  it('Decisione A (RNF1): player e profile con created_at dal clock iniettato', async () => {
-    const { db, ctx } = await makeHarness();
-    const res = registerPlayer(ctx, { email: 'clock@test.it' });
-    expect(res.ok).toBe(true);
-    const player = db
-      .prepare(
-        'SELECT created_at FROM player WHERE id = (SELECT player_id FROM profile WHERE id = ?)'
-      )
-      .get(res.ok ? res.profileId : 0) as { created_at: string };
-    const profile = db
-      .prepare('SELECT created_at FROM profile WHERE id = ?')
-      .get(res.ok ? res.profileId : 0) as { created_at: string };
-    expect(player.created_at).toBe(NOW.toISOString());
-    expect(profile.created_at).toBe(NOW.toISOString());
-  });
-});
-
-describe('register:open / register:close (US7, RF-22, RF-28)', () => {
-  it('open mantiene aperta la finestra e notifica i contatti UNA SOLA volta', async () => {
-    const { db, channel, generator, ctx } = await makeHarness();
-    // La finestra è già aperta da tournament:start (RF-22): opened=false = "già aperta".
-    const first = await openRegistration(ctx, { contacts: ['c1@test.it', 'c2@test.it'] });
-    expect(first).toEqual({ opened: false, notified: 2 });
-    expect(channel.sent).toHaveLength(2);
-    expect(generator.contexts[0]?.type).toBe('registration_open_invite');
-
-    // Seconda chiamata: la notifica non si ripete (registration_notified).
-    const second = await openRegistration(ctx, { contacts: ['c1@test.it'] });
-    expect(second.notified).toBe(0);
-    expect(channel.sent).toHaveLength(2);
-    expect(db.prepare('SELECT registration_open, registration_notified FROM tournament_state WHERE id = 1').get())
-      .toEqual({ registration_open: 1, registration_notified: 1 });
-  });
-
-  it('close chiude la finestra; con --reason è forzata e auditata', async () => {
-    const { db, ctx } = await makeHarness();
-    const normal = closeRegistration(ctx);
-    expect(normal).toMatchObject({ closed: true, forced: false });
-    expect(db.prepare('SELECT registration_open FROM tournament_state WHERE id = 1').get())
-      .toEqual({ registration_open: 0 });
-
-    // Riapri e chiudi forzatamente.
-    void openRegistration(ctx);
-    const forced = closeRegistration(ctx, { reason: 'quota raggiunta' });
-    expect(forced).toMatchObject({ closed: true, forced: true, reason: 'quota raggiunta' });
-  });
-
-  it('finestre indipendenti: a finestra di iscrizione chiusa i pick del TT1 restano accettati', async () => {
-    const { ctx } = await makeHarness();
-    await openTT1({ db: ctx.db, ctx });
-    closeRegistration(ctx);
-    // Il round 1 è aperto e la deadline non è passata: i pick del TT1 restano
-    // accettati (la finestra di iscrizione chiusa NON chiude la finestra di pick).
-    expect(
-      ctx.db.prepare("SELECT status FROM round_state WHERE round = 1").get()
-    ).toMatchObject({ status: 'open' });
-    // Registrazione manuale a finestra chiusa → serve il motivo (override US10).
-    expect(registerPlayer(ctx, { email: 't@test.it' }).ok).toBe(false);
-  });
-});
-
-describe('auto-iscrizione RF-27 (CL2/CL5/RF-24)', () => {
-  it('CL2: pick interpretabile da sconosciuto nel TT1 → profilo + pick atomici', async () => {
-    const { db, ctx } = await makeHarness();
+  it('iscritto active senza profilo + pick valido nel TT1 → profilo+pick atomici con register_id replicato (RF-P5/P7)', async () => {
+    const { db, ctx, platform } = await makePlatformHarness();
     await openTT1({ db, ctx });
+    const account = platform.register('iscritto@test.it', NOW);
 
-    const res = await autoRegisterFromPick(
+    const res = await autoJoinFromPick(
       ctx,
-      { channel: 'email', identifier: 'nuovo@test.it' },
+      { channel: 'email', identifier: 'iscritto@test.it' },
       { team: IM, outcome: 'win' },
       1,
       T_PICK
@@ -213,7 +121,9 @@ describe('auto-iscrizione RF-27 (CL2/CL5/RF-24)', () => {
 
     expect(res.ok).toBe(true);
     if (res.ok) {
-      const pick = db.prepare('SELECT profile_id, round, team, outcome, status FROM pick WHERE id = ?').get(res.pickId) as {
+      const pick = db
+        .prepare('SELECT profile_id, round, team, outcome, status FROM pick WHERE id = ?')
+        .get(res.pickId) as {
         profile_id: number;
         round: number;
         team: string;
@@ -221,86 +131,233 @@ describe('auto-iscrizione RF-27 (CL2/CL5/RF-24)', () => {
         status: string;
       };
       expect(pick).toMatchObject({ profile_id: res.profileId, round: 1, team: IM, outcome: 'win', status: 'pending' });
-      expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 1 });
-      expect(db.prepare('SELECT COUNT(*) AS n FROM pick').get()).toEqual({ n: 1 });
+      // register_id REPLICATO sull'account piattaforma (RF-P7).
+      const player = db.prepare('SELECT register_id FROM player WHERE id = (SELECT player_id FROM profile WHERE id = ?)').get(res.profileId) as { register_id: number };
+      const profile = db.prepare('SELECT register_id FROM profile WHERE id = ?').get(res.profileId) as { register_id: number };
+      expect(player.register_id).toBe(account.registerId);
+      expect(profile.register_id).toBe(account.registerId);
     }
   });
 
-  it('CL5: contenuto non interpretabile → nessun profilo creato', async () => {
-    const { db, ctx } = await makeHarness();
-    const res = await autoRegisterFromPick(ctx, { channel: 'email', identifier: 'x@test.it' }, null, 1, T_PICK);
-    expect(res).toEqual({ ok: false, reason: 'not_interpretable' });
-    expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 0 });
-  });
-
-  it('RF-24: dal TT2 l\'auto-iscrizione è rifiutata senza registrazione', async () => {
-    const { db, ctx } = await makeHarness();
-    const res = await autoRegisterFromPick(
-      ctx,
-      { channel: 'email', identifier: 'y@test.it' },
-      { team: IM, outcome: 'win' },
-      2, // TC 2 = TT 2
-      new Date('2026-09-19T15:00:00Z')
-    );
-    expect(res).toEqual({ ok: false, reason: 'not_tt1' });
-    expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 0 });
-  });
-
-  it('pick rifiutato dalla cascata → ROLLBACK: nessun profilo orfano', async () => {
-    const { db, ctx } = await makeHarness();
+  it('player legacy senza profile (register_id NULL) + pick valido nel TT1 → profilo sul player ESISTENTE con backfill register_id (A8/B7, decisione (g))', async () => {
+    const { db, ctx, platform } = await makePlatformHarness();
     await openTT1({ db, ctx });
-    // 'Napoli' non è nella lista canonica della mini-stagione → unknown_team.
-    const res = await autoRegisterFromPick(
+    const account = platform.register('legacy@test.it', NOW);
+
+    // Dato legacy (decisione 2 "nessuna migrazione"): riga player preesistente
+    // SENZA profile e con register_id NULL.
+    const legacyPlayerId = db
+      .prepare('INSERT INTO player (email, name, register_id, created_at) VALUES (?, NULL, NULL, ?)')
+      .run('legacy@test.it', '2026-08-01T00:00:00.000Z').lastInsertRowid as number;
+
+    const res = await autoJoinFromPick(
       ctx,
-      { channel: 'email', identifier: 'z@test.it' },
-      { team: 'Napoli', outcome: 'win' },
+      { channel: 'email', identifier: 'legacy@test.it' },
+      { team: IM, outcome: 'win' },
       1,
       T_PICK
     );
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      // NESSUNA nuova riga player (UNIQUE email rispettato): il profilo nasce
+      // collegato al player legacy ESISTENTE.
+      const players = db
+        .prepare('SELECT id, email, register_id FROM player ORDER BY id')
+        .all() as Array<{ id: number; email: string; register_id: number | null }>;
+      expect(players).toHaveLength(1);
+      const player = players[0];
+      expect(player).toBeDefined();
+      expect(player?.id).toBe(legacyPlayerId);
+
+      // Backfill register_id: NULL (legacy) → account.registerId (RF-P7).
+      expect(player?.register_id).toBe(account.registerId);
+
+      const profile = db
+        .prepare('SELECT player_id, register_id FROM profile WHERE id = ?')
+        .get(res.profileId) as { player_id: number; register_id: number };
+      expect(profile.player_id).toBe(legacyPlayerId);
+      expect(profile.register_id).toBe(account.registerId);
+
+      // Pick inserito per il profilo appena creato.
+      const pick = db
+        .prepare('SELECT profile_id, round, team, outcome, status FROM pick WHERE id = ?')
+        .get(res.pickId) as {
+        profile_id: number;
+        round: number;
+        team: string;
+        outcome: string;
+        status: string;
+      };
+      expect(pick).toMatchObject({ profile_id: res.profileId, round: 1, team: IM, outcome: 'win', status: 'pending' });
+    }
+  });
+
+  it('pick invalido nel TT1 → ROLLBACK senza profilo orfano (RF-P5)', async () => {
+    const { db, ctx, platform } = await makePlatformHarness();
+    await openTT1({ db, ctx });
+    platform.register('rollback@test.it', NOW);
+
+    const res = await autoJoinFromPick(
+      ctx,
+      { channel: 'email', identifier: 'rollback@test.it' },
+      { team: 'Napoli', outcome: 'win' }, // fuori lista canonica → unknown_team
+      1,
+      T_PICK
+    );
+
     expect(res).toEqual({ ok: false, reason: 'pick_rejected', pickReason: 'unknown_team' });
     expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 0 });
     expect(db.prepare('SELECT COUNT(*) AS n FROM pick').get()).toEqual({ n: 0 });
   });
 
-  it('finestra chiusa → window_closed', async () => {
-    const { ctx } = await makeHarness();
-    closeRegistration(ctx);
-    const res = await autoRegisterFromPick(ctx, { channel: 'email', identifier: 'w@test.it' }, { team: IM, outcome: 'win' }, 1, T_PICK);
-    expect(res).toEqual({ ok: false, reason: 'window_closed' });
-  });
+  it('post-TT1: iscritto senza profilo → not_tt1 (rifiuto con risposta nel wiring)', async () => {
+    const { db, ctx, platform } = await makePlatformHarness();
+    platform.register('tardi@test.it', NOW);
 
-  it('mittente già registrato → already_registered (difensivo)', async () => {
-    const { ctx } = await makeHarness();
-    registerPlayer(ctx, { email: 'v@test.it' });
-    const res = await autoRegisterFromPick(ctx, { channel: 'email', identifier: 'v@test.it' }, { team: IM, outcome: 'win' }, 1, T_PICK);
-    expect(res).toEqual({ ok: false, reason: 'already_registered' });
-  });
-
-  it('Decisione A (RNF1): auto-iscrizione con created_at dal clock su player/profile/pick', async () => {
-    const { db, ctx } = await makeHarness();
-    await openTT1({ db, ctx });
-
-    const res = await autoRegisterFromPick(
+    const res = await autoJoinFromPick(
       ctx,
-      { channel: 'email', identifier: 'clock2@test.it' },
+      { channel: 'email', identifier: 'tardi@test.it' },
+      { team: IM, outcome: 'win' },
+      2,
+      new Date('2026-09-19T15:00:00Z')
+    );
+
+    expect(res).toEqual({ ok: false, reason: 'not_tt1' });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 0 });
+  });
+
+  it('round non aperto nel TT1 → round_not_open (nessun profilo)', async () => {
+    const { db, ctx, platform } = await makePlatformHarness();
+    platform.register('chiuso@test.it', NOW);
+    // Nessun round:open sul TC 1: round_state.status = 'pending'.
+
+    const res = await autoJoinFromPick(
+      ctx,
+      { channel: 'email', identifier: 'chiuso@test.it' },
       { team: IM, outcome: 'win' },
       1,
       T_PICK
     );
-    expect(res.ok).toBe(true);
-    const player = db
-      .prepare(
-        'SELECT created_at FROM player WHERE id = (SELECT player_id FROM profile WHERE id = ?)'
+
+    expect(res).toEqual({ ok: false, reason: 'round_not_open' });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 0 });
+  });
+
+  it('account pending_unsubscribe → not_eligible (barriera a due passi, RF-P2/P6)', async () => {
+    const { db, ctx, platform } = await makePlatformHarness();
+    await openTT1({ db, ctx });
+    platform.register('pendente@test.it', NOW);
+    platform.beginUnsubscribe('pendente@test.it', NOW);
+
+    const res = await autoJoinFromPick(
+      ctx,
+      { channel: 'email', identifier: 'pendente@test.it' },
+      { team: IM, outcome: 'win' },
+      1,
+      T_PICK
+    );
+    expect(res).toEqual({ ok: false, reason: 'not_eligible' });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 0 });
+  });
+
+  it('account unsubscribed o mai iscritto → not_eligible (nessun profilo)', async () => {
+    const { db, ctx, platform } = await makePlatformHarness();
+    await openTT1({ db, ctx });
+    platform.register('disiscritto@test.it', NOW);
+    platform.beginUnsubscribe('disiscritto@test.it', NOW);
+    platform.confirmUnsubscribe('disiscritto@test.it', NOW);
+
+    expect(
+      await autoJoinFromPick(
+        ctx,
+        { channel: 'email', identifier: 'disiscritto@test.it' },
+        { team: IM, outcome: 'win' },
+        1,
+        T_PICK
       )
-      .get(res.ok ? res.profileId : 0) as { created_at: string };
+    ).toEqual({ ok: false, reason: 'not_eligible' });
+    expect(
+      await autoJoinFromPick(
+        ctx,
+        { channel: 'email', identifier: 'sconosciuto@test.it' },
+        { team: IM, outcome: 'win' },
+        1,
+        T_PICK
+      )
+    ).toEqual({ ok: false, reason: 'not_eligible' });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 0 });
+  });
+
+  it('re-iscrizione con stesso registerID: dopo unsubscribe il profilo mantiene il register_id originale (RF-P3)', async () => {
+    const { db, ctx, platform } = await makePlatformHarness();
+    await openTT1({ db, ctx });
+    const account = platform.register('riuso@test.it', NOW);
+
+    const first = await autoJoinFromPick(
+      ctx,
+      { channel: 'email', identifier: 'riuso@test.it' },
+      { team: IM, outcome: 'win' },
+      1,
+      T_PICK
+    );
+    expect(first.ok).toBe(true);
     const profile = db
-      .prepare('SELECT created_at FROM profile WHERE id = ?')
-      .get(res.ok ? res.profileId : 0) as { created_at: string };
-    const pick = db
-      .prepare('SELECT created_at FROM pick WHERE id = ?')
-      .get(res.ok ? res.pickId : 0) as { created_at: string };
-    expect(player.created_at).toBe(NOW.toISOString());
-    expect(profile.created_at).toBe(NOW.toISOString());
-    expect(pick.created_at).toBe(NOW.toISOString());
+      .prepare('SELECT register_id FROM profile WHERE id = ?')
+      .get(first.ok ? first.profileId : 0) as { register_id: number };
+    expect(profile.register_id).toBe(account.registerId);
+
+    // Disiscrizione + re-iscrizione: registerID invariato (RF-P3).
+    platform.beginUnsubscribe('riuso@test.it', NOW);
+    platform.confirmUnsubscribe('riuso@test.it', NOW);
+    const reactivated = platform.register('riuso@test.it', NOW);
+    expect(reactivated.registerId).toBe(account.registerId);
+  });
+
+  it('checkEligibility: registry assente → platform_unavailable; sconosciuto → account_not_active (nessun bypass)', () => {
+    const base = new Database(':memory:');
+    migrate(base);
+    const ctxNoPlatform: GameContext = {
+      db: base,
+      dataProvider: new DbSeasonDataProvider(base),
+      config: parseConfig({
+        IMAP_USER: 'u',
+        IMAP_PASS: 'p',
+        SMTP_USER: 'u',
+        SMTP_PASS: 'p',
+        LLM_API_KEY: 'k',
+        FOOTBALL_DATA_TOKEN: 't'
+      }),
+      now: NOW
+    };
+    expect(checkEligibility(ctxNoPlatform, { channel: 'email', identifier: 'x@test.it' })).toEqual({
+      eligible: false,
+      reason: 'platform_unavailable'
+    });
+
+    const platformDb = new Database(':memory:');
+    migratePlatform(platformDb);
+    const platform = new DbPlatformRegistry(platformDb);
+    const ctxWithPlatform: GameContext = { ...ctxNoPlatform, platform };
+    expect(checkEligibility(ctxWithPlatform, { channel: 'email', identifier: 'x@test.it' })).toEqual({
+      eligible: false,
+      reason: 'account_not_active'
+    });
+    platform.register('a@test.it', NOW);
+    expect(checkEligibility(ctxWithPlatform, { channel: 'email', identifier: 'a@test.it' })).toEqual({
+      eligible: true
+    });
+    // Override US10 con motivo: forzabile e auditato.
+    expect(
+      checkEligibility(ctxWithPlatform, { channel: 'email', identifier: 'x@test.it' }, {
+        forceEligible: true,
+        reason: 'override manuale'
+      })
+    ).toEqual({ eligible: true, reason: 'override manuale' });
+    expect(
+      checkEligibility(ctxWithPlatform, { channel: 'email', identifier: 'x@test.it' }, {
+        forceEligible: true
+      })
+    ).toEqual({ eligible: false, reason: 'override_requires_reason' });
   });
 });

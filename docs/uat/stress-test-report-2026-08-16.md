@@ -19,7 +19,7 @@
 
 ## 1. Contesto e obiettivo
 
-Il piano `tasks/plan-failover-llm-multimodello.md` ha introdotto: lista
+Il piano `tasks/llm/plan-failover-llm-multimodello.md` ha introdotto: lista
 multi-modello in `LLM_MODEL` con failover client-side (D2-D5), timeout
 configurabile `LLM_TIMEOUT_MS` (default 15 s, D6), retry per modello
 `LLM_RETRIES` (default 3, D4), callback diagnostica `onModelTried` (D7) e il

@@ -25,18 +25,21 @@ import { turnCompact, turnExtended } from '../game/turn.js';
 import { OpenAIClient } from './openai-client.js';
 import { TURN_PLACEHOLDER_COMPACT, TURN_PLACEHOLDER_EXTENDED } from './templates.js';
 
-/** Tutti i tipi di email previsti dal POC (LLD §6.3), nell'ordine di enum. */
+/** Tutti i tipi di email previsti dal POC (LLD §6.3 v0.5.0), nell'ordine di enum. */
 export const EMAIL_TYPES = [
-  'welcome', // benvenuto a iscrizione avvenuta (con formato pick e regole)
-  'registration_open_invite', // invito a iscriversi (apertura finestra)
+  'platform_registered', // conferma iscrizione piattaforma (RF-P1, ADR-009)
+  'platform_unsubscribe_confirm', // barriera due passi: primo unsubscribe → pending (RF-P2)
+  'platform_unsubscribed', // soft-delete confermata (RF-P2)
+  'platform_already_registered', // re-iscrizione da account già active (ADR-009, decisione (f)/B6)
+  'tournament_open', // apertura torneo a tutti gli iscritti attivi (RF-P6)
   'pick_instructions', // apertura round: istruzioni + squadre disponibili
-  'pick_confirmed', // conferma di registrazione pick
+  'pick_confirmed', // conferma di registrazione pick; per l'auto-join è l'UNICO messaggio (RF-P5, D5)
   'pick_rejected', // rifiuto pick con motivo
   'pick_missing_elimination', // eliminazione per pick mancante
   'round_result_correct', // esito pick corretto
   'round_result_wrong', // esito pick sbagliato (eliminazione)
   'pick_postponed', // notifica passaggio in Freeze (rinvio)
-  'auto_registered', // auto-iscrizione RF-27: un UNICO messaggio che unisce iscrizione ed esito del pick (D5)
+  'round_closed_survived', // riepilogo chiusura round ai SOLI sopravvissuti (RF-P6)
   'tournament_won', // vittoria del torneo
   'tournament_shared_win' // vittoria condivisa
 ] as const;
@@ -83,8 +86,11 @@ export interface LLMGenerator {
 
 /** Etichetta del soggetto per ogni tipo di email (deterministica, D1). */
 const SUBJECT_LABELS: Record<EmailType, string> = {
-  welcome: 'Benvenuto',
-  registration_open_invite: 'Iscrizioni aperte',
+  platform_registered: 'Iscrizione confermata',
+  platform_unsubscribe_confirm: 'Conferma la disiscrizione',
+  platform_unsubscribed: 'Disiscrizione confermata',
+  platform_already_registered: 'Già iscritto alla piattaforma',
+  tournament_open: 'Il torneo è aperto',
   pick_instructions: 'Invia il tuo pick',
   pick_confirmed: 'Pick registrato',
   pick_rejected: 'Pick non registrato',
@@ -92,7 +98,7 @@ const SUBJECT_LABELS: Record<EmailType, string> = {
   round_result_correct: 'Pick corretto',
   round_result_wrong: 'Pick sbagliato',
   pick_postponed: 'Partita rinviata',
-  auto_registered: 'Benvenuto: pick registrato',
+  round_closed_survived: 'Riepilogo turno',
   tournament_won: 'Hai vinto il torneo',
   tournament_shared_win: 'Vittoria condivisa'
 };

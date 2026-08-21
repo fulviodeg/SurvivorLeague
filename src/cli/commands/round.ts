@@ -32,23 +32,36 @@ import {
   roundStatus,
   scoreRound
 } from '../../game/round-manager.js';
-import { attachEmailToContext } from '../email-wiring.js';
+import { attachEmailToContext, attachPlatformToContext } from '../email-wiring.js';
 import { makeNow } from '../../clock.js';
+import { createLogger } from '../../logger.js';
 import { jsonWithTestMode, printTestModeBanner } from '../output.js';
 
 /**
  * Costruisce il contesto di gioco con clock = adesso (CLI del commissioner)
  * e INIETTA le componenti email reali (EmailAdapter+LLMGenerator+LLMParser,
  * Fasi 5–6): le notifiche di round:open/close/score partono via SMTP/LLM
- * reali (problema M del briefing — niente getConfig() nei moduli).
+ * reali (problema M del briefing — niente getConfig() nei moduli). Inietta
+ * anche il logger pino del comando (livello e binding testMode dalla config):
+ * i fallimenti BEST-EFFORT del Round Manager (es. riepilogo non inviato a un
+ * destinatario, B2 decisione (b)) restano così visibili nei log senza far
+ * fallire il comando.
  */
-function makeGameContext(): { ctx: GameContext; db: ReturnType<typeof createConnection> } {
+function makeGameContext(): {
+  ctx: GameContext;
+  db: ReturnType<typeof createConnection>;
+  platformDb: ReturnType<typeof createConnection>;
+} {
   const config = getConfig();
   const db = createConnection(config.DB_PATH);
   migrate(db);
   const dataProvider = new DbSeasonDataProvider(db);
-  const base: GameContext = { db, dataProvider, config, now: makeNow(config) };
-  return { ctx: attachEmailToContext(base, config), db };
+  const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode);
+  const base: GameContext = { db, dataProvider, config, now: makeNow(config), logger };
+  // Registry piattaforma iniettato (ADR-009, RF-P6): le notifiche di
+  // round:open/close/score filtrano su account `active`.
+  const { ctx, platformDb } = attachPlatformToContext(attachEmailToContext(base, config), config);
+  return { ctx, db, platformDb };
 }
 
 /** Opzione JSON condivisa (LLD §7.13). */
@@ -87,19 +100,27 @@ export const roundOpenCommand: CommandModule<object, RoundArgs> = {
   describe: 'Apre un round: crea round_state con deadline fissa (RF-14) e invia le email pick',
   builder: roundBuilder,
   handler: async (argv) => {
-    const { ctx, db } = makeGameContext();
+    const { ctx, db, platformDb } = makeGameContext();
     try {
       const result = await openRound(ctx, argv.round);
       if (argv.json) {
         console.log(jsonWithTestMode(ctx.config, result));
       } else {
         printTestModeBanner(ctx.config);
+        // Modifica CLI (AGENTS.md Parte 2, regola 5 — commento obbligatorio):
+        // la riga di output testuale include anche i registrati alla
+        // piattaforma SENZA profilo notificati all'apertura del TT 1
+        // (amendment RF-P6, 2026-08-21): il campo è 0 per i round
+        // successivi o senza registry. L'output `--json` esce già dal
+        // risultato di openRound (campo `registeredNotified`) ed è invariato
+        // nella struttura.
         console.log(
-          `Round ${result.tc} (TT ${result.tt}) aperto — deadline ${result.deadline}, profili notificati: ${result.notified}`
+          `Round ${result.tc} (TT ${result.tt}) aperto — deadline ${result.deadline}, profili notificati: ${result.notified}, registrati senza profilo notificati: ${result.registeredNotified}`
         );
       }
     } finally {
       db.close();
+      platformDb.close();
     }
   }
 };
@@ -120,7 +141,7 @@ export const roundCloseCommand: CommandModule<object, CloseArgs> = {
         describe: "Motivo auditato della chiusura forzata (obbligatorio con --force)"
       }),
   handler: async (argv) => {
-    const { ctx, db } = makeGameContext();
+    const { ctx, db, platformDb } = makeGameContext();
     try {
       const result = await closeRound(ctx, argv.round, { force: argv.force, reason: argv.reason });
       if (argv.json) {
@@ -135,6 +156,7 @@ export const roundCloseCommand: CommandModule<object, CloseArgs> = {
       }
     } finally {
       db.close();
+      platformDb.close();
     }
   }
 };
@@ -145,7 +167,7 @@ export const roundScoreCommand: CommandModule<object, RoundArgs> = {
     'Contabilizza un round (incrementale): pending → correct/wrong, postponed oltre tcClose → frozen, frozen con punteggio → valutato',
   builder: roundBuilder,
   handler: async (argv) => {
-    const { ctx, db } = makeGameContext();
+    const { ctx, db, platformDb } = makeGameContext();
     try {
       const result = await scoreRound(ctx, argv.round);
       if (argv.json) {
@@ -158,6 +180,7 @@ export const roundScoreCommand: CommandModule<object, RoundArgs> = {
       }
     } finally {
       db.close();
+      platformDb.close();
     }
   }
 };
@@ -167,7 +190,7 @@ export const roundStatusCommand: CommandModule<object, RoundArgs> = {
   describe: 'Stato di un round con coppia TT/TC e conteggi pick (sola lettura)',
   builder: roundBuilder,
   handler: (argv) => {
-    const { ctx, db } = makeGameContext();
+    const { ctx, db, platformDb } = makeGameContext();
     try {
       const result = roundStatus(ctx, argv.round);
       if (argv.json) {
@@ -183,6 +206,7 @@ export const roundStatusCommand: CommandModule<object, RoundArgs> = {
       }
     } finally {
       db.close();
+      platformDb.close();
     }
   }
 };
@@ -192,7 +216,7 @@ export const roundDeadlineCommand: CommandModule<object, RoundArgs> = {
   describe: 'Deadline registrata e kickoff effettivo di un round (istante di accettazione, RF-31)',
   builder: roundBuilder,
   handler: async (argv) => {
-    const { ctx, db } = makeGameContext();
+    const { ctx, db, platformDb } = makeGameContext();
     try {
       const result = await roundDeadline(ctx, argv.round);
       if (argv.json) {
@@ -205,6 +229,7 @@ export const roundDeadlineCommand: CommandModule<object, RoundArgs> = {
       }
     } finally {
       db.close();
+      platformDb.close();
     }
   }
 };

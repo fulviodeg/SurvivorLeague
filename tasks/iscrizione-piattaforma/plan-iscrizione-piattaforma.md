@@ -1,7 +1,7 @@
 # Piano: iscrizione a livello di piattaforma (POC)
 
 > **Stato:** piano pronto per l'implementazione (da eseguire su un nuovo branch `feat/` da `main`, NON sul branch di analisi `docs/adr-platform-registration`).
-> **Origine:** analisi `tasks/brainstorming-iscrizione-piattaforma.md` (2026-08-20) + review dell'utente. Le decisioni di quel documento (conflitti risolti, punti 1–12, trade-off SQLite) sono vincolanti per questo piano.
+> **Origine:** analisi `tasks/iscrizione-piattaforma/brainstorming-iscrizione-piattaforma.md` (2026-08-20) + review dell'utente. Le decisioni di quel documento (conflitti risolti, punti 1–12, trade-off SQLite) sono vincolanti per questo piano.
 > **Relazione coi piani esistenti:** `tasks/plan.md` resta la roadmap generale. Questo piano copre la modifica "iscrizione a piattaforma"; la **chiusura automatica del torneo sul vincitore** (punto 8 della review) è un **task separato** successivo (vedi appendice), NON incluso qui.
 > **Nota percorso:** il piano è scritto in `.kilo/plans/` (posizione autorizzata in plan mode); al termine della pianificazione va copiato in `tasks/` (richiesta dell'utente).
 

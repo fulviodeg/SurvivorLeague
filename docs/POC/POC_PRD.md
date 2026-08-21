@@ -3,8 +3,8 @@
 > ⚠ **POC ONLY** — Questo documento descrive il sistema per la Proof of Concept. Non è il design del sistema di produzione.
 
 **Stato:** Revisionato
-**Data:** 2026-08-14
-**Versione:** 0.5.2
+**Data:** 2026-08-20
+**Versione:** 0.6.1
 
 ---
 
@@ -51,7 +51,7 @@ La POC è un **sottoinsieme** delle funzionalità discusse nel BRIEF (documento 
 
 | Funzionalità | Riferimento BRIEF | Forma nella POC |
 |---|---|---|
-| Iscrizione via email | §1, §3.1 | Un giocatore = un profilo; l'identità è fornita dal canale (POC: l'email) |
+| Iscrizione via email | §1, §3.1 | Account **piattaforma** persistente (email, `registerID` stabile); la partecipazione al torneo (profilo) nasce al **primo pick valido nel TT 1** (auto-join, RF-P5) |
 | Regole di gioco complete | §3.1-3.2 | Una squadra per girone; tre casi di fine torneo (unico, collettiva, fine stagione) |
 | Pick via email in linguaggio naturale | §3.3, §3.7 | Invio, validazione, primo pick valido, deadline |
 | Eliminazione per pick mancante | §3.5 | Nessun meccanismo di grazia |
@@ -60,7 +60,8 @@ La POC è un **sottoinsieme** delle funzionalità discusse nel BRIEF (documento 
 | Amministrazione e test via CLI | — | Ogni componente espone comandi CLI (ADR-006) |
 | Dati storici 2025/26 e simulazione stagione | §7.1 | Dati via API football-data.org importati nel DB; simulazione intera stagione |
 | Configurabilità totale | §5 | Parametri di gioco e infrastruttura in env validate |
-| Avvio asincrono (aggancio) | — (2026-08-14, ADR-008) | Il torneo può partire da un TC arbitrario della stagione (`tournament:start --start-round <n>`); finestra di iscrizione ancorata al TT 1 |
+| Avvio asincrono (aggancio) | — (2026-08-14, ADR-008) | Il torneo può partire da un TC arbitrario della stagione (`tournament:start --start-round <n>`); la partecipazione è gated dalla deadline del TT 1 |
+| Iscrizione a livello di piattaforma | — (2026-08-20, ADR-009) | Storage separato `PLATFORM_DB_PATH`, soft-delete a due passi, iscrizione/disiscrizione via email sempre disponibili |
 
 **Rimandate alla Fase 1 di Produzione** (BRIEF §7.2): profili multipli (§3.3), avviso di collisione (§3.4), quota di iscrizione e montepremi/payout (§3.6, §3.9), canale WhatsApp (§3.8), **tornei multipli (§3.10 — non inclusi nella POC)**.
 **Rimandate alle esplorazioni future** (`FUTURE_EXPLORATIONS.MD`): jolly, auto-pick, ingresso tardivo, canali aggiuntivi, notifiche, chatbot, web (vedi anche §10).
@@ -88,6 +89,12 @@ Dal brief originale, applicato alla POC:
 |---|---|
 | **Aggancio del torneo** | Scelta del TC di partenza del torneo (`start_round`): il TT 1 corrisponde al TC di aggancio e il torneo gioca la finestra `[start_round…fine stagione]` (RF-20) |
 | **Ancora TC** | Sinonimo di TC di aggancio: il TC da cui parte il torneo |
+| **Account piattaforma** | L'iscrizione alla **piattaforma** (ADR-009, RF-P1): email + `registerID` interno **stabile** + status `active`/`pending_unsubscribe`/`unsubscribed`. Persistita in uno storage separato (`PLATFORM_DB_PATH`, RF-P7); non è la partecipazione al torneo |
+| **registerID** | Identificatore interno stabile dell'account piattaforma: **riusato** alla re-iscrizione (RF-P3); replicato su `player`/`profile` come riferimento (RF-P7) |
+| **Iscritto (piattaforma)** | Un titolare di account piattaforma in stato `active`. Riceve la notifica di apertura torneo; può inviare pick (se partecipante) o disiscriversi |
+| **Partecipante** | Un iscritto che ha un **profilo** nel torneo (nato per **auto-join al TT1**, RF-P5). Solo i partecipanti ricevono le email di round |
+| **Auto-join** | Creazione **atomica** di profilo + primo pick valido al TT 1 (RF-P5): sostituisce RF-27; nessun profilo senza pick valido; la risposta è `pick_confirmed` |
+| **Soft-delete a due passi** | Barriera di disiscrizione (RF-P2): primo messaggio di unsubscribe → `pending_unsubscribe` + email `platform_unsubscribe_confirm`; la soft-delete (`unsubscribed`) avviene solo su un secondo messaggio con intento `unsubscribe` o body di conferma (`confermo`/`sì`/`si`/`yes`). L'email resta memorizzata (re-iscrizione con lo stesso `registerID`) |
 | **ExternalIdentity** | Identità di un giocatore fornita dal canale di comunicazione, normalizzata in `{ channel, identifier }`; nella POC `{ channel: 'email', identifier: <indirizzo email> }` (ADR-008) |
 | **Token `TTnTCm`** | Coppia numerica compatta "TT n, TC m" (es. `TT2TC7`) usata in email e CLI; nel corpo email è scritta in forma estesa; nei log sono campi strutturati `{tt, tc}` (RF-25) |
 | **Pick** | Pronostico per un TT: una squadra + un esito (vittoria / sconfitta / pareggio) |
@@ -101,7 +108,7 @@ Dal brief originale, applicato alla POC:
 | **Finestra di pick** | Intervallo del TT in cui i pick possono essere inviati: dall'apertura del TT alla deadline |
 | **Freeze** | Stato di un pick la cui partita è stata rinviata fuori dalla finestra del TC: resta in attesa e viene contabilizzato solo a partita conclusa; la squadra resta bruciata nel girone corrente (5.4) |
 | **Girone** | Andata (TC 1-19) o ritorno (TC 20-38). Al cambio girone il pool di squadre disponibili si azzera |
-| **Profilo** | L'iscrizione di un giocatore. Nella POC: un profilo per giocatore |
+| **Profilo** | La **partecipazione al torneo** di un iscritto: nasce per auto-join al primo pick valido nel TT 1 (RF-P5) e muore per eliminazione. Nella POC: un profilo per giocatore |
 | **Giocatore** | La persona reale, la cui identità è fornita dal canale di comunicazione (nella POC: l'indirizzo email) |
 | **Squadra bruciata** | Squadra già usata dal profilo nel girone corrente, non più disponibile |
 | **Eliminazione** | Rimozione del profilo dal torneo dopo pick sbagliato o mancante |
@@ -142,39 +149,37 @@ accettazione pick = min(deadline registrata, fischio d'inizio effettivo prima pa
 chiusura TC = fine prevista della UPP + scarto (config., proposta 5 ore)
 ```
 
-### 4.1 Iscrizione
+### 4.1 Iscrizione (piattaforma) e auto-join
 
-La finestra di iscrizione è l'intervallo **dall'apertura del torneo alla deadline del TT 1** (RF-22, US7/US8): il sistema accetta iscrizioni durante l'intera finestra e la finestra si **chiude da sola alla deadline del TT 1** (RF-04 + RF-13). Il commissioner può comunque **forzare la chiusura** in qualunque momento — prima della deadline, o se la deadline del TT 1 non è registrata — con `tournament:register:close --reason <motivo>` (RF-28, US8). Le due finestre sono **indipendenti**: chiudere l'iscrizione non chiude la finestra di pick del TT 1 (i pick restano accettati fino alla deadline). All'apertura del torneo, se è disponibile una **lista di contatti** (es. gli indirizzi di iscrizioni precedenti) fornita dal commissioner, il sistema può notificarne l'apertura come invito (call to action).
+L'iscrizione è a **due livelli** (ADR-009): la **piattaforma** (account persistente, sempre disponibile) e il **torneo** (profilo = partecipazione, solo entro la deadline del TT 1).
 
-1. Un giocatore invia un'email a un indirizzo dedicato per iscriversi.
-2. Il sistema risponde confermando l'iscrizione, con il formato del pick e le regole essenziali.
-3. D'ora in poi il profilo è attivo e riceverà le email di pick a ogni TT.
+**Iscrizione alla piattaforma (RF-P1/P3/P4).** Un giocatore si iscrive (e si disiscrive) **via email in qualunque momento** — prima, durante e dopo un torneo: non esiste più alcuna "finestra di iscrizione" da aprire/chiudere. L'intento del messaggio (iscrizione / disiscrizione / pick) è classificato dall'LLM (RF-P1, ADR-004). Alla prima iscrizione il sistema crea l'account con un `registerID` interno **stabile** e risponde con la conferma (`platform_registered`) con formato del pick e regole essenziali. Una nuova iscrizione da un'email già registrata riattiva lo stesso account (`registerID` invariato, RF-P3) e risponde "già iscritto" con il tipo email dedicato `platform_already_registered`. Un pick da un mittente **non iscritto** (mai iscritto o disiscritto) produce **solo un log interno, nessuna risposta** (anti-spam, RF-P4). Il comando `platform:register` è l'**unico** comando di creazione account e **non crea profili** (la partecipazione avviene solo via auto-join).
 
-**Auto-iscrizione al primo pick (RF-27).** Durante la finestra del TT 1, un'email di pick da un indirizzo **sconosciuto** il cui contenuto è interpretabile (squadra + esito estratti) produce un'unica operazione **atomica**: **creazione del profilo + validazione del pick**; il sistema risponde con un unico messaggio che unisce iscrizione ed esito del pick (tipo email `auto_registered`, LLD §6.3 — D5). Se il messaggio non è interpretabile (CL5), il sistema chiede un chiarimento **senza registrare alcun profilo**. Dopo la deadline del TT 1 un pick da indirizzo sconosciuto è respinto **senza registrazione**: il torneo è iniziato (CL2, RF-24).
+**Disiscrizione a due passi (RF-P2).** Il primo messaggio con intento di disiscrizione **non** elimina: imposta `pending_unsubscribe` e invia `platform_unsubscribe_confirm`. La soft-delete (`unsubscribed`) avviene solo su un **secondo** messaggio con intento `unsubscribe` o con un body di conferma (`confermo`/`sì`/`si`/`yes`). Un messaggio di iscrizione o un pick mentre lo stato è `pending_unsubscribe` riporta l'account ad `active` (stesso `registerID`). Una disiscrizione da un account già `unsubscribed` (o da un mittente mai iscritto) produce un **log silenzioso** (nessuna risposta). L'email resta memorizzata: la re-iscrizione riusa lo stesso `registerID` e lo storico torneo non è toccato (RF-P3).
 
-**Vincolo di iscrizione.** Il gate reale delle iscrizioni è la **finestra** `[apertura del torneo, deadline del TT 1]` (RF-22): prima dell'apertura e dopo la deadline del TT 1 una richiesta di iscrizione o auto-iscrizione è rifiutata con un messaggio che indica lo stato della finestra (es. "torneo iniziato al TT 1 / TC _n_"; CL2, CL11). Chi non risulta iscritto alla deadline del TT 1 **non è un partecipante**: non viene creato alcun profilo e non esiste alcun nuovo stato di eliminazione (RF-24). I casi particolari (es. un amico che si iscrive in ritardo) restano gestibili dal commissioner tramite **iscrizione manuale via CLI** (US10, `--reason` obbligatorio), unico canale ammesso a finestra chiusa. Per poter inviare un pick in un TT, il profilo deve risultare iscritto **al momento dell'invio del pick** e comunque **entro la deadline** di quel TT (4.3, 5.3).
+**Partecipazione al torneo: auto-join al TT 1 (RF-P5).** Un iscritto **senza profilo** che invia un pick **nel TT 1** (round = TC di aggancio, round aperto, pick che passa l'accettazione RF-31) crea **profilo + pick in un'unica operazione atomica**; se il pick non è valido il profilo non viene creato (rollback). La risposta è `pick_confirmed` (nessuna conferma di iscrizione separata). L'iscrizione alla piattaforma durante un torneo aperto **non crea subito il profilo**: chi si iscrive e non invia mai un pick **non è un partecipante** (non eliminato, nessuna email di round). **Dopo la deadline del TT 1** un pick da iscritto senza profilo è rifiutato con risposta (il torneo è iniziato); un pick da sconosciuto non auto-iscrive mai (RF-P4). La **disiscrizione a torneo in corso** non tocca il profilo (storico intatto): ferma solo comunicazioni e pick; il profilo muore naturalmente alla prossima chiusura round (`missing_pick`, senza email al disiscritto). Se il giocatore si **re-iscrive prima della prossima deadline**, riprende a giocare con lo stesso `registerID` e lo stesso profilo.
 
 **Regole:**
-- L'identità del giocatore è fornita dal canale di comunicazione; nella POC il canale è l'email, identificativa unica del giocatore (RF-02, ADR-008)
-- Un giocatore = un profilo
-- Registrazione automatica (via email o auto-iscrizione) ammessa **solo entro la finestra di iscrizione**; a finestra chiusa solo per **intervento manuale** del commissioner (US10)
-- Prima di ogni registrazione il Game Engine valuta l'**eligibilità** dell'identità (`checkEligibility(ExternalIdentity)`): nella POC sempre ammessa e loggata; in Fase 1 ospiterà il controllo quota (ADR-008)
+- L'identità del giocatore è fornita dal canale di comunicazione; nella POC il canale è l'email, identificativa unica dell'account piattaforma (RF-P1, ADR-008)
+- Un giocatore = un account piattaforma = al più un profilo per torneo (POC: un torneo alla volta, mai contemporanei)
+- Il gate di eligibilità (`checkEligibility(ExternalIdentity)`, ADR-008) resta: l'implementazione POC è "account piattaforma **attivo**" (Fase 1: attivo + quota pagata). Il gate del pick = piattaforma attiva + profilo (o auto-join al TT 1)
+- Ogni email in uscita è filtrata sullo stato dell'account al momento dell'invio: `unsubscribed` e `pending_unsubscribe` non ricevono alcuna email (RF-P6), **salvo le conferme del flusso di iscrizione/disiscrizione** (RF-P1/P2): `platform_unsubscribe_confirm` verso `pending_unsubscribe`, `platform_unsubscribed` verso `unsubscribed` e le risposte subscribe partono **sempre**, anche verso account non `active`, perché sono il flusso di conferma stesso (ADR-010)
 
 **Requisiti funzionali:**
-- **RF-01** — Il sistema accetta iscrizioni via email solo durante la finestra di iscrizione (apertura del torneo → deadline del TT 1).
-- **RF-02** — L'email è univoca: una seconda iscrizione dalla stessa email non crea un duplicato.
-- **RF-03** — A finestra chiusa l'iscrizione automatica è rifiutata; l'unico ingresso è l'iscrizione manuale del commissioner.
-- **RF-04** — Un profilo deve risultare iscritto al momento dell'invio del pick e comunque entro la deadline del TT di riferimento (per il TT 1: entro la finestra di iscrizione).
-- **RF-22** — La finestra di iscrizione è l'intervallo `[apertura del torneo, deadline del TT 1]`; si chiude da sola alla deadline del TT 1 (RF-13) ed è indipendente dalla finestra di pick del TT 1.
-- **RF-24** — Chi non risulta iscritto alla deadline del TT 1 **non è un partecipante**: nessun profilo creato, nessuno stato di eliminazione; dopo la deadline del TT 1 un pick da indirizzo sconosciuto è respinto senza registrazione.
-- **RF-27** — Durante la finestra del TT 1, un pick interpretabile da un indirizzo sconosciuto produce atomicamente auto-iscrizione + validazione; un messaggio non interpretabile è gestito senza registrare nulla.
-- **RF-28** — Il commissioner può chiudere la finestra di iscrizione in qualunque momento con `tournament:register:close --reason <motivo>` (chiusura anticipata o in assenza di deadline registrata); ogni chiusura forzata è auditat.
+- **RF-P1** — Iscrizione piattaforma via email (intento LLM): crea/riattiva l'account con `registerID` stabile; conferma via email (`platform_registered`). Già iscritto → risposta "già iscritto" con il tipo email dedicato `platform_already_registered` (ADR-010).
+- **RF-P2** — Disiscrizione via email (intento LLM, barriera a due passi): primo messaggio → `pending_unsubscribe` + `platform_unsubscribe_confirm`; soft-delete (`unsubscribed`) solo su secondo messaggio con intento `unsubscribe` o body di conferma (`confermo`/`sì`/`si`/`yes`). Da mittente `unsubscribed` o non iscritto → log silenzioso.
+- **RF-P3** — Re-iscrizione: stesso `registerID`; lo storico torneo (profili/pick) non è toccato.
+- **RF-P4** — Pick da mittente non iscritto (mai o disiscritto) → log interno, nessuna risposta (anti-spam/privacy).
+- **RF-P5** — Un iscritto può partecipare solo entro la deadline del TT 1: primo pick nel TT 1 → auto-join (profilo+pick atomici); dopo il TT 1 → rifiuto con risposta; nessun profilo senza pick valido. Disiscritto a torneo in corso → profilo conservato, comunicazioni e pick fermati; re-iscrizione prima della prossima deadline → si riprende con lo stesso `registerID` e profilo.
+- **RF-P6** — Notifiche: apertura torneo a tutti gli iscritti attivi; apertura round (pick) ai soli partecipanti attivi e, **all'apertura del TT 1**, anche agli **iscritti attivi senza profilo** (emendamento 2026-08-21); chiusura round (riepilogo `round_closed_survived`) ai soli sopravvissuti; gli eliminati ricevono solo le notifiche puntuali (`pick_missing_elimination`, `round_result_wrong`). **Carve-out (ADR-010):** le conferme del flusso di iscrizione/disiscrizione (RF-P1/P2 — `platform_unsubscribe_confirm`, `platform_unsubscribed`, risposte subscribe) partono **sempre**, anche verso account non `active`, perché sono il flusso di conferma stesso; il filtro `active` si applica a tutte le altre email.
+- **RF-P7** — Persistenza piattaforma separata da `DB_PATH` (`PLATFORM_DB_PATH`), non eliminata col DB torneo; `register_id` replicato su `player`/`profile`.
+- **RF-P8** — Determinismo: `created_at`/`unsubscribed_at` piattaforma scritti dal clock iniettato (RNF1).
 
 ### 4.2 Apertura del TT
 
 1. Il **primo TT si apre all'apertura del torneo** (RF-23); i TT successivi si aprono al termine del TC precedente (in test li apre il commissioner via CLI; a regime li apre lo scheduler, 5.4).
-2. Il sistema determina la deadline: fischio d'inizio della prima partita del TC meno un anticipo configurabile (default: 30 minuti), basata sugli orari programmati del calendario (5.3). La deadline del TT 1 chiude anche la finestra di iscrizione (4.1, RF-22).
-3. Il sistema invia a ogni profilo attivo (non eliminato) un'email contenente:
+2. Il sistema determina la deadline: fischio d'inizio della prima partita del TC meno un anticipo configurabile (default: 30 minuti), basata sugli orari programmati del calendario (5.3).
+3. Il sistema invia l'email di **apertura torneo** (`tournament_open`, una sola volta) a **tutti gli iscritti attivi della piattaforma** (RF-P6: sostituisce l'invito a una lista di contatti) e, a ogni apertura di TT, un'email a **ogni partecipante attivo** (profilo `eliminated = 0` con account piattaforma `active`) contenente:
    - Coppia TT/TC del round (es. "TT 2 / TC 7", forma estesa; RF-25)
    - Squadre disponibili per quel profilo (escludendo quelle già bruciate nel girone corrente)
    - Deadline entro cui inviare il pick
@@ -182,7 +187,7 @@ La finestra di iscrizione è l'intervallo **dall'apertura del torneo alla deadli
 
 **Requisiti funzionali:**
 - **RF-05** — All'apertura del TT il sistema calcola la deadline come orario d'inizio della prima partita del TC (da calendario) meno l'anticipo configurabile.
-- **RF-06** — Il sistema invia a ogni profilo attivo un'email con coppia TT/TC, squadre disponibili, deadline e istruzioni.
+- **RF-06** — Il sistema invia l'email pick di apertura TT **ai soli partecipanti attivi** (`eliminated = 0` con account piattaforma `active`), con coppia TT/TC, squadre disponibili, deadline e istruzioni (RF-P6). **Eccezione TT 1 (emendamento 2026-08-21):** l'email va anche agli iscritti attivi **senza profilo** (che al TT 1 non esistono ancora: auto-join al primo pick, RF-P5).
 - **RF-23** — Il primo TT si apre all'apertura del torneo; i TT successivi si aprono al termine del TC precedente.
 
 ### 4.3 Invio e validazione del pick
@@ -190,7 +195,7 @@ La finestra di iscrizione è l'intervallo **dall'apertura del torneo alla deadli
 1. Il giocatore risponde all'email indicando squadra ed esito in linguaggio naturale.
 2. Il sistema riceve l'email, la interpreta (tramite LLM, ADR-004) ed estrae `{squadra, esito}`.
 3. Il sistema valida il pick:
-   - Il profilo risulta già iscritto al momento dell'invio e comunque entro la deadline del TT (4.1)? (Durante la finestra del TT 1 un indirizzo sconosciuto si auto-iscrive, RF-27.)
+   - L'account piattaforma del mittente è `active` e il mittente ha un profilo in gara? (Nel TT 1 un iscritto **senza profilo** fa **auto-join**: profilo + pick atomici, RF-P5. Un mittente **non iscritto** riceve solo un log interno, RF-P4.)
    - La squadra gioca in quel TC?
    - La squadra non è già stata usata nel girone corrente?
    - L'esito è valido (vittoria / sconfitta / pareggio)?
@@ -221,7 +226,8 @@ flowchart TD
 
 **Regole:**
 - Vale il **primo pick valido** inviato. Pick successivi nello stesso TT sono respinti (RF-08)
-- Un pick di un profilo non ancora iscritto al momento dell'invio: durante la **finestra del TT 1** innesca l'**auto-iscrizione** e, se il contenuto è interpretabile, la validazione stessa (RF-27); se non interpretabile risponde una richiesta di chiarimento senza registrare nulla (CL5). **Dal TT 2** (finestra di iscrizione chiusa) è respinto senza registrazione: il torneo è iniziato (CL2, RF-24)
+- Un pick da un iscritto **senza profilo**: nel **TT 1** innesca l'**auto-join** (profilo + pick atomici, RF-P5); se il pick non è valido nessun profilo viene creato. **Dal TT 2** è rifiutato con risposta (il torneo è iniziato)
+- Un pick da un mittente **non iscritto** (mai iscritto o disiscritto) produce **solo un log interno, nessuna risposta** (anti-spam, RF-P4): non auto-iscrive mai
 - Un pick rifiutato non consuma il tentativo: il giocatore può inviarne un altro (RF-09)
 - Pick ricevuti dopo la deadline sono respinti: fa fede il timestamp di **ricezione sul server** (`receivedAt`, ADR-001), non l'header `Date` dell'email (RF-11)
 - Un pick è accettato solo se `receivedAt` ≤ `min(deadline registrata, fischio d'inizio effettivo della prima partita del TC)` (**guard anti-frode**, RF-31): con la deadline nominale è ridondante (deadline = kickoff − anticipo), ma blocca i pick quando la deadline è NULL/errata o quando il calendario anticipa una partita dopo l'apertura (CL17, CL18)
@@ -231,7 +237,7 @@ flowchart TD
 - **RF-07** — Il sistema interpreta il testo dell'email in linguaggio naturale ed estrae `{squadra, esito}` (interpretazione LLM confermata, ADR-004).
 - **RF-08** — Vale il primo pick valido: un secondo pick valido nello stesso TT è respinto.
 - **RF-09** — Un pick rifiutato non consuma il tentativo: il giocatore può riprovare.
-- **RF-10** — La validazione verifica: profilo iscritto, squadra in partita nel TC, squadra non bruciata nel girone, esito valido, entro l'istante di accettazione.
+- **RF-10** — La validazione verifica: account piattaforma `active`, profilo esistente in gara (o auto-join al TT 1, RF-P5), squadra in partita nel TC, squadra non bruciata nel girone, esito valido, entro l'istante di accettazione.
 - **RF-11** — Un pick ricevuto dopo la deadline è respinto (confronto su `receivedAt`, ADR-001).
 - **RF-12** — Squadra del pick = bruciata nel girone corrente (vedi 5.1).
 - **RF-31** — Guard anti-frode: nessun pick è accettato se `receivedAt` > fischio d'inizio **effettivo** della prima partita del TC; l'istante di accettazione è `min(deadline registrata, kickoff effettivo)`, prevale su RF-14 in caso di anticipo di calendario non gestito (CL18); rifiuto con motivo esplicito; rimedio = override US10 con `--reason`.
@@ -255,7 +261,7 @@ Allo scadere della deadline la finestra di pick si chiude e non si accettano pi�
 - **RF-13** — Alla deadline, per ogni profilo attivo senza pick valido, il sistema elimina il profilo e invia l'email di notifica.
 - **RF-14** — La deadline è calcolata all'apertura del round sulla base degli orari programmati del calendario e resta fissa per l'intero TT (decisione 2026-08-13, 5.3); un eventuale cambio d'orario della prima partita dopo l'apertura richiede una decisione esplicita del commissioner. In caso di anticipo non gestito, il guard anti-frode (RF-31) prevale (CL18).
 - **RF-29** — Il commissioner può chiudere la finestra di pick in qualunque momento con `round:close --round <n> --force --reason <motivo>` (anticipata, o con deadline NULL/non registrata): consolidamento con semantica identica alla chiusura a deadline; ogni chiusura forzata è auditat.
-- **RF-30** — Chiusura di sicurezza: senza deadline registrata, lo scheduler chiude il round alla chiusura del TC (fine prevista UPP + scarto, ricalcolata dai dati correnti); consolidamento identico alla chiusura a deadline; evento loggato `safety_close` con causa esplicita; se la chiusura TC non è calcolabile → nessuna auto-chiusura, warn + anomalia in `tournament:status` e uscita tramite chiusura forzata (RF-28/RF-29).
+- **RF-30** — Chiusura di sicurezza: senza deadline registrata, lo scheduler chiude il round alla chiusura del TC (fine prevista UPP + scarto, ricalcolata dai dati correnti); consolidamento identico alla chiusura a deadline; evento loggato `safety_close` con causa esplicita; se la chiusura TC non è calcolabile → nessuna auto-chiusura, warn + anomalia in `tournament:status` e uscita tramite chiusura forzata (RF-29).
 
 ### 4.5 Contabilizzazione e chiusura del TT
 
@@ -272,9 +278,10 @@ Quando la partita oggetto del pick è terminata e il risultato è disponibile, i
    - Qualsiasi altra combinazione = **sbagliato**
 2. Pick corretto → il profilo resta in gara.
 3. Pick sbagliato → il profilo è eliminato.
-4. Il sistema invia a ogni profilo un'email di riepilogo:
-   - Pick corretto: conferma e squadre ancora disponibili
-   - Pick sbagliato: notifica di eliminazione
+4. Il sistema notifica l'esito **a ogni profilo valutato con account piattaforma `active`**:
+   - Pick corretto: `round_result_correct` (resta in gara, squadre ancora disponibili)
+   - Pick sbagliato: `round_result_wrong` (notifica di eliminazione)
+5. Alla **transizione `closed → scored`** (e solo lì, una sola volta: guardia `round_state.summary_sent`, RF-P6) il sistema invia il **riepilogo di chiusura round** `round_closed_survived` **ai soli sopravvissuti** (`eliminated = 0` con account piattaforma `active`). Gli eliminati ricevono **solo** le notifiche puntuali (`pick_missing_elimination` alla chiusura, `round_result_wrong` alla contabilizzazione): **nessun** riepilogo di chiusura. L'eliminazione a posteriori da Freeze produce **solo** `round_result_wrong` (coerente con PRD §5.4), nessun riepilogo. Gli eliminati dei round precedenti non ricevono più email di round; chi è iscritto ma non partecipa riceve solo l'apertura torneo. **Ogni email in uscita è filtrata sullo stato dell'account piattaforma al momento dell'invio**: `unsubscribed`/`pending_unsubscribe` non ricevono alcuna email — **salvo le conferme del flusso di iscrizione/disiscrizione** (RF-P1/P2, ADR-010), che partono sempre perché sono il flusso di conferma stesso.
 
 **Regole:**
 - La contabilizzazione è **deterministica** e basata esclusivamente sui risultati ufficiali delle partite del TC (RF-15)
@@ -325,23 +332,24 @@ Dopo la chiusura del TT (4.5), il torneo prosegue o termina. Termina in tre casi
 
 Le user story descrivono il comportamento atteso dal punto di vista dell'utente e aiutano a **guidare la progettazione**: per ogni storia sono indicati i criteri di accettazione (agganciati ai casi limite CL e ai criteri di successo CS) e le **implicazioni di design**, cioè cosa il sistema deve prevedere per soddisfarla.
 
-#### US1 — Iscrizione
+#### US1 — Iscriversi alla piattaforma
 
-> **Come** giocatore, **voglio** iscrivermi al torneo con la mia email, **così** posso partecipare e inviare i miei pick.
+> **Come** giocatore, **voglio** iscrivermi alla piattaforma con la mia email, **così** ricevo gli avvisi del torneo e posso partecipare inviando i miei pick.
 
-**Contesto e scenario.** L'iscrizione è possibile durante la **finestra di iscrizione** `[apertura del torneo, deadline del TT 1]` (US7, US8): il giocatore manda un'email di iscrizione; il sistema risponde con la conferma, il formato del pick e le regole essenziali. Una persona corrisponde a un solo profilo e l'identità è fornita dal canale (nella POC l'email, identificativa unica, 4.1). Dopo la deadline del TT 1 l'iscrizione automatica è rifiutata; un giocatore può comunque essere iscritto manualmente dal commissioner (US10).
+**Contesto e scenario.** L'iscrizione alla **piattaforma** è **sempre disponibile** via email (RF-P1, nessuna finestra): il giocatore invia un'email di iscrizione; il sistema crea l'account (o riattiva l'esistente con lo **stesso `registerID`**) e risponde con `platform_registered` (formato del pick e regole essenziali). L'identità è fornita dal canale (nella POC l'email, unica, 4.1). La **partecipazione al torneo** nasce al **primo pick valido nel TT 1** (auto-join, RF-P5): chi si iscrive e non invia mai un pick non è un partecipante (nessuna email di round, nessuna eliminazione).
 
-**Criteri di accettazione (⇐ CL2, §4.1):**
-- Data un'email di iscrizione **entro la finestra** (apertura torneo → deadline TT 1), il sistema crea il profilo e risponde con conferma + istruzioni (CS1).
-- Data una seconda iscrizione dalla stessa email, il sistema non duplica il profilo: la considera già iscritta (univocità).
-- Data un'email di iscrizione **dopo la deadline del TT 1**, il sistema la respinge indicando che il torneo è iniziato al TT 1 / TC _n_; l'iscrizione è ammessa solo per intervento manuale del commissioner (US10, CL2).
-- Dato un pick inviato da un profilo non ancora iscritto **durante la finestra del TT 1**, il sistema applica l'**auto-iscrizione** (RF-27): se il contenuto è interpretabile crea profilo + valida il pick in un'unica operazione e risponde con un unico messaggio; se non è interpretabile chiede un chiarimento **senza registrare alcun profilo** (CL5, CS7).
-- Dato un pick da un indirizzo sconosciuto **dopo la deadline del TT 1**, il sistema lo respinge senza registrazione (CL2, RF-24).
+**Criteri di accettazione (⇐ RF-P1/P3/P4/P5, §4.1):**
+- Data un'email di iscrizione da un mittente nuovo, il sistema crea l'account (con `registerID` stabile) e risponde con conferma + istruzioni (CS1).
+- Data una seconda iscrizione dalla stessa email (già `active`), il sistema non duplica l'account: risponde "già iscritto" (univocità).
+- Data un'iscrizione da un account `pending_unsubscribe` o `unsubscribed`, il sistema lo riattiva ad `active` con lo **stesso `registerID`** (RF-P3).
+- Dato un pick valido nel TT 1 da un iscritto **senza profilo**, il sistema applica l'**auto-join**: crea profilo + pick in un'unica operazione atomica e risponde con `pick_confirmed` (RF-P5); se il pick non è valido **nessun profilo** viene creato (rollback).
+- Dato un pick nel TT 1 da un mittente **non iscritto**, il sistema **non** auto-iscrive: log interno, nessuna risposta (RF-P4).
+- Dato un pick da un iscritto senza profilo **dopo la deadline del TT 1**, il sistema lo rifiuta con risposta (il torneo è iniziato, RF-P5).
 
 **Implicazioni di design:**
-- Serve un'operazione **atomica** "crea profilo se non esiste" sull'email (vincolo di unicità, RNF2).
-- L'iscrizione e il pick sono due eventi distinti nel tempo: bisogna poter rilevare il passaggio "non iscritto → iscritto" nello stesso ciclo di polling senza perdere il messaggio appena arrivato.
-- Il sistema deve rispondere con messaggi **diversi** a seconda dello stato (non iscritto vs rifiuto di un pick normale) per guidare l'utente.
+- Serve un'operazione **atomica** "crea profilo + registra pick" legata al primo pick valido (RF-P5), con rollback senza profilo orfano (vincolo di unicità, RNF2).
+- Account piattaforma e partecipazione sono due stati **separati su due storage** (RF-P7): il processore email deve distinguere "iscritto senza profilo" da "sconosciuto" e da "partecipante", senza scritture cross-DB (la piattaforma è solo letta dai flussi di torneo).
+- Serve la **barriera a due passi** per la disiscrizione (RF-P2): il primo messaggio di unsubscribe non deve mai eliminare l'account.
 
 #### US2 — Fare un pick e ottenere conferma
 
@@ -416,7 +424,7 @@ Le user story descrivono il comportamento atteso dal punto di vista dell'utente 
 
 #### User story del Commissioner
 
-Le storie **US6–US10** descrivono il **Commissioner** (l'amministratore del torneo, §2): l'unico utente che interagisce con il sistema via CLI. Nella POC (stagione 2025/26) queste operazioni sono **manuali** e servono a testare e a validare il flusso sui dati storici; in **produzione** (Fase 1, stagione 2026/27) sono **automatizzate** (4.8): il sistema legge il calendario e apre/chiude da solo la fase di iscrizione e i round. Il commissioner conserva **sempre** la possibilità di intervenire con i comandi per correggere lo stato del sistema.
+Le storie **US6–US10** descrivono il **Commissioner** (l'amministratore del torneo, §2): l'unico utente che interagisce con il sistema via CLI. Nella POC (stagione 2025/26) queste operazioni sono **manuali** e servono a testare e a validare il flusso sui dati storici; in **produzione** (Fase 1, stagione 2026/27) sono **automatizzate** (4.8): il sistema legge il calendario e apre/chiude da solo i round (l'iscrizione piattaforma non ha più alcuna fase da gestire, 4.1). Il commissioner conserva **sempre** la possibilità di intervenire con i comandi per correggere lo stato del sistema.
 
 #### US6 — Avviare la stagione
 
@@ -425,7 +433,7 @@ Le storie **US6–US10** descrivono il **Commissioner** (l'amministratore del to
 **Contesto e scenario.** Dopo l'import dei dati della stagione (`data:import`, LLD), il commissioner avvia la stagione. Il sistema **verifica il calendario** (presente, completo, coerente) ed esegue le **operazioni preliminari**: deriva i parametri data-driven (numero di round, squadre, confine tra i gironi, deadline di ogni round — LLD §3.2) e inizializza lo stato della stagione (round in stato `pending`). Il comando accetta il parametro di **aggancio** `--start-round <n>` (default 1, RF-20): il TT 1 corrisponde al TC di aggancio. Se il calendario manca o è incoerente, o se l'aggancio non supera le verifiche (RF-21), l'avvio fallisce con un errore chiaro e non lascia uno stato parziale.
 
 **Criteri di accettazione (⇐ §4.2, §8, CS3):**
-- Dato un calendario valido, l'avvio completa la verifica e porta la stagione in uno stato pronto all'apertura delle iscrizioni (US7) e all'apertura del primo round (US9).
+- Dato un calendario valido, l'avvio completa la verifica, inizializza i round `pending` e invia l'email di **apertura torneo** (`tournament_open`) a **tutti gli iscritti attivi della piattaforma** (RF-P6, una sola volta).
 - Dato un calendario mancante, incompleto o incoerente, l'avvio fallisce **senza modificare** lo stato (nessuno stato parziale).
 - Dato un aggancio `--start-round <n>` a un TC che non esiste, senza partite in calendario o con deadline del TT 1 non futura, l'avvio rifiuta **atomicamente** senza stato parziale (RF-21).
 - Dato un aggancio all'**ultimo TC** della stagione (torneo di un solo turno), l'avvio è **ammesso** con un warning informativo (CL12): i tre casi di fine torneo collassano naturalmente (RF-18).
@@ -435,39 +443,37 @@ Le storie **US6–US10** descrivono il **Commissioner** (l'amministratore del to
 - Serve un comando CLI di avvio stagione che renda **atomicamente** coerente lo stato iniziale (es. `tournament:start --start-round <n>`, LLD §7.10), distinto dall'import dei dati (`data:*`).
 - L'aggancio è persistito in `tournament_state.start_round` (NULL = TC 1 legacy, ADR-008) e da esso si deriva la mappatura TT↔TC usata in ogni comunicazione (RF-25).
 - La verifica del calendario, la validazione dell'aggancio e le operazioni preliminari vivono nel **Game Engine** (deterministico): il commissioner (in POC) o lo scheduler (in produzione) le **innescano** ma non le implementano.
+- Il broadcast `tournament_open` legge gli indirizzi dal **Platform Registry** (iscritti `active`), non da una lista di contatti passata al comando (ADR-009, RF-P6).
 - Lo stesso comando, in produzione, è invocato automaticamente dallo scheduler al primo TC (4.8).
 
-#### US7 — Aprire la fase di iscrizione
+#### US7 — Consultare gli account della piattaforma
 
-> **Come** commissioner, **voglio** aprire la fase di iscrizione con un comando CLI, **così** da quel momento il sistema accetta iscrizioni (e può avvisare i contatti per invitarli).
+> **Come** commissioner, **voglio** consultare l'elenco degli account della piattaforma con stato e date, **così** so chi riceve le comunicazioni e posso verificare iscrizioni e disiscrizioni.
 
-**Contesto e scenario.** All'apertura il sistema inizia ad accettare iscrizioni via email (4.1). Se il commissioner fornisce una **lista di contatti** (es. gli indirizzi di iscrizioni precedenti), all'apertura il sistema può inviar loro una notifica dell'apertura come **call to action**. La lista è un input del comando, non un dato di gioco.
+**Contesto e scenario.** Non esiste più alcuna "fase di iscrizione" da aprire (4.1, ADR-009): l'iscrizione piattaforma è sempre disponibile via email. Al commissioner serve una vista di sola lettura sugli account: `platform:list [--json]` elenca email, `registerID`, status (`active`/`pending_unsubscribe`/`unsubscribed`) e le date (`created_at`, `unsubscribed_at`) scritte dal clock iniettato (RF-P8).
 
-**Criteri di accettazione (⇐ §4.1, US1):**
-- All'apertura del torneo la **finestra di iscrizione** inizia (RF-22): le email di iscrizione ricevute da qui fino alla deadline del TT 1 sono accettate e creano il profilo (CS1).
-- Se è fornita una lista di contatti, il sistema invia loro la notifica di apertura (una sola volta per finestra).
-- Prima dell'apertura del torneo le iscrizioni sono rifiutate (§4.1, CL2).
-
-**Implicazioni di design:**
-- La finestra di iscrizione è uno **stato del torneo** (`registration_open`) gestito dal Game Engine, non un dettaglio del canale: si apre all'apertura del torneo, si chiude da sola alla deadline del TT 1 e può essere chiusa forzatamente (US8).
-- La notifica alla lista di contatti è **best-effort** e usa il canale email esistente; la lista è un input dell'operatore, estranea alla logica di gioco.
-
-#### US8 — Chiudere la fase di iscrizione
-
-> **Come** commissioner, **voglio** chiudere la fase di iscrizione, **così** il sistema smette di accettare nuove iscrizioni e il torneo può partire.
-
-**Contesto e scenario.** La finestra di iscrizione si **chiude da sola alla deadline del TT 1** (RF-04 + RF-13): a quel punto il sistema non accetta **nessuna** nuova iscrizione automatica. Il commissioner può inoltre **forzare la chiusura** in qualunque momento — prima della deadline, o se la deadline del TT 1 non è registrata — con `tournament:register:close --reason <motivo>` (RF-28): la motivazione è obbligatoria e auditat. La chiusura della finestra di iscrizione **non** chiude la finestra di pick del TT 1. Eventuali ingressi in ritardo sono possibili **solo** per intervento manuale del commissioner (US10). I profili già iscritti restano invariati e attivi.
-
-**Criteri di accettazione (⇐ §4.1, CL2, US10):**
-- Alla deadline del TT 1 la finestra di iscrizione si chiude automaticamente; dopo la chiusura (automatica o forzata) un'email di iscrizione è rifiutata con un messaggio che indica lo stato (es. "torneo iniziato al TT 1 / TC _n_", CL2).
-- Data una chiusura forzata `tournament:register:close --reason <motivo>`, il sistema chiude subito la finestra e registra la motivazione nell'audit (RF-28); senza `--reason` il comando fallisce.
-- Dopo la chiusura, l'iscrizione è possibile solo tramite iscrizione manuale del commissioner (US10, `tournament:register --reason` in LLD §7.10).
-- Una chiusura forzata dell'iscrizione non impedisce l'invio dei pick del TT 1 fino alla sua deadline (finestre indipendenti, RF-22).
-- I profili già iscritti non subiscono alcun effetto e restano attivi.
+**Criteri di accettazione (⇐ RF-P7, RF-P8):**
+- `platform:list` mostra tutti gli account con `registerID`, email, status e date, in ordine deterministico (per `registerID`).
+- Lo status riflette fedelmente la barriera a due passi: `pending_unsubscribe` dopo il primo unsubscribe, `unsubscribed` dopo la conferma (RF-P2).
 
 **Implicazioni di design:**
-- La chiusura è un'operazione **deterministica** sullo stato del torneo: nessuna iscrizione automatica in transito al momento della chiusura viene accettata.
-- Il solo punto di ingresso a finestra chiusa è l'override del commissioner (US10), che deve rispettare gli stessi invarianti (univocità email/profilo) e richiede `--reason` obbligatorio e auditato (ADR-008).
+- La vista legge **solo** dal DB piattaforma (`PLATFORM_DB_PATH`): nessuna scrittura cross-DB (ADR-009).
+- L'account piattaforma è la sorgente degli iscritti per le notifiche (RF-P6): la vista CLI e il broadcast usano la stessa sorgente (`PlatformRegistry`).
+
+#### US8 — Disiscrivere un account dalla piattaforma
+
+> **Come** commissioner, **voglio** disiscrivere (soft-delete) un account con un comando CLI motivato, **così** l'account smette di ricevere comunicazioni e i suoi pick sono fermati.
+
+**Contesto e scenario.** Il commissioner può disiscrivere direttamente un account con `platform:unregister --email <email> [--reason <motivo>]` (soft-delete diretto `unsubscribed`, distinto dalla barriera a due passi via email, RF-P2). La disiscrizione **non tocca** il profilo nel torneo (storico intatto, RF-P3): ferma solo comunicazioni e pick; il profilo muore naturalmente alla prossima chiusura round (`missing_pick`, senza email al disiscritto); se il giocatore si re-iscrive prima della prossima deadline riprende con lo stesso `registerID` e lo stesso profilo (RF-P5).
+
+**Criteri di accettazione (⇐ RF-P2, RF-P3, RF-P5):**
+- Dopo `platform:unregister`, l'account è `unsubscribed` con `unsubscribed_at` dal clock iniettato (RF-P8) e non riceve alcuna email (RF-P6).
+- Un'email di iscrizione successiva dallo stesso indirizzo riattiva l'account `active` con lo **stesso `registerID`** (RF-P3).
+- Lo storico torneo (profili/pick) resta intatto dopo la disiscrizione.
+
+**Implicazioni di design:**
+- La soft-delete del commissioner è un'operazione sul **solo DB piattaforma**; il filtro `active` sulle notifiche (RF-P6) applica da sé l'effetto sul torneo (ADR-009).
+- `platform:unregister` è distinto dalla barriera a due passi: non invia `platform_unsubscribe_confirm` e richiede il motivo auditato.
 
 #### US9 — Aprire e chiudere i round del torneo
 
@@ -489,14 +495,13 @@ Le storie **US6–US10** descrivono il **Commissioner** (l'amministratore del to
 
 #### US10 — Correggere lo stato del sistema (override)
 
-> **Come** commissioner, **voglio** correggere lo stato del sistema con comandi CLI (contabilizzazione errata, pick inserito manualmente, giocatore iscritto o ripristinato), **così** posso rimediare a errori o anomalie.
+> **Come** commissioner, **voglio** correggere lo stato del sistema con comandi CLI (contabilizzazione errata, pick inserito manualmente), **così** posso rimediare a errori o anomalie.
 
-**Contesto e scenario.** Il commissioner può intervenire su **round presenti e passati**: correggere una **contabilizzazione errata** (es. rieseguire la contabilizzazione o ripristinare lo stato di un pick), **inserire manualmente un pick** (`pick:register`, LLD §7.4), **iscrivere o ripristinare un giocatore** (`tournament:register`, LLD §7.10), anche a finestra di iscrizione chiusa. **Ogni override richiede una motivazione**: i comandi di iscrizione manuale e di pick fuori finestra/deadline accettano `--reason <motivo>` **obbligatorio**, registrata nel log audit strutturato (ADR-008). Il pick manuale è ammesso solo sul **round corrente non contabilizzato** (`round_state.status = 'open'`); su un round già `scored` si usa il flusso di correzione CL9. **Nessuna retroattività multi-round**: non si può iscrivere o inserire pick per turni precedenti al round corrente. Nei **round futuri** non esiste ancora uno stato da correggere: l'anticipo verso il futuro si ottiene aprendo in anticipo un round (US9) o pre-registrando i giocatori.
+**Contesto e scenario.** Il commissioner può intervenire su **round presenti e passati**: correggere una **contabilizzazione errata** (es. rieseguire la contabilizzazione o ripristinare lo stato di un pick) e **inserire manualmente un pick** (`pick:register`, LLD §7.4). L'inserimento manuale risolve l'email del profilo e **verifica che l'account piattaforma sia `active`** (nessun bypass del gate, RF-P6/ADR-009). **Ogni override richiede una motivazione**: il pick fuori finestra/deadline accetta `--reason <motivo>` **obbligatorio**, registrata nel log audit strutturato (ADR-008). Il pick manuale è ammesso solo sul **round corrente non contabilizzato** (`round_state.status = 'open'`); su un round già `scored` si usa il flusso di correzione CL9. **Nessuna retroattività multi-round**: non si può inserire pick per turni precedenti al round corrente. Nei **round futuri** non esiste ancora uno stato da correggere: l'anticipo verso il futuro si ottiene aprendo in anticipo un round (US9). (L'iscrizione/ripristino manuale di giocatori è **rimossa**: `platform:register` è l'unico comando di creazione account e non crea profili, ADR-009.)
 
 **Criteri di accettazione (⇐ §4.5, §4.6, CS2, CS5, CS6):**
 - Data una correzione su un round presente/passato, il sistema riallinea lo stato **preservando gli invarianti** (univocità pick per profilo+round — RNF2, determinismo — RNF1, squadre bruciate coerenti) e ricalcola eliminazioni e vincitore in modo coerente (CS6).
-- L'inserimento manuale di un pick segue le **stesse regole di validazione** dei pick automatici: squadra non bruciata nel girone, esito valido, primo pick valido (CS2, CS5); è ammesso solo su round corrente non contabilizzato e con `--reason` obbligatorio (cfr. anche il rimedio ai pick rifiutati dal guard anti-frode, RF-31).
-- L'iscrizione manuale a finestra chiusa rispetta l'univocità email/profilo, richiede `--reason` obbligatorio e rende il profilo attivo **dal round corrente con pool di squadre intatto** (CL2, US8, ADR-008); la fairness dell'ingresso tardivo manuale è dichiarata nel PRD e mitigata dall'audit, non da vincolo tecnico.
+- L'inserimento manuale di un pick segue le **stesse regole di validazione** dei pick automatici: account piattaforma `active`, squadra non bruciata nel girone, esito valido, primo pick valido (CS2, CS5); è ammesso solo su round corrente non contabilizzato e con `--reason` obbligatorio (cfr. anche il rimedio ai pick rifiutati dal guard anti-frode, RF-31).
 - Su un round futuro **senza stato** una "correzione" non è ammessa: non c'è nulla da correggere (si usa l'apertura anticipata del round, US9).
 - Ogni override senza `--reason` viene rifiutato dal sistema.
 
@@ -504,18 +509,18 @@ Le storie **US6–US10** descrivono il **Commissioner** (l'amministratore del to
 - Le correzioni passano dagli **stessi comandi del Game Engine** usati dall'automazione (stessa interfaccia per operatore e automazione, ADR-006), così gli invarianti sono garantiti e l'override non è un canale parallelo non validato.
 - Le correzioni devono essere **tracciabili** (audit: cosa, quando e perché — `--reason`) per garantire trasparenza verso i giocatori (US5, CS6).
 - Il riallineamento di una contabilizzazione (es. un pick segnato `wrong` per errore) deve ricalcolare gli effetti a valle (eliminazioni, squadre bruciate, vincitore) in modo **coerente e ripetibile**.
-- Il gate di eligibilità (`checkEligibility`, ADR-008) è invocato anche dagli override con esito forzabile + motivo.
+- Il gate di eligibilità (`checkEligibility`, ADR-008/009) è invocato anche dagli override con esito forzabile + motivo.
 
 ### 4.8 Automazione in produzione (Fase 1) e intervento del commissioner
 
 Nella **POC** (stagione 2025/26) le operazioni del commissioner (US6–US10) sono **manuali**, per testare e validare le regole sui dati storici. In **Fase 1 — produzione, stagione 2026/27**, tutte queste operazioni saranno **automatizzate**:
 
-- il sistema leggerà i **dati del calendario** delle partite (Season Data Provider) e, sulla base di essi, **aprirà e chiuderà la fase di iscrizione** al torneo (US7, US8) e **aprirà e chiuderà i round** (US9) in autonomia, senza intervento umano;
+- il sistema leggerà i **dati del calendario** delle partite (Season Data Provider) e, sulla base di essi, **aprirà e chiuderà i round** (US9) in autonomia, senza intervento umano (l'iscrizione piattaforma non ha fasi da gestire, 4.1);
 - la contabilizzazione sarà invocata automaticamente e in modo incrementale (4.5).
 
 L'automazione è affidata allo **Scheduler**, un orchestratore sottile che decide *quando* agire in base al calendario e allo stato dei round, invocando gli **stessi comandi CLI del Game Engine** usati manualmente nella POC: l'interfaccia è unica per automazione e operatore (ADR-006).
 
-Sarà **sempre prevista la possibilità per il commissioner di intervenire** con i comandi CLI per *correggere lo stato* del sistema (US10): forzare/aprire/chiudere un round, ripristinare o inserire un pick, iscrivere o ripristinare un giocatore. L'automazione **non rimuove mai il controllo umano**: il commissioner resta l'unico utente con accesso alla CLI e può agire in qualunque momento per correggere anomalie o errori.
+Sarà **sempre prevista la possibilità per il commissioner di intervenire** con i comandi CLI per *correggere lo stato* del sistema (US10): forzare/aprire/chiudere un round, ripristinare o inserire un pick. L'automazione **non rimuove mai il controllo umano**: il commissioner resta l'unico utente con accesso alla CLI e può agire in qualunque momento per correggere anomalie o errori.
 
 ---
 
@@ -608,22 +613,22 @@ Il sistema deve:
 | # | Caso | Comportamento atteso |
 |---|------|---------------------|
 | CL1 | Partita rinviata (o sospesa, 5.4) a una data fuori dalla finestra del TC | Il pick passa in Freeze: contabilizzato solo a partita conclusa, squadra bruciata nel girone corrente (5.4) |
-| CL2 | Giocatore non iscritto invia un pick | Durante la **finestra del TT 1** (4.1): se il contenuto è interpretabile il sistema applica l'**auto-iscrizione** (crea il profilo e valida il pick in un'unica operazione atomica) e risponde con un unico messaggio che unisce iscrizione ed esito del pick (tipo email `auto_registered`, LLD §6.3 — D5; RF-27); se non interpretabile chiede un chiarimento **senza registrare alcun profilo** (CL5). **Dal TT 2** (finestra di iscrizione chiusa) il pick è respinto **senza registrazione** e l'iscrizione è ammessa solo per intervento manuale del commissioner (US10, RF-24) |
+| CL2 | Mittente non iscritto invia un pick | **Solo log interno, nessuna risposta** (anti-spam, RF-P4): il messaggio è marcato letto e nessun profilo viene creato. Un iscritto **senza profilo**: nel **TT 1** fa **auto-join** (profilo + pick atomici se il pick è valido, risposta `pick_confirmed`, RF-P5); **dal TT 2** è rifiutato con risposta (il torneo è iniziato) |
 | CL3 | Pick ricevuto dopo l'istante di accettazione | Il TT è già chiuso (4.4). Il pick è ignorato; il sistema può notificare il mittente che la finestra è scaduta. Il confronto usa il timestamp di ricezione sul server (`receivedAt`, 5.3), non l'header `Date` dell'email |
 | CL4 | Pick con squadra che non gioca in quel TC | Respinto, squadra non consumata |
-| CL5 | Pick con formato illeggibile | Respinto (o richiesta di chiarimento) spiegando il motivo; durante il TT 1, un mittente sconosciuto **non viene registrato** (RF-27). Il giocatore può riprovare |
+| CL5 | Pick con formato illeggibile | Respinto (o richiesta di chiarimento) spiegando il motivo; nel TT 1, un iscritto senza profilo **non riceve un profilo** (auto-join solo con pick valido, RF-P5); un mittente non iscritto non riceve alcuna risposta (RF-P4). Il giocatore può riprovare |
 | CL6 | Due email di pick dallo stesso profilo in rapida successione | Solo il primo pick valido processato viene registrato; il secondo trova il vincolo di unicità e viene respinto |
 | CL7 | Partita rinviata ma recuperata entro la finestra del TC (es. sabato → domenica) | Il pick resta valido e viene contabilizzato con il risultato del recupero quando questo è disponibile (5.4) |
 | CL8 | L'ultima partita programmata (UPP) non viene giocata entro la finestra | Il TC si chiude comunque (fine prevista UPP + scarto); il pick sulla UPP va in Freeze (5.4) |
 | CL9 | Il commissioner corregge una contabilizzazione errata o inserisce manualmente un pick (round presente/passato) | Il sistema riallinea lo stato preservando gli invarianti (univocità pick per profilo+round, determinismo, squadre bruciate coerenti) e ricalcola eliminazioni e vincitore in modo coerente (US10, CS6). Un round già `scored` si corregge solo con questo flusso, non con il pick manuale (US10) |
-| CL10 | Un giocatore chiede di iscriversi a finestra di iscrizione chiusa | La richiesta automatica è rifiutata (4.1, US8); l'iscrizione è possibile solo tramite iscrizione manuale del commissioner (US10) |
+| CL10 | Un giocatore chiede di iscriversi a torneo già avviato (o dopo la deadline del TT 1) | L'iscrizione alla **piattaforma** è accettata in qualunque momento (RF-P1): il giocatore resta un iscritto senza profilo e potrà partecipare a un torneo futuro. Per il torneo corrente, un iscritto senza profilo può entrare **solo entro la deadline del TT 1** (auto-join, RF-P5); dopo, il pick è rifiutato con risposta |
 | CL11 | Aggancio del torneo a un TC già passato o in corso (`--start-round`) | L'avvio rifiuta **atomicamente** senza stato parziale: il TT 1 non può avere deadline già scaduta (RF-21, US6) |
 | CL12 | Torneo di un solo turno (aggancio all'ultimo TC della stagione) | **Ammesso**: `tournament:start` emette un warning informativo, nessun blocco; i tre casi di fine torneo (4.6) collassano naturalmente (RF-18, RF-26) |
 | CL13 | Aggancio esattamente al confine di girone (TC 20) | Il pool di squadre bruciate si azzera per il girone di ritorno come da regola (5.1); nessuna altra differenza |
 | CL14 | Aggancio oltre metà stagione | Il torneo gioca solo il girone di ritorno: la disponibilità di squadre resta garantita (19 squadre per 19 TT al massimo) e le regole sono invariate (5.1) |
 | CL15 | Freeze in un torneo agganciato | La gestione del Freeze (5.4) è invariata: un pick della finestra torneo su partita rinviata resta in attesa secondo le regole, a prescindere dal TC di aggancio |
-| CL16 | Profilo iscritto al TT 1 senza pick valido alla deadline del TT 1 | Eliminato per pick mancante (`missing_pick`, 5.2, RF-13): nessuna differenza rispetto ai TT successivi |
-| CL17 | Deadline di un round mancante o non registrata (`round_state.deadline` NULL) | Il guard anti-frode blocca i pick dopo il fischio d'inizio effettivo (RF-31); il consolidamento avviene via **chiusura di sicurezza** alla chiusura del TC (RF-30). Se anche la chiusura del TC non è calcolabile → niente auto-chiusura, log `warn` + anomalia in `tournament:status`; uscita = chiusura forzata del commissioner (RF-28/RF-29) |
+| CL16 | Partecipante del TT 1 senza pick valido alla deadline del TT 1 | Nel modello auto-join il profilo nasce **con** il primo pick valido (RF-P5): al TT 1 non esiste un partecipante senza pick. Dal TT 2, chi è senza pick valido alla deadline è eliminato per pick mancante (`missing_pick`, 5.2, RF-13) |
+| CL17 | Deadline di un round mancante o non registrata (`round_state.deadline` NULL) | Il guard anti-frode blocca i pick dopo il fischio d'inizio effettivo (RF-31); il consolidamento avviene via **chiusura di sicurezza** alla chiusura del TC (RF-30). Se anche la chiusura del TC non è calcolabile → niente auto-chiusura, log `warn` + anomalia in `tournament:status`; uscita = chiusura forzata del commissioner (RF-29) |
 | CL18 | Il calendario anticipa una partita dopo l'apertura del round | La deadline nominale resta fissa (RF-14, 5.3) ma il guard anti-frode rifiuta i pick ricevuti dopo il kickoff effettivo (RF-31); il commissioner decide il rimedio (override US10 con `--reason`) |
 
 ---
@@ -689,10 +694,14 @@ Mappa essenziale requisiti funzionali (RF) ↔ user story (US) ↔ casi limite (
 
 | RF | US | CL | CS |
 |----|----|----|----|
-| RF-01 | US1, US7 | CL2 | CS1 |
-| RF-02 | US1 | — | CS1 |
-| RF-03 | US1, US8, US10 | CL2, CL10 | CS1 |
-| RF-04 | US1 | CL2 | CS1 |
+| RF-P1 | US1 | — | CS1 |
+| RF-P2 | US1, US8 | — | CS1 |
+| RF-P3 | US1, US8 | — | CS1 |
+| RF-P4 | US1 | CL2, CL5 | — |
+| RF-P5 | US1 | CL2, CL5, CL10 | CS1 |
+| RF-P6 | US6, US9 | — | CS1 |
+| RF-P7 | US7 | — | — |
+| RF-P8 | US7, US8 | — | — |
 | RF-05 | US9 | — | CS3 |
 | RF-06 | US9 | — | CS1 |
 | RF-07 | US2 | CL5 | CS7 |
@@ -710,13 +719,9 @@ Mappa essenziale requisiti funzionali (RF) ↔ user story (US) ↔ casi limite (
 | RF-19 | US6 | — | CS3, CS6 |
 | RF-20 | US6 | CL11, CL12, CL13, CL14 | CS3 |
 | RF-21 | US6 | CL11 | CS3 |
-| RF-22 | US1, US7 | CL2, CL10 | CS1 |
-| RF-23 | US7 | — | CS1 |
-| RF-24 | US1 | CL2, CL10 | CS1 |
+| RF-23 | US6, US9 | — | CS1 |
 | RF-25 | US9 | — | CS1 |
 | RF-26 | US5 | CL12 | CS6 |
-| RF-27 | US1 | CL2, CL5 | CS1, CS7 |
-| RF-28 | US7, US8 | CL17 | CS1 |
 | RF-29 | US9 | CL17 | CS4 |
 | RF-30 | US9 | CL17 | CS4 |
 | RF-31 | US2, US9 | CL17, CL18 | CS4 |
@@ -735,7 +740,8 @@ Le decisioni rilevanti e difficili da invertire sono registrate come ADR in un u
 | ADR-004 | Game Engine deterministico e LLM confinato all'I/O | §1.2, §6, RF-07 |
 | ADR-005 | Provider dati designato per la produzione: football-data.org | §13 (PO-1), fuori scope POC per i dati live |
 | ADR-006 | Tutti i componenti gestibili da CLI per orchestrazione da agente | §4.8, RNF5, US6-US10 |
-| ADR-008 | Aggancio asincrono del torneo a un TC arbitrario e chiusure garantite | §2, §4.1-§4.4, §5.3-§5.4, RF-20…31, CL11–18 |
+| ADR-008 | Aggancio asincrono del torneo a un TC arbitrario e chiusure garantite | §2, §4.2-§4.4, §5.3-§5.4, RF-20…31, CL11–18 |
+| ADR-009 | Iscrizione a livello di piattaforma con storage separato e auto-join al TT1 | §2, §4.1-§4.5, §4.7, RF-P1…P8, CL2/CL5/CL10/CL16 |
 
 ---
 
@@ -749,7 +755,7 @@ Le decisioni rilevanti e difficili da invertire sono registrate come ADR in un u
 4. ~~**Partite sospese.**~~ **Risolta (2026-08-12):** trattate come rinviate (ADR-002, §5.4).
 5. ~~**Completezza dei risultati per la contabilizzazione.**~~ **Risolta (2026-08-12):** contabilizzazione incrementale, niente `areAllResultsFinal` (ADR-003, §4.5).
 6. ~~**Calcolo della deadline.**~~ **Risolta (2026-08-13):** basata sugli orari programmati del calendario, fissata all'apertura del round (§5.3, RF-14).
-7. ~~**Apertura del primo TT.**~~ **Risolta (2026-08-14):** il primo TT si apre **all'apertura del torneo** (finestra di iscrizione `[apertura torneo, deadline TT 1]`); la regola "fine del TC precedente" vale dal TT 2 (§4.1, §4.2, RF-23).
+7. ~~**Apertura del primo TT.**~~ **Risolta (2026-08-14):** il primo TT si apre **all'apertura del torneo**; la regola "fine del TC precedente" vale dal TT 2 (§4.2, RF-23). Con ADR-009 (2026-08-20) non esiste più una finestra di iscrizione: l'iscrizione piattaforma è sempre aperta e la partecipazione è gated dalla deadline del TT 1 (§4.1, RF-P5).
 
 **Aperte:**
 
@@ -764,6 +770,8 @@ Le decisioni rilevanti e difficili da invertire sono registrate come ADR in un u
 
 | Versione | Data | Modifiche |
 |----------|------|-----------|
+| 0.6.1 | 2026-08-21 | **Chiarimenti ADR-009 post-revisione tecnica (ADR-010)**: RF-P6 con carve-out esplicito per le conferme RF-P1/P2 (`platform_unsubscribe_confirm` verso `pending_unsubscribe`, `platform_unsubscribed` verso `unsubscribed`, risposte subscribe) che partono sempre, anche verso account non `active`, perché sono il flusso di conferma stesso; RF-P1 con il nuovo tipo email `platform_already_registered` ("Già iscritto alla piattaforma") per la risposta a un account già `active` (niente riuso di `pick_rejected`); semantica della barriera a due passi allineata alla decisione 3 (completamento = account `pending_unsubscribe` + body di conferma, indipendente dall'intento LLM); regole §4.1/§4.5 allineate al carve-out. **Emendamento RF-P6 (2026-08-21):** all'apertura del TT 1 l'email pick va anche agli iscritti attivi senza profilo (RF-P6, RF-06) |
+| 0.6.0 | 2026-08-20 | **Iscrizione a livello di piattaforma (ADR-009)**. Modello a due livelli: account piattaforma persistente su storage separato (`PLATFORM_DB_PATH`) con `registerID` stabile e soft-delete a due passi (`active`/`pending_unsubscribe`/`unsubscribed`, RF-P2); iscrizione/disiscrizione via email sempre disponibili con intento classificato dall'LLM (§4.1). Auto-join al TT1 (RF-P5): profilo+pick atomici al primo pick valido, risposta `pick_confirmed`; nessun profilo senza pick; pick da sconosciuto → log silenzioso (RF-P4). Matrice notifiche (RF-P6): `tournament_open` a tutti gli iscritti attivi, email di round ai soli partecipanti attivi, riepilogo `round_closed_survived` ai soli sopravvissuti alla transizione `closed→scored` (unica volta); ogni email filtrata su account `active`. RF-P7 (storage separato, `register_id` replicato), RF-P8 (clock iniettato). Rimossi RF-01/02/03/04/22/24/27/28 (sostituiti dai RF-P), US7/US8 riscritte (viste/gestione account piattaforma), US10 senza iscrizione/ripristino manuale; CL2/CL5/CL10/CL16 riscritti; glossario e tracciabilità §11 aggiornati |
 | 0.5.2 | 2026-08-14 | **Aggancio asincrono del torneo (ADR-008)**. Fine finestra iscrizione auto-chiusa alla deadline TT1 (§4.1, RF-22) con chiusura forzata auditat (`tournament:register:close --reason`); auto-iscrizione al primo pick nel TT1 (RF-27); primo TT aperto all'apertura del torneo (§4.2, RF-23, Q1 §13 risolta); mappatura TT↔TC derivata da `start_round` e token compatti (§2, §4, RF-20/21/25/26); chiusura forzata finestra pick (`round:close --force --reason`, RF-29) e chiusura di sicurezza allo scadere del TC (RF-30, log `safety_close`); guard anti-frode all'accettazione = `min(deadline registrata, kickoff effettivo)` (RF-31, §5.3); eligibilità come seam su ExternalIdentity (ADR-008); override US10 con `--reason` obbligatorio e confini temporali; CL2 riscritto e aggiunti CL11–18; tracciabilità §11 aggiornata |
 | 0.5.1 | 2026-08-13 | Corretta la semantica della chiusura del TT (§4.4, US9): il pick è registrato e la squadra bruciata all'invio valido (§4.3); `round:close` alla deadline consolida soltanto (elimina i profili senza pick, invia notifiche). Fonte dati POC aggiornata: football-data.org con import nel DB (§1.1, §13) |
 | 0.5.0 | 2026-08-13 | Ristrutturazione allineata ai principi di product engineering (questa revisione): sommario con link di sezione funzionanti; requisiti funzionali numerati (RF-01…RF-19); §1.2 "Ruoli e responsabilità dei componenti" spostato nell'HLD; diagrammi di sequenza e di stato del pick spostati nell'HLD; rimossi dettagli tecnici di canale (internaldate / comandi CLI / valore 38 hardcodato → data-driven); aggiunti: "Il gioco in sintesi" (§3), obiettivi/non-obiettivi (§1.2), requisiti RNF8/RNF9, metriche di POC (§9), prospetto di tracciabilità (§11), decisioni di prodotto (§12), changelog (§14); registrate le ADR-001…006; decisioni PO acquisite (formato pick via LLM; deadline da calendario; metriche definite al test in base agli iscritti) |

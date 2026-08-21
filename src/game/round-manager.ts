@@ -10,7 +10,9 @@
  *   - `round:open`   — crea `round_state` (status `open`, opened_at = clock) con
  *     deadline FISSA = kickoff − DEADLINE_ADVANCE_MIN (RF-14); invia l'email
  *     pick ai profili attivi con le sole squadre disponibili (decisione 12).
- *     Errore se il round è già aperto o in stato non riapribile.
+ *     All'apertura del SOLO TT 1 notifica anche gli account piattaforma
+ *     `active` senza profilo (amendment RF-P6, 2026-08-21). Errore se il
+ *     round è già aperto o in stato non riapribile.
  *   - `round:close`  — CONSOLIDA: elimina i profili attivi senza pick
  *     (`missing_pick`), notifica, `closed_at`, status `closed`. Con `--force`
  *     richiede `--reason` (audit obbligatorio, RF-29): stessa identica
@@ -23,7 +25,11 @@
  *     la cui partita ORA ha punteggio (→ `correct`/`wrong`, eliminazione a
  *     posteriori — anche su round già `scored`, LLD §1.4). Il round passa a
  *     `scored` quando non restano `pending` (RF-16; i `frozen` sono terminali
- *     per il TT). Idempotente (RF-17).
+ *     per il TT). Idempotente (RF-17). Alla transizione `closed→scored` invia
+ *     il riepilogo ai sopravvissuti con account `active` (RF-P6): la guardia
+ *     `summary_sent` è scritta atomicamente INSIEME allo stato (B2, decisione
+ *     (b)) e l'invio è best-effort per destinatario (fallimenti loggati con
+ *     warn pino in inglese, la contabilizzazione non fallisce).
  *   - `round:status` / `round:deadline` — sola lettura; espongono la coppia
  *     TT/TC derivata (RF-25) e, per deadline, ENTRAMBE le sorgenti temporali
  *     (deadline registrata + kickoff effettivo = istante di accettazione RF-31).
@@ -49,6 +55,7 @@ interface RoundStateRow {
   opened_at: string | null;
   closed_at: string | null;
   scored_at: string | null;
+  summary_sent: number;
 }
 
 /** Riga `pick` letta dal DB. */
@@ -68,6 +75,23 @@ interface ActiveProfile {
   playerName: string;
 }
 
+/**
+ * L'account piattaforma dell'email è `active`? (ADR-009, RF-P6): ogni
+ * notifica di round è filtrata sullo stato dell'account al momento
+ * dell'invio — `unsubscribed` e `pending_unsubscribe` non ricevono alcuna
+ * email. Senza registry iniettato nel contesto il filtro FALLISCE CHIUSO
+ * (B3, decisione (c)): ritorna `false` e le notifiche NON partono — nessun
+ * bypass silenzioso, simmetria con `checkEligibility`
+ * (`platform_unavailable`). Tutte le CLI reali che inviano email
+ * (`round:*`, `tournament:start`) iniettano già il registry, quindi il
+ * comportamento di produzione non cambia.
+ */
+function isAccountActive(ctx: GameContext, email: string): boolean {
+  if (ctx.platform === undefined) return false;
+  const account = ctx.platform.find(email);
+  return account !== null && account.status === 'active';
+}
+
 /** Esito di `round:open`. */
 export interface RoundOpenResult {
   round: number;
@@ -78,6 +102,12 @@ export interface RoundOpenResult {
   deadline: string;
   /** Profili attivi notificati con l'email pick. */
   notified: number;
+  /**
+   * Registrati alla piattaforma SENZA profilo notificati all'apertura del
+   * TT 1 (amendment RF-P6, 2026-08-21): 0 per i round successivi o senza
+   * registry nel contesto.
+   */
+  registeredNotified: number;
 }
 
 /** Esito di `round:close`. */
@@ -146,7 +176,9 @@ export interface RoundDeadlineResult {
 /** Legge la riga round_state (undefined se il round non è mai stato aperto). */
 function getRoundState(db: Database.Database, round: number): RoundStateRow | undefined {
   return db
-    .prepare('SELECT round, status, deadline, opened_at, closed_at, scored_at FROM round_state WHERE round = ?')
+    .prepare(
+      'SELECT round, status, deadline, opened_at, closed_at, scored_at, summary_sent FROM round_state WHERE round = ?'
+    )
     .get(round) as RoundStateRow | undefined;
 }
 
@@ -164,13 +196,16 @@ function getActiveProfiles(db: Database.Database): ActiveProfile[] {
 }
 
 /**
- * Invia una notifica email via ChannelAdapter+LLMGenerator iniettati. Se uno dei
- * due manca (CLI di Fase 3) è un no-op: le email reali arrivano nelle Fasi 5–6
- * (briefing §6.5). Restituisce true se l'email è stata effettivamente inviata.
- * Il soggetto è composto deterministicamente con `subjectFor` (D1, RF-25).
+ * Invia una notifica email via ChannelAdapter+LLMGenerator iniettati, SOLO se
+ * l'account piattaforma del destinatario è `active` (RF-P6, ADR-009). Se uno
+ * dei componenti manca (CLI di Fase 3) è un no-op: le email reali arrivano
+ * nelle Fasi 5–6 (briefing §6.5). Restituisce true se l'email è stata
+ * effettivamente inviata. Il soggetto è composto deterministicamente con
+ * `subjectFor` (D1, RF-25).
  */
 async function notify(ctx: GameContext, to: string, emailCtx: EmailContext): Promise<boolean> {
   if (ctx.channel === undefined || ctx.generator === undefined) return false;
+  if (!isAccountActive(ctx, to)) return false;
   const body = await ctx.generator.generate(emailCtx);
   await ctx.channel.sendMessage(to, body, subjectFor(emailCtx));
   return true;
@@ -209,10 +244,15 @@ export async function openRound(ctx: GameContext, round: number): Promise<RoundO
 
   const { tt, tc } = turnFor(db, round);
 
-  // Email pick ai profili attivi: solo squadre disponibili del profilo (decisione 12).
+  // Email pick ai profili attivi: solo squadre disponibili del profilo
+  // (decisione 12). Le email dei profili attivi finiscono in un Set
+  // normalizzato lowercase: serve da dedup per il blocco RF-P6 che segue
+  // (un iscritto con profilo non deve ricevere una seconda email).
   const active = getActiveProfiles(db);
+  const notifiedEmails = new Set<string>();
   let notified = 0;
   for (const profile of active) {
+    notifiedEmails.add(profile.email.toLowerCase());
     const availableTeams = await getAvailableTeams(db, dataProvider, profile.id, round);
     const sent = await notify(ctx, profile.email, {
       type: 'pick_instructions',
@@ -225,7 +265,43 @@ export async function openRound(ctx: GameContext, round: number): Promise<RoundO
     if (sent) notified += 1;
   }
 
-  return { round, tt, tc, status: 'open', deadline: deadline.toISOString(), notified };
+  // Amendment RF-P6 (decisione 2026-08-21): all'apertura del SOLO TT 1
+  // l'email pick_instructions va anche agli account piattaforma `active`
+  // che NON hanno ancora un profilo (i profili nascono con l'auto-join al
+  // primo pick, RF-P5): senza questo blocco un iscritto senza profilo non
+  // verrebbe MAI informato dell'apertura del round 1 (UAT del 21/08). Dal
+  // round 2 in poi il blocco è saltato (tt !== 1): i partecipanti sono
+  // già profili e il loop qui sopra li copre. Le squadre in giornata sono
+  // calcolate UNA volta per l'intero blocco (stessa fonte di
+  // getAvailableTeams, ma senza profilo non esistono bruciate) e ordinate
+  // come getTeams() per output deterministico. `playerName` è omesso: un
+  // account piattaforma senza profilo non ha nome (il template omette i
+  // dati assenti). Il filtro sullo stato `active` resta dentro `notify`
+  // (isAccountActive, fail-closed); senza registry iniettato
+  // (ctx.platform undefined, es. simulazione o chiamante senza registry)
+  // il blocco è saltato: nessun crash, coerenza col test "senza registry
+  // → nessuna email". Senza channel/generator `notify` è no-op e il
+  // conteggio resta 0.
+  let registeredNotified = 0;
+  if (tt === 1 && ctx.platform !== undefined) {
+    const matches = await dataProvider.getMatchesForRound(round);
+    const inRound = new Set(matches.flatMap((m) => [m.homeTeam, m.awayTeam]));
+    const inRoundTeams = (await dataProvider.getTeams()).filter((team) => inRound.has(team));
+    for (const email of ctx.platform.activeEmails()) {
+      // Dedup: l'account ha già ricevuto la mail del loop profili.
+      if (notifiedEmails.has(email.toLowerCase())) continue;
+      const sent = await notify(ctx, email, {
+        type: 'pick_instructions',
+        tt,
+        tc,
+        availableTeams: inRoundTeams,
+        deadline
+      });
+      if (sent) registeredNotified += 1;
+    }
+  }
+
+  return { round, tt, tc, status: 'open', deadline: deadline.toISOString(), notified, registeredNotified };
 }
 
 /**
@@ -304,7 +380,12 @@ export async function closeRound(
  * senza punteggio → frozen se oltre tcClose (CL1/CL8), altrimenti resta pending
  * (CL7); frozen con punteggio ora disponibile → valutato (anche su round già
  * scored, LLD §1.4). Il round passa a `scored` quando non restano pending
- * (RF-16; i frozen sono terminali per il TT).
+ * (RF-16; i frozen sono terminali per il TT). La transizione a `scored` e la
+ * guardia `summary_sent` sono scritte in UN'UNICA istruzione UPDATE (B2,
+ * decisione (b)): non esiste mai `scored` con summary_sent=0. L'invio del
+ * riepilogo che segue è BEST-EFFORT per destinatario (vedi blocco 3): un
+ * errore SMTP/LLM viene loggato con warn pino in inglese via `ctx.logger`
+ * (quando iniettato) e NON fa fallire la contabilizzazione.
  */
 export async function scoreRound(ctx: GameContext, round: number): Promise<RoundScoreResult> {
   const { db, dataProvider, config, now } = ctx;
@@ -406,11 +487,49 @@ export async function scoreRound(ctx: GameContext, round: number): Promise<Round
   const rs = getRoundState(db, round);
   let status = rs?.status ?? 'unknown';
   if (rs !== undefined && rs.status === 'closed' && remainingPending === 0) {
-    db.prepare("UPDATE round_state SET status = 'scored', scored_at = ? WHERE round = ?").run(
-      now.toISOString(),
-      round
-    );
+    // B2 (decisione (b)): transizione a `scored` e guardia `summary_sent`
+    // scritte INSIEME, in un'unica istruzione UPDATE, PRIMA del loop di invio
+    // del riepilogo. Prima di questa correzione `scored_at` era scritto prima
+    // del loop e `summary_sent=1` DOPO: un'eccezione durante l'invio lasciava
+    // il round `scored` con summary_sent=0 e il riepilogo perso per sempre
+    // (le riaperture saltano il blocco perché lo stato non è più `closed`).
+    // Ora lo stato intermedio non esiste: la guardia non si perde MAI.
+    db.prepare(
+      "UPDATE round_state SET status = 'scored', scored_at = ?, summary_sent = 1 WHERE round = ?"
+    ).run(now.toISOString(), round);
     status = 'scored';
+    // RF-P6 (ADR-009): riepilogo `round_closed_survived` SOLO alla transizione
+    // closed→scored e UNA SOLA volta — la guardia È la transizione stessa: lo
+    // stato passa a `scored` nell'UPDATE atomico sopra, quindi le riaperture
+    // di round:score saltano l'intero blocco (nessun check separato su
+    // summary_sent: vale 0 per OGNI riga in stato `closed`, è scritta a 1
+    // solo insieme a `scored`). Destinatari: SOLO i sopravvissuti
+    // (eliminated = 0) con account piattaforma `active` (filtro in notify).
+    // BEST-EFFORT per destinatario (B2, decisione (b)): ogni invio è avvolto
+    // in try/catch — un errore SMTP/LLM su un destinatario viene loggato con
+    // warn pino in INGLESE (via `ctx.logger`, quando iniettato dalla CLI) e il
+    // loop continua coi destinatari successivi; `scoreRound` risolve
+    // normalmente anche con invii falliti. Il fallimento NON viene ritentato
+    // (trade-off POC accettato, rischio §8 del piano): resta visibile nei log.
+    const survivors = getActiveProfiles(db);
+    for (const survivor of survivors) {
+      try {
+        await notify(ctx, survivor.email, {
+          type: 'round_closed_survived',
+          playerName: survivor.playerName,
+          tt,
+          tc
+        });
+      } catch (error) {
+        ctx.logger?.warn(
+          {
+            email: survivor.email,
+            error: error instanceof Error ? error.message : String(error)
+          },
+          `round:score: summary not sent to ${survivor.email} — continuing (best-effort)`
+        );
+      }
+    }
   }
 
   return { round, tt, tc, status, evaluated, newlyFrozen, newlyEliminated };

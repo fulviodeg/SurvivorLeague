@@ -1,11 +1,16 @@
 /**
- * Comandi CLI del LLM Adapter (LLD §7.8, piano Task 5.1/5.2).
+ * Comandi CLI del LLM Adapter (LLD §7.8, piano Task 5.1/5.2/6).
  *
  * Ruolo:
  *   - `llm:parse --input <text>` — estrae {team, outcome} dal testo libero:
  *     lista canonica da `getTeams()` (DB reale, DbSeasonDataProvider) +
  *     contenuto di `team-aliases.md` iniettati per chiamata (D2); DB vuoto →
  *     lista vuota → {team: null} con messaggio chiaro;
+ *   - `llm:classify --input <json>` — classifica {intent, pick} dal corpo del
+ *     messaggio in UNA chiamata LLM (ADR-009, RF-P1/P2): l'input JSON può
+ *     contenere il campo `body` (testo del messaggio) o essere direttamente il
+ *     testo; output JSON `{intent, pick}` (piano Task 6; ogni componente
+ *     espone un comando verificabile in modo indipendente, ADR-006);
  *   - `llm:generate --type <t> [--player-name] [--tt] [--tc] [--team]
  *     [--outcome] [--reason] [--deadline]` — genera l'email dal contesto:
  *     output = SOGGETTO (subjectFor, forma compatta TT2TC7, D1) + corpo
@@ -22,6 +27,7 @@ import { DbSeasonDataProvider } from '../../data/db-provider.js';
 import { createConnection } from '../../db/connection.js';
 import { migrate } from '../../db/schema.js';
 import { EMAIL_TYPES, OpenAIGenerator, subjectFor, type EmailContext } from '../../llm/generator.js';
+import { OpenAIIntentClassifier } from '../../llm/intent-classifier.js';
 import { OpenAIClient } from '../../llm/openai-client.js';
 import { loadTeamAliasesFor, OpenAIParser } from '../../llm/parser.js';
 import { jsonWithTestMode, printTestModeBanner } from '../output.js';
@@ -76,6 +82,85 @@ export const llmParseCommand: CommandModule<object, JsonArg & { input: string }>
       } else {
         printTestModeBanner(config);
         console.log(`{team: "${result.team}", outcome: "${result.outcome}"}`);
+      }
+    } finally {
+      db.close();
+    }
+  }
+};
+
+/**
+ * Estrae il corpo del messaggio dall'input del comando `llm:classify`
+ * (ADR-009): se `input` è un JSON valido contenente il campo `body` usa quel
+ * campo; altrimenti usa l'intera stringa come corpo (permette sia il JSON
+ * strutturato sia il testo libero in copia-incolla).
+ */
+export function classifyInputBody(input: string): string {
+  try {
+    const parsed = JSON.parse(input) as unknown;
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      typeof (parsed as { body?: unknown }).body === 'string'
+    ) {
+      return (parsed as { body: string }).body;
+    }
+  } catch {
+    // Non-JSON: l'input è già il corpo del messaggio.
+  }
+  return input;
+}
+
+interface ClassifyArgs extends JsonArg {
+  input: string;
+}
+
+export const llmClassifyCommand: CommandModule<object, ClassifyArgs> = {
+  command: 'llm:classify',
+  describe:
+    'Classifica {intent, pick} dal corpo del messaggio in UNA chiamata LLM (ADR-009); input JSON {"body": "..."} o testo libero',
+  builder: (yargs: Argv<object>) =>
+    yargs
+      .option('json', {
+        type: 'boolean' as const,
+        default: false,
+        describe: 'Output JSON strutturato invece di testo (LLD §7.13)'
+      })
+      .option('input', {
+        type: 'string' as const,
+        demandOption: true,
+        describe: 'Testo del messaggio o JSON {"body": "<testo>"} da classificare'
+      }),
+  handler: async (argv) => {
+    const config = getConfig();
+    const db = createConnection(config.DB_PATH);
+    try {
+      migrate(db);
+      const provider = new DbSeasonDataProvider(db);
+      const teams = await provider.getTeams();
+      const aliases = await loadTeamAliasesFor(config.testMode);
+      const classifier = new OpenAIIntentClassifier(
+        new OpenAIClient({
+          baseUrl: config.LLM_API_BASE_URL,
+          apiKey: config.LLM_API_KEY,
+          models: config.LLM_MODEL,
+          timeoutMs: config.LLM_TIMEOUT_MS,
+          retries: config.LLM_RETRIES
+        })
+      );
+      const body = classifyInputBody(argv.input);
+      const result = await classifier.classify(body, { teams, aliases, testMode: config.testMode });
+      if (argv.json) {
+        console.log(jsonWithTestMode(config, result));
+      } else {
+        printTestModeBanner(config);
+        if (result.intent === 'pick' && result.pick !== null) {
+          console.log(
+            `{intent: "pick", pick: {team: "${result.pick.team}", outcome: "${result.pick.outcome}"}}`
+          );
+        } else {
+          console.log(`{intent: "${result.intent}", pick: ${JSON.stringify(result.pick)}}`);
+        }
       }
     } finally {
       db.close();

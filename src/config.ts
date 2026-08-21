@@ -71,6 +71,18 @@ const testRefreshAllowedParam = () =>
     .transform((value) => value === 'true');
 
 /**
+ * Valore di PRODUZIONE di `PLATFORM_DB_PATH` (ADR-009, RF-P7) — UNICA fonte
+ * del percorso del DB piattaforma di produzione: è usata sia come default
+ * zod di `PLATFORM_DB_PATH` (campo sotto) sia dalla guardia
+ * `assertSimPlatformPath` di `src/cli/commands/simulate.ts` (D8/B4), che
+ * rifiuta `simulate:*` quando il percorso configurato coincide con questo
+ * valore. Cambiare il valore di produzione = cambiare SOLO questa costante
+ * (e l'eventuale `.env` reale che la ripete); MAI duplicarla altrove: il
+ * confronto della guardia resterebbe disallineato dal default reale.
+ */
+export const PLATFORM_DB_PATH_DEFAULT = './data/platform.db';
+
+/**
  * Schema completo delle variabili d'ambiente (LLD §4 + SIM_PLAYERS).
  * I default corrispondono a quelli di .env.example: cambiare un default qui
  * richiede di aggiornare anche .env.example e LLD §4.
@@ -132,6 +144,14 @@ const configSchema = z.object({
   LLM_RETRIES: intParam().default(3),
   // Percorso del file SQLite; la directory viene creata da db/connection.ts se assente.
   DB_PATH: z.string().min(1).default('./data/survivor.db'),
+  // Percorso del DB PIATTAFORMA (ADR-009, RF-P7): storage SEPARATO degli
+  // account (registerID/email/status). MAI uguale a DB_PATH: due connessioni
+  // distinte, nessuna transazione cross-DB. `platform:migrate` lo migra;
+  // `channel:email:process`/`simulate:*` lo richiedono (errore esplicito se
+  // assente); `simulate:*` rifiuta/avvisa se coincide col valore di produzione.
+  // Default = PLATFORM_DB_PATH_DEFAULT (costante sopra, unica fonte del
+  // valore di produzione, usata anche dalla guardia di simulazione).
+  PLATFORM_DB_PATH: z.string().min(1).default(PLATFORM_DB_PATH_DEFAULT),
   // Livello di log pino: debug | info | warn | error.
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   // Intervallo (millisecondi) tra due letture della casella IMAP.

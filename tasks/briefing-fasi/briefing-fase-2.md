@@ -334,7 +334,7 @@ test": ok con loader condiviso; da allineare con il §3-F sull'ordine dei task.
 
 Prompt di base (da precorrere con qualunque task della Fase 2):
 > Implementa il task <n> della Fase 2 del piano (`tasks/plan.md`) seguendo
-> **prioritariamente** il briefing `tasks/briefing-fase-2.md` per le
+> **prioritariamente** il briefing `tasks/briefing-fasi/briefing-fase-2.md` per le
 > incongruenze/problemi/modifiche necessarie, e le sezioni LLD/PRD ivi
 > citate come autorità. Prima di scrivere codice: (1) se una spec nel
 > briefing è contestata, applica la correzione a `plan.md`/ADR/LLD nello

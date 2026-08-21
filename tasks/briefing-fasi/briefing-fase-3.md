@@ -5,7 +5,7 @@
 > requisiti ADR-008), `docs/POC/POC_LLD.md` (§1.1, §3.1, §3.2, §6, §7.3–7.7,
 > §8.1), `docs/POC/POC_PRD.md` (§4.1–4.6, §5.1–5.4, CL1–18, RF-12…31,
 > CS1/CS2/CS4/CS5/CS6), `docs/decisions/architecture-decisions.md` (ADR-008),
-> `tasks/plan-aggancio-torneo-asincrono.md` (Task 7), stato reale di `src/`
+> `tasks/aggancio-torneo-asincrono/plan-aggancio-torneo-asincrono.md` (Task 7), stato reale di `src/`
 > (config, schema, provider, importer, CLI) e `tests/` (fixture, pattern).
 >
 > **Decisioni confermate dal PO il 2026-08-14** (fonte: conversazione di
@@ -510,7 +510,7 @@ Prompt di base (da precorrere con qualunque task della Fase 3 estesa):
 
 > Implementa la **Fase 3 estesa** del piano (`tasks/plan.md`): Task 3.1→3.5
 > **più** Task 4.1 e 4.2 (auto-iscrizione RF-27 inclusa), seguendo
-> **prioritariamente** il briefing `tasks/briefing-fase-3.md` (decisioni
+> **prioritariamente** il briefing `tasks/briefing-fasi/briefing-fase-3.md` (decisioni
 > 1/2/3/4/A del 2026-08-14) e le sezioni LLD/PRD ivi citate come autorità.
 > Prima di scrivere codice: (1) se una spec nel briefing è contestata, applica
 > la correzione a `plan.md`/ADR/LLD nello stesso lavoro (tabella §9), (2)

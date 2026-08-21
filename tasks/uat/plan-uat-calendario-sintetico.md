@@ -513,7 +513,7 @@ segreti; aggiungere un test che gli esempi non contengono segreti.
 
 **`LLM_MODEL` (allineamento):** il `LLM_MODEL` degli esempi
 (`.env.uat.example`/`.env.uat-replay.example`) è la **lista failover
-multi-modello** prodotta dal piano LLM dedicato (`tasks/plan-failover-llm-multimodello.md`);
+multi-modello** prodotta dal piano LLM dedicato (`tasks/llm/plan-failover-llm-multimodello.md`);
 non un singolo modello placeholder. Motivazione: lo stress test del 2026-08-15
 ha confermato `nvidia/nemotron-3-super-120b-a12b:free` (16/16, zero errori) e
 scartato i modelli `gemma-3`-family per rate-limit 429. Il fallimento LLM in UAT
@@ -791,7 +791,7 @@ comando seed (1-3), scheduler senza refresh su DB sintetico (4), ambiente
 
 > **Nota di aggiornamento (2026-08-16T20:34Z):** entrambe le dipendenze esterne
 > sono state risolte con l'esecuzione del piano
-> `tasks/plan-failover-llm-multimodello.md` e sono verificate nel report
+> `tasks/llm/plan-failover-llm-multimodello.md` e sono verificate nel report
 > `docs/uat/stress-test-report-2026-08-16.md`. I testi sotto restano come
 > contesto storico dei problemi.
 
@@ -808,7 +808,7 @@ comando seed (1-3), scheduler senza refresh su DB sintetico (4), ambiente
   errori, 0 duplicati** (addendum del report). 280 test verdi, typecheck/lint
   puliti. Il fix precedente (mailbox aperta prima del STORE) resta applicato.
 - **Lista failover LLM multi-modello — RISOLTA e ADOTTATA (2026-08-16):**
-  implementata dal piano `tasks/plan-failover-llm-multimodello.md` e **adottata
+  implementata dal piano `tasks/llm/plan-failover-llm-multimodello.md` e **adottata
   in `.env`**: `LLM_MODEL=nvidia/nemotron-3-super-120b-a12b:free,google/gemma-4-26b-a4b-it:free,openai/gpt-oss-20b:free`,
   `LLM_TIMEOUT_MS=15000`, `LLM_RETRIES=3`. Stress test parser 16/16 senza
   blocchi (zero 429 nella finestra; primario vincente sempre). È la lista da
@@ -910,7 +910,7 @@ vedi sopra.)
 ### Dipendenze esterne — RISOLTE (aggiornamento 2026-08-16T20:34Z, dettagli in §4)
 
 Le dipendenze esterne erano state rinviate a §4: entrambe risultano **RISOLTE**
-il 2026-08-16 con l'esecuzione del piano `tasks/plan-failover-llm-multimodello.md`
+il 2026-08-16 con l'esecuzione del piano `tasks/llm/plan-failover-llm-multimodello.md`
 e la ri-validazione dal vivo (report `docs/uat/stress-test-report-2026-08-16.md`,
 addendum incluso):
 - **Bug `markSeen` (churn/ETIMEDOUT):** RISOLTO — fix di robustezza applicato
@@ -923,7 +923,7 @@ addendum incluso):
 ## 7. Decisioni chiuse e stato del piano (peer review 2026-08-16)
 
 Tutte le decisioni editoriali del piano sono **chiuse** dopo la peer review del
-2026-08-16 (vedi `tasks/briefing-plan-uat-calendario-sintetico.md` per il
+2026-08-16 (vedi `tasks/uat/briefing-plan-uat-calendario-sintetico.md` per il
 rationale completo). Stato:
 
 - **D5 (punteggi pre-seedati):** confermato e **strutturale** per la cadenza

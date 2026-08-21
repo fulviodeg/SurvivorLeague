@@ -3,12 +3,13 @@
 > ⚠ **POC ONLY** — Questo documento descrive il sistema per la Proof of Concept. Non è il design del sistema di produzione.
 
 **Stato:** Revisionato
-**Data:** 2026-08-14
-**Versione:** 0.4.0
+**Data:** 2026-08-20
+**Versione:** 0.5.0
 
-> Documento di dettaglio implementativo. Per l'architettura di alto livello vedi [POC_HLD.md](POC_HLD.md); per i requisiti di prodotto vedi [POC_PRD.md](POC_PRD.md). Cross-riferimenti aggiornati alla numerazione del PRD v0.5.2 e dell'HLD v0.4.2.
+> Documento di dettaglio implementativo. Per l'architettura di alto livello vedi [POC_HLD.md](POC_HLD.md); per i requisiti di prodotto vedi [POC_PRD.md](POC_PRD.md). Cross-riferimenti aggiornati alla numerazione del PRD v0.6.0 e dell'HLD v0.5.0.
 
 **Changelog:**
+- **0.5.0** (2026-08-20) — Allineamento all'iscrizione a livello di piattaforma (ADR-009, PRD v0.6.0): nuova tabella `platform_account` su DB separato `PLATFORM_DB_PATH` (§3, §4.2) con soft-delete a due passi (`active`/`pending_unsubscribe`/`unsubscribed`); colonne additive `player.register_id`, `profile.register_id`, `round_state.summary_sent` (§3); vincoli applicativi riscritti: gate piattaforma `active`, auto-join al TT1 (RF-P5), riepilogo `round_closed_survived` alla transizione `closed→scored` con guardia `summary_sent` (§3.1); nuova interfaccia `PlatformRegistry` (§6.6) e `LLMIntentClassifier` (§6.2); `EmailType` aggiornati (`platform_registered`, `platform_unsubscribed`, `platform_unsubscribe_confirm`, `tournament_open`, `round_closed_survived`; rimossi `welcome`, `registration_open_invite`, `auto_registered`, `round_closed_eliminated`) (§6.3); nuovi comandi `platform:*` e modifiche `tournament:*`/`round:*`/`channel:email:process` (§7); `channel:email:process` migra entrambi i DB; casi di test §8 aggiornati (registry, classificatore, notifiche filtrate).
 - **0.4.0** (2026-08-14) — Allineamento all'aggancio asincrono del torneo (ADR-008, PRD v0.5.2): colonna `tournament_state.start_round INTEGER NULL` con strategia di migrazione **additiva** idempotente (`ALTER TABLE … ADD COLUMN` se manca — §3); nuovo vincolo applicativo di accettazione pick `min(deadline registrata, fischio d'inizio effettivo prima partita del TC)` (guard anti-frode, RF-31, §3.1); nota finestra `[start_round..N]` come filtro logico (§3.2); nuova interfaccia di **eligibilità** `checkEligibility(ExternalIdentity)` con implementazione POC vuota (ADR-008, §6.5); auto-iscrizione del mittente sconosciuto nel TT1 e iniezione deterministica della coppia TT/TC nei template (ADR-004, §1.1, §6.3); scheduler con chiusura di sicurezza allo scadere del TC se deadline NULL (log `safety_close`, §1.4); comandi CLI aggiornati (`tournament:start --start-round <n>`, `tournament:register --reason`, `pick:register --reason`, `tournament:register:close --reason`, `round:close --force --reason`, output con coppia TT/TC — §7.3, §7.10); casi di test §8 aggiornati.
 - **0.3.0** (2026-08-13) — Allineamento alle decisioni del piano di implementazione: `SeasonDataProvider` con unica implementazione `DbSeasonDataProvider` (lettura da DB; rimosso il precedente provider basato su file JSON); client API football-data.org solo per i comandi `data:*`; contratto del Parser LLM con lista canonica squadre + `team-aliases.md` e check deterministico post-parse; `round:score` processa anche i pick `frozen`; scheduler tick con `data:refresh`; colonne `eliminated_at`/`eliminated_reason` su `profile`; regola operativa rinvii senza `rescheduled_date`; nuovo comando `tournament:export`; distinzione mock/UAT in test strategy.
 
@@ -34,10 +35,11 @@
 - [5. Struttura del progetto](#5-struttura-del-progetto)
 - [6. Interfacce TypeScript](#6-interfacce-typescript)
   - [6.1 SeasonDataProvider](#61-seasondataprovider)
-  - [6.2 LLM Parser](#62-llm-parser)
+  - [6.2 LLM Parser e Intent Classifier](#62-llm-parser-e-intent-classifier)
   - [6.3 LLM Generator](#63-llm-generator)
   - [6.4 ChannelAdapter](#64-channeladapter)
-  - [6.5 Eligibilità (seam ADR-008)](#65-eligibilità-seam-adr-008)
+  - [6.5 Eligibilità (seam ADR-008/009)](#65-eligibilità-seam-adr-008009)
+  - [6.6 PlatformRegistry (ADR-009)](#66-platformregistry-adr-009)
 - [7. Comandi CLI](#7-comandi-cli)
   - [7.1 Setup](#71-setup)
   - [7.2 Dati stagione](#72-dati-stagione)
@@ -62,12 +64,13 @@
 
 | Modulo | Responsabilità |
 |--------|---------------|
-| **Round Manager** | Apre e chiude round, gestisce deadline, coordina l'invio delle email di pick, e implementa la **contabilizzazione incrementale** dei pick (`round:score`: processa i pick `pending`, aggiorna lo stato a `correct`/`wrong`/`frozen`, chiude il round a `scored` quando non restano pick `pending`; processa inoltre i pick `frozen` la cui partita ora ha punteggio, aggiornandoli a `correct`/`wrong` con eventuale eliminazione a posteriori). Gestisce inoltre: l'**auto-chiusura alla deadline** e alla deadline del TT1 anche della finestra di iscrizione (ADR-008); la **chiusura forzata** (`round:close --force --reason`, RF-29) e la **chiusura di sicurezza** allo scadere del TC quando la deadline è NULL/non innescata (RF-30, log `safety_close`) — tutte con **semantica di consolidamento identica** |
-| **Pick Processor** | Valida un pick (profilo iscritto o auto-iscrizione nel TT1, squadra in giornata, già bruciata, esito valido, già inviato, entro l'**istante di accettazione** `min(deadline registrata, fischio d'inizio effettivo prima partita del TC)` — RF-31), registra il pick nel database |
+| **Round Manager** | Apre e chiude round, gestisce deadline, coordina l'invio delle email di pick, e implementa la **contabilizzazione incrementale** dei pick (`round:score`: processa i pick `pending`, aggiorna lo stato a `correct`/`wrong`/`frozen`, chiude il round a `scored` quando non restano pick `pending`; processa inoltre i pick `frozen` la cui partita ora ha punteggio, aggiornandoli a `correct`/`wrong` con eventuale eliminazione a posteriori). Gestisce inoltre: la **chiusura forzata** (`round:close --force --reason`, RF-29) e la **chiusura di sicurezza** allo scadere del TC quando la deadline è NULL/non innescata (RF-30, log `safety_close`) — tutte con **semantica di consolidamento identica**; alla transizione `closed→scored` invia il riepilogo `round_closed_survived` ai soli sopravvissuti (guardia `summary_sent`, RF-P6); filtra OGNI notifica sull'account piattaforma `active` (RF-P6, ADR-009) |
+| **Pick Processor** | Valida un pick (account piattaforma `active` + profilo in gara — o auto-join nel TT1 —, squadra in giornata, già bruciata, esito valido, già inviato, entro l'**istante di accettazione** `min(deadline registrata, fischio d'inizio effettivo prima partita del TC)` — RF-31), registra il pick nel database |
 | **Rules Engine** | Regole di gioco: squadre bruciate per girone, esiti validi, condizioni di vittoria |
 | **Elimination Engine** | Determina quali profili sono eliminati (pick mancante, pick sbagliato) |
 | **Winner Engine** | Determina se il torneo è finito e chi ha vinto (casi 1, 2, 3 del PRD §4.6), sulla finestra `[start_round..N]` |
-| **Eligibility (seam)** | Gate pre-registrazione `checkEligibility(ExternalIdentity) → {eligible, reason?}` (ADR-008, §6.5): implementazione POC sempre `true` con log; Fase 1: controllo quota (`ENTRY_FEE_EUR`) |
+| **Eligibility (seam)** | Gate pre-partecipazione `checkEligibility(ExternalIdentity) → {eligible, reason?}` (ADR-008/009, §6.5): implementazione POC "account piattaforma `active`" (lettura dal Platform Registry); Fase 1: controllo quota (`ENTRY_FEE_EUR`) |
+| **Platform Registry** | Archivio account piattaforma su DB separato (§6.6): `register`/soft-delete a due passi/`activeEmails`; **solo letto** dai flussi di torneo (ADR-009) |
 | **Season Data Provider** | Interfaccia astratta per calendario e risultati. Unica implementazione nella POC: `DbSeasonDataProvider` (legge dalla tabella `match` del DB) |
 
 **Derivazione squadre bruciate.** Non esiste una tabella separata: il Rules Engine deriva l'insieme delle squadre già usate da un profilo interrogando la tabella `pick` per i round del girone corrente. Per il girone di andata (TC 1-19 nella stagione completa), la query è `SELECT team FROM pick WHERE profile_id = ? AND round BETWEEN 1 AND 19`. Per il girone di ritorno (TC 20+ nella stagione completa), la query è `SELECT team FROM pick WHERE profile_id = ? AND round >= 20`. Il confine tra i due gironi è determinato dinamicamente dal numero totale di round diviso 2, non hardcodato. I pick in **Freeze** (PRD §5.4) contano come squadre bruciate: la query non filtra i pick in attesa di risultato. Il modello non prevede più l'annullamento del pick per rinvio, quindi la derivazione resta valida senza filtri aggiuntivi. **In un torneo agganciato** (ADR-008) le derivazioni operano **sull'intera stagione** (§3.2); il torneo gioca la finestra `[start_round..N]` come filtro logico: le query e i confini non cambiano.
@@ -76,7 +79,7 @@
 
 | Modulo | Input | Output | Modello |
 |--------|-------|--------|---------|
-| **Parser** | Testo dell'email (italiano, forma libera) | `{ team: string, outcome: "win" \| "draw" \| "lose" } \| null` | Qualsiasi LLM API |
+| **Intent Classifier** | Testo dell'email (italiano, forma libera) | `{ intent: 'subscribe'\|'unsubscribe'\|'pick'\|'other', pick: {team, outcome} \| null }` in UNA chiamata | Qualsiasi LLM API |
 | **Generator** | Contesto strutturato (es. `{ type: "pick_confirmed", round, team, outcome }`) | Testo email in italiano | Qualsiasi LLM API |
 
 **Contratto del Parser:**
@@ -102,7 +105,7 @@ Il Game Engine non conosce i dettagli di trasporto. Dialoga con un'interfaccia a
 | **ChannelAdapter** (interfaccia) | Contratto astratto per qualsiasi canale di comunicazione: `fetchMessages()`, `sendMessage()` |
 | **EmailAdapter** (implementazione) | Unica implementazione nella PoC. Al suo interno contiene: |
 | &nbsp;&nbsp;├─ **IMAP Client** | Si connette alla casella Gmail, recupera le nuove email (`imapflow`). Popola `IncomingMessage.receivedAt` con l'`internaldate` del messaggio (arrivo in casella), non con l'header `Date` (PRD §5.3) |
-| &nbsp;&nbsp;├─ **Message Router** | Classifica il messaggio in arrivo e **normalizza l'identità del mittente** in `ExternalIdentity { channel, identifier }` (ADR-008): per l'email `{channel: 'email', identifier: <indirizzo minuscolo, senza nome visualizzato>}` (D6/K). **Criterio deterministico (D6):** mittente **noto** → `pick`; mittente **ignoto** con keyword di iscrizione nel corpo (lista costante documentata: "iscriv", "mi iscrivo", "partecipo", "vorrei giocare", "registr") → `registration`; mittente ignoto senza keyword → `pick` (il wiring decide auto-iscrizione/chiarimento/rifiuto); corpo vuoto → `unknown`. **Il router NON decide nulla di gioco** (auto-iscrizione/rifiuti = Game Engine, PRD §4.1): produce `{ kind, identity, body }`, il wiring (6.2) decide. **"Round corrente" del wiring (D8):** il primo `round_state` con `status='open'` nella finestra `[start_round..N]` (stessa semantica di `tournament:status`); nessun round aperto → rifiuto `round_not_open` (CL3) |
+| &nbsp;&nbsp;├─ **Message Router** | Normalizza l'identità del mittente in `ExternalIdentity { channel, identifier }` (ADR-008): per l'email `{channel: 'email', identifier: <indirizzo minuscolo, senza nome visualizzato>}` (D6/K). **La decisione di intento è dell'LLM (ADR-009):** il router NON usa più keyword (`REGISTRATION_KEYWORDS` rimossa) e produce `{ kind: 'classified', identity, body }`; corpo/mittente vuoto → `kind: 'unknown'` (nessuna chiamata LLM). **Il router NON decide nulla di gioco** (auto-join/rifiuti = Game Engine, PRD §4.1): il wiring (6.2) decide. **"Round corrente" del wiring (D8):** il primo `round_state` con `status='open'` nella finestra `[start_round..N]` (stessa semantica di `tournament:status`); nessun round aperto → rifiuto `round_not_open` (CL3) per il ramo pick |
 | &nbsp;&nbsp;└─ **SMTP Client** | Invia email di risposta e notifica (`nodemailer`): `sendMail({from, to, subject, text})`, soggetto dal chiamante (D1) |
 
 **Adapters futuri** (fuori scope PoC, da FUTURE_EXPLORATIONS.md punto 7):
@@ -114,12 +117,12 @@ Il Game Engine non conosce i dettagli di trasporto. Dialoga con un'interfaccia a
 
 | Modulo | Responsabilità |
 |--------|---------------|
-| **Scheduler** | **Orchestratore sottile**: in produzione, decide *quando* agire in base al calendario e allo stato dei round e della fase di iscrizione (apre/chiude la fase di iscrizione, apre round, chiude deadline, invoca la contabilizzazione). **Non contiene logica di gioco**: non confronta risultati, non valida pick, non tocca lo stato dei pick o delle iscrizioni. Invoca esclusivamente i comandi del Game Engine |
-| **Cron Job** | Meccanismo di scheduling (cron del sistema operativo). Esegue il processo Node.js a intervalli regolari per verificare se ci sono azioni da compiere (aprire/chiudere la fase di iscrizione, aprire round, chiudere deadline, contabilizzare) |
+| **Scheduler** | **Orchestratore sottile**: in produzione, decide *quando* agire in base al calendario e allo stato dei round (apre round, chiude deadline, invoca la contabilizzazione). **Non contiene logica di gioco**: non confronta risultati, non valida pick, non tocca lo stato dei pick o degli account. Invoca esclusivamente i comandi del Game Engine |
+| **Cron Job** | Meccanismo di scheduling (cron del sistema operativo). Esegue il processo Node.js a intervalli regolari per verificare se ci sono azioni da compiere (aprire round, chiudere deadline, contabilizzare) |
 
 **Funzionamento:**
 - Il cron job esegue `npm run cli -- scheduler:tick` ogni minuto
-- La **finestra di iscrizione** = `[apertura del torneo, deadline del TT 1]` (ADR-008, RF-22): si apre all'avvio del torneo e si **auto-chiude alla deadline del TT 1** (`tournament:register:close`, senza `--reason`); se la deadline del TT 1 non è registrata, si applica la **chiusura di sicurezza** della finestra alla chiusura del TC ricalcolata dai dati correnti (log `safety_close`, causa `deadline_missing`); se nemmeno questa è calcolabile → nessuna auto-chiusura, log `warn` + anomalia in `tournament:status` (uscita: chiusura forzata RF-28)
+- **Nessuna finestra di iscrizione (ADR-009):** le azioni `register_close_auto`/`register_close_safety` e i relativi rami sono RIMOSSI — l'iscrizione piattaforma è sempre disponibile e la partecipazione è gated dalla deadline del TT1 (auto-join, RF-P5)
 - Il comando `scheduler:tick` esegue prima `data:refresh` (aggiornamento dei dati stagione dall'API), poi controlla il calendario e lo stato corrente di ogni round (operando sulla finestra `[start_round..N]` in caso di aggancio, ADR-008):
   - Round `pending` al termine del TC precedente (o TT 1 all'apertura del torneo, RF-23) → `round:open`
   - Round `open` con deadline scaduta **e** deadline registrata → `round:close` (auto-chiusura a deadline)
@@ -167,17 +170,20 @@ Il Game Engine non conosce i dettagli di trasporto. Dialoga con un'interfaccia a
 ```sql
 -- Giocatore (persona reale)
 CREATE TABLE player (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  email      TEXT NOT NULL UNIQUE,
-  name       TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  email       TEXT NOT NULL UNIQUE,
+  name        TEXT,
+  register_id INTEGER,  -- riferimento REPLICATO all'account piattaforma (ADR-009, RF-P7);
+                        -- nessun vincolo cross-DB: è un riferimento informativo
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Profilo (iscrizione al torneo)
--- Nella PoC: 1 profilo per giocatore
+-- Profilo (partecipazione al torneo)
+-- Nella PoC: 1 profilo per giocatore; nasce per AUTO-JOIN al primo pick valido nel TT 1 (RF-P5)
 CREATE TABLE profile (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   player_id         INTEGER NOT NULL UNIQUE REFERENCES player(id),
+  register_id       INTEGER,  -- riferimento REPLICATO all'account piattaforma (RF-P7, come player)
   eliminated        INTEGER NOT NULL DEFAULT 0,
   eliminated_at     TEXT,  -- timestamp dell'eliminazione (ISO 8601), NULL se in gara
   eliminated_reason TEXT CHECK (eliminated_reason IN ('missing_pick', 'wrong_pick')),
@@ -211,24 +217,42 @@ CREATE TABLE match (
 
 -- Stato round
 CREATE TABLE round_state (
-  round      INTEGER PRIMARY KEY,
-  status     TEXT NOT NULL CHECK (status IN ('pending', 'open', 'closed', 'scored')),
-  deadline   TEXT,
-  opened_at  TEXT,
-  closed_at  TEXT,
-  scored_at  TEXT
+  round         INTEGER PRIMARY KEY,
+  status        TEXT NOT NULL CHECK (status IN ('pending', 'open', 'closed', 'scored')),
+  deadline      TEXT,
+  opened_at     TEXT,
+  closed_at     TEXT,
+  scored_at     TEXT,
+  summary_sent  INTEGER NOT NULL DEFAULT 0  -- riepilogo round_closed_survived inviato UNA volta
+                                            -- alla transizione closed→scored (RF-P6, ADR-009)
 );
 
 -- Stato del torneo (riga singola nell'istanza: PoC monoutente)
--- Gestisce la finestra di iscrizione (PRD §4.1, US7/US8), l'avvio della stagione (US6)
--- e l'aggancio del torneo a un TC arbitrario (ADR-008, RF-20)
+-- Gestisce l'avvio della stagione (US6) e l'aggancio del torneo a un TC
+-- arbitrario (ADR-008, RF-20). La colonna registration_open è DEPRECATA
+-- (ADR-009): non esiste più una finestra di iscrizione.
 CREATE TABLE tournament_state (
   id                INTEGER PRIMARY KEY CHECK (id = 1),
   season_started    INTEGER NOT NULL DEFAULT 0,  -- stagione avviata (operazioni preliminari concluse, US6)
-  registration_open INTEGER NOT NULL DEFAULT 0,  -- finestra di iscrizione aperta: si accettano iscrizioni automatiche;
-                                                 -- si chiude da sola alla deadline del TT1 (RF-22) o per chiusura forzata (RF-28)
-  start_round       INTEGER                      -- TC di aggancio del torneo (NULL = comportamento legacy: TC 1, ADR-008);
+  registration_open INTEGER NOT NULL DEFAULT 0,  -- DEPRECATA (ADR-009): resta per compatibilità dello schema,
+                                                 -- non è più letta/scritta dai flussi
+  start_round       INTEGER,                     -- TC di aggancio del torneo (NULL = TC 1 legacy, ADR-008);
                                                  -- da esso si deriva TT = TC - start_round + 1 (RF-20, RF-25)
+  registration_notified INTEGER NOT NULL DEFAULT 0 -- DEPRECATA (ADR-009): non più letta/scritta
+);
+```
+
+**DB piattaforma (storage separato, ADR-009, RF-P7).** Vive in `PLATFORM_DB_PATH` (default `./data/platform.db`, §4.2): **mai** nello stesso file di `DB_PATH`. Due connessioni separate, nessuna transazione cross-DB: la piattaforma è **solo letta** dai flussi di torneo (gate notifiche/pick). `register_id` su `player`/`profile` è un riferimento replicato **senza vincoli cross-DB** (RF-P7). Il DB piattaforma **non viene eliminato** col DB torneo e non partecipa alle migrazioni di `db:migrate` (`platform:migrate` dedicato).
+
+```sql
+-- Account piattaforma (DDL di src/db/platform-schema.ts, RF-P1/P2/P8)
+CREATE TABLE platform_account (
+  register_id     INTEGER PRIMARY KEY AUTOINCREMENT,  -- registerID INTERNO STABILE, riusato alla re-iscrizione
+  email           TEXT NOT NULL UNIQUE,               -- univocità: il sistema ricorda l'email (RF-P3)
+  status          TEXT NOT NULL DEFAULT 'active'
+                  CHECK (status IN ('active', 'pending_unsubscribe', 'unsubscribed')),
+  created_at      TEXT NOT NULL,      -- SEMPRE dal clock iniettato (RF-P8, RNF1): mai default datetime('now')
+  unsubscribed_at TEXT               -- istante della soft-delete (clock iniettato), NULL finché non disiscritto
 );
 ```
 
@@ -242,8 +266,10 @@ CREATE TABLE tournament_state (
 - **Regola operativa POC sui rinvii**: non esiste una colonna `rescheduled_date` su `match`. La regola è interamente data-driven: punteggio presente → contabilizza; `postponed = 1` senza punteggio → `frozen`; altrimenti il pick resta `pending`. Il recupero giocato **emerge dai dati**: quando la partita rinviata viene giocata, appare nel DB con il punteggio e viene contabilizzata al `round:score` successivo
 - La chiusura del TC è determinata dalla fine prevista dell'ultima partita programmata + scarto configurabile (PRD §5.4); definisce la finestra del TC ed è usata dal Round Manager per le decisioni sui rinvii (CL7/CL8/CL1), **non** come trigger della contabilizzazione
 - Lo stato del pick è esplicito: `status` enum `pending | frozen | correct | wrong`. `pending` = in attesa del risultato; `frozen` = partita rinviata fuori finestra (terminale per la chiusura del round, contabilizzato a recupero concluso); `correct`/`wrong` = contabilizzato. Il Freeze è quindi rappresentato da `status = 'frozen'` (non da `result = NULL`); `rescheduled_date`/`end_time` su `match` sono rimandati a Fase 1 (PRD §5.4, HIGH-03)
-- Vincolo di iscrizione: un profilo deve risultare iscritto al momento dell'invio del pick e comunque entro la deadline del TT. La **finestra di iscrizione** è l'intervallo `[apertura del torneo, deadline del TT 1]` (`tournament_state.registration_open = 1`, RF-22): le iscrizioni automatiche sono ammesse solo entro la finestra e si chiudono da sole alla deadline del TT 1 (RF-13); prima dell'apertura e dopo la chiusura l'email di iscrizione è rifiutata, e l'unico ingresso ammesso è l'iscrizione manuale del commissioner (`tournament:register --reason <motivo>`, obbligatorio e auditato — PRD US8/US10/CL2, ADR-008). Durante la finestra, un pick da mittente sconosciuto produce l'**auto-iscrizione** (RF-27, §1.1); dal TT 2 il pick da sconosciuto è respinto senza registrazione (RF-24)
-- **Gate di eligibilità**: prima di ogni registrazione (automatica, auto-iscrizione o manuale) il Game Engine valuta `checkEligibility(ExternalIdentity)` (§6.5, ADR-008): implementazione POC sempre `eligible = true` con log; gli override del commissioner passano per la stessa funzione con esito forzabile + motivo
+- **Gate piattaforma (ADR-009, RF-P4/P5/P6):** ogni email in uscita è inviata SOLO ad account piattaforma `active` al momento dell'invio — `unsubscribed` e `pending_unsubscribe` non ricevono alcuna email. Il gate del pick = account `active` + profilo in gara (o auto-join al TT1). Un pick da mittente non iscritto (mai o disiscritto) produce **solo log interno, nessuna risposta** (anti-spam, RF-P4), con messaggio marcato letto. La piattaforma è **solo letta** dai flussi di torneo: nessuna scrittura cross-DB
+- **Auto-join al TT1 (RF-P5):** il profilo nasce **al primo pick valido** nel TT1 (round = `start_round`, round `open`, pick che passa la cascata RF-31) con profilo + pick in un'unica transazione sul DB torneo; pick invalido → rollback, nessun profilo; la risposta è `pick_confirmed`. L'iscrizione piattaforma durante un torneo aperto NON crea il profilo; chi si iscrive e non invia mai un pick non è partecipante (non eliminato, nessuna email). Dopo il TT1 un pick da iscritto senza profilo è rifiutato con risposta. La disiscrizione a torneo in corso NON tocca il profilo (storico intatto): ferma solo comunicazioni e pick; il profilo muore alla prossima chiusura round (`missing_pick`, senza email al disiscritto); re-iscrizione prima della prossima deadline → stesso `registerID` e stesso profilo
+- **Riepilogo chiusura round (RF-P6):** alla transizione `closed → scored` — e solo lì — il Round Manager invia `round_closed_survived` ai **soli sopravvissuti** (`eliminated = 0`) con account `active`, poi imposta `round_state.summary_sent = 1`; le riaperture di `round:score` non rinviano (idempotente). Gli eliminati ricevono SOLO `pick_missing_elimination` (alla `round:close`) e `round_result_wrong` (allo `round:score`); l'eliminazione a posteriori da Freeze produce SOLO `round_result_wrong`. Non esistono `round_closed_eliminated` né criteri `eliminated_at >= opened_at`
+- **Gate di eligibilità**: prima di ogni auto-join (e degli override) il Game Engine valuta `checkEligibility(ExternalIdentity)` (§6.5, ADR-008/009): implementazione POC = "**account piattaforma `active`**" (lettura dal `PlatformRegistry`); gli override del commissioner passano per la stessa funzione con esito forzabile + motivo
 
 ### 3.2 Parametri data-driven
 
@@ -294,6 +320,7 @@ Tutti i parametri modificabili vivono in variabili d'ambiente, validate con `zod
 | LLM timeout (ms) | `LLM_TIMEOUT_MS` | `15000` | Timeout di una singola richiesta LLM. Abbassarlo rende il failover più rapido ma scarta risposte lente (tier free); worst case latenza per messaggio: Σ modelli × tentativi × timeout ≈ 135 s con 3×3×15 s (i fallimenti reali 429/5xx sono però immediati) |
 | LLM retries | `LLM_RETRIES` | `3` | Tentativi TOTALI per modello (1 richiesta + N-1 ritentativi) su errori ritentabili (429, 5xx, timeout, rete, body malformato), con ~1 s di pausa tra i tentativi; `1` = nessun ritentativo. I 4xx deterministici (400/401/403/404) non vengono ritentati: failover diretto al modello successivo |
 | Database path | `DB_PATH` | `./data/survivor.db` | |
+| Database piattaforma path | `PLATFORM_DB_PATH` | `./data/platform.db` | DB **separato** per gli account piattaforma (ADR-009, RF-P7): MAI uguale a `DB_PATH`; `platform:migrate` lo migra; `channel:email:process`/`simulate:*` lo richiedono (errore esplicito se assente). `simulate:*` rifiuta/avvisa se coincide col valore di produzione |
 | Log level | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | IMAP polling interval (ms) | `IMAP_POLL_MS` | `60000` | 1 minuto |
 
@@ -350,28 +377,34 @@ survivor-league/
 │   ├── config.ts                 # Config da env, validata con zod
 │   ├── db/
 │   │   ├── connection.ts         # better-sqlite3 connection
-│   │   ├── schema.ts             # DDL e migrazioni
+│   │   ├── schema.ts             # DDL e migrazioni (DB torneo, DB_PATH)
+│   │   ├── platform-schema.ts    # DDL e migrazioni del DB PIATTAFORMA (PLATFORM_DB_PATH, ADR-009)
 │   │   └── seed.ts               # Popolamento dati test
+│   ├── platform/
+│   │   └── registry.ts           # PlatformRegistry: interfaccia + impl SQLite (ADR-009, §6.6)
 │   ├── game/
 │   │   ├── round-manager.ts      # Apertura/chiusura round
 │   │   ├── pick-processor.ts     # Validazione e registrazione pick
 │   │   ├── rules.ts              # Regole (squadre bruciate, gironi)
 │   │   ├── elimination.ts        # Logica eliminazione
 │   │   ├── winner.ts             # Determinazione vincitore
-│   │   ├── eligibility.ts        # Seam checkEligibility(ExternalIdentity) (ADR-008, §6.5)
-│   │   ├── simulation.ts         # Simulazione seeded full/round (Task 7.1: mulberry32, clock derivato dai dati)
-│   │   └── scheduler.ts          # Automazione round via cron (solo produzione; Task 7.2)
+│   │   ├── eligibility.ts        # Seam checkEligibility(ExternalIdentity) (ADR-008/009, §6.5)
+│   │   ├── registration.ts       # autoJoinFromPick (RF-P5) + stub @deprecated (rimossi nel Task 10)
+│   │   ├── simulation.ts         # Simulazione seeded full/round (mulberry32, clock derivato dai dati)
+│   │   └── scheduler.ts          # Automazione round via cron (solo produzione)
 │   ├── channel/
 │   │   ├── adapter.ts            # Interfaccia ChannelAdapter
 │   │   ├── email-adapter/
 │   │   │   ├── index.ts          # EmailAdapter: implementazione concreta (fetch+send)
 │   │   │   ├── imap-client.ts    # Ricezione email (imapflow) — seam: conn passata dal chiamante
-│   │   │   ├── message-router.ts # Classificazione messaggi in arrivo + normalizzazione identità (D6/K)
+│   │   │   ├── message-router.ts # Normalizzazione identità + {kind:'classified', identity, body} (ADR-009)
 │   │   │   └── smtp-client.ts    # Invio email (nodemailer) — seam: transport passato dal chiamante
-│   │   └── email-processor.ts    # Wiring channel:email:process (Task 6.2): fetch → router →
-│   │                             # iscrizione/pick con Parser LLM + moduli di gioco; flag \Seen a successo (D7)
+│   │   └── email-processor.ts    # Wiring channel:email:process: fetch → router → Intent Classifier →
+│   │                             # subscribe/unsubscribe (registry) / pick (auto-join + moduli di gioco);
+│   │                             # flag \Seen a successo (D7); mittenti attivi rivalutati per messaggio
 │   ├── llm/
 │   │   ├── parser.ts             # LLM: email → {team, outcome} (interfaccia + impl OpenAI)
+│   │   ├── intent-classifier.ts  # LLM: email → {intent, pick} in UNA chiamata (ADR-009, §6.2)
 │   │   ├── generator.ts          # LLM: contesto → testo email (interfaccia + impl OpenAI + subjectFor)
 │   │   ├── templates.ts          # Template statici per il LLM Generator (segnaposto {{TT_TC}}, D4)
 │   │   ├── openai-client.ts      # Client HTTP condiviso Parser/Generator (chat/completions) + LLMError (D3)
@@ -383,19 +416,21 @@ survivor-league/
 │   └── cli/
 │       ├── index.ts              # Registrazione comandi
 │       ├── email-wiring.ts       # Helper condiviso: costruisce EmailAdapter+LLMGenerator+Parser reali
-│       │                         # dai config e li inietta nel GameContext (briefing Fase 5-6, problema M)
+│       │                         # dai config e li inietta nel GameContext; espone anche il wiring del registry
 │       ├── commands/
 │       │   ├── round.ts          # round:open, round:close, round:score, round:status, round:deadline
 │       │   ├── pick.ts           # pick:validate, pick:register, pick:list
 │       │   ├── rules.ts          # rules:burned-teams, rules:available-teams, rules:check-half
 │       │   ├── elimination.ts    # elimination:check, elimination:list
 │       │   ├── winner.ts         # winner:check
-│       │   ├── llm.ts            # llm:parse, llm:generate
-│       │   ├── channel.ts        # channel:email:fetch, channel:email:process, channel:email:send
-│       │   ├── tournament.ts     # tournament:start [--start-round], tournament:status, tournament:history, tournament:leaderboard, tournament:register [--reason], tournament:register:open/close [--reason], tournament:export
+│       │   ├── llm.ts            # llm:parse, llm:classify, llm:generate
+│       │   ├── channel.ts        # channel:email:fetch, channel:email:process (migra ENTRAMBI i DB), channel:email:send
+│       │   ├── platform.ts       # platform:migrate, platform:register, platform:unregister, platform:list (ADR-009)
+│       │   ├── tournament.ts     # tournament:start (broadcast tournament_open), tournament:status, tournament:history,
+│       │   │                     # tournament:leaderboard, tournament:export (senza register:open/close/register, ADR-009)
 │       │   ├── data.ts           # data:import, data:refresh, data:calendar, data:results
-│       │   ├── scheduler.ts      # scheduler:tick, scheduler:status
-│       │   └── simulate.ts       # simulate:full, simulate:round
+│       │   ├── scheduler.ts      # scheduler:tick, scheduler:status (senza azioni finestra iscrizione)
+│       │   └── simulate.ts       # simulate:full, simulate:round (PLATFORM_DB_PATH dedicato + guardia)
 │       └── print.ts              # Formattazione output
 ├── tests/
 │   ├── unit/
@@ -467,11 +502,11 @@ Autenticazione via header HTTP `X-Auth-Token`; il client deve rispettare gli hea
 
 **Semantica di `getFirstMatchDateTime(round)` per i rinvii (RF-31, fissata in Fase 2).** Il kickoff "effettivo" del guard anti-frode vale `MIN(match_date)` **tra i match NON rinviati** del round: una partita rinviata non ha un fischio effettivo noto a priori. Se TUTTE le partite del round sono rinviate il kickoff effettivo non è calcolabile dai dati: il provider restituisce il `MIN(match_date)` programmato dell'intero round (valore di fallback documentato, che il guard usa comunque; il caso "non calcolabile" è coperto dalla chiusura di sicurezza RF-30/CL17). Un round senza partite in calendario lancia `SeasonDataError`.
 
-### 6.2 LLM Parser
+### 6.2 LLM Parser e Intent Classifier
 
 ```typescript
 // Definito UNA volta in src/llm/parser.ts e riusato da game/registration.ts
-// (auto-iscrizione RF-27; re-export come ParsedPickContent per compatibilità).
+// (auto-join RF-P5; re-export come ParsedPickContent per compatibilità).
 interface PickExtraction {
   team: string;
   outcome: "win" | "draw" | "lose";
@@ -488,7 +523,30 @@ interface PickParseOptions {
 interface LLMParser {
   extractPick(emailBody: string, opts: PickParseOptions): Promise<PickExtraction | null>;
 }
+
+// --- Intent Classifier (ADR-009, RF-P1/P2; src/llm/intent-classifier.ts) ---
+// UNA sola chiamata LLM per messaggio: intento + estrazione del pick (stesso
+// vincolo json_object e lista canonica iniettata, ADR-004). La barriera
+// deterministica esatta sul pick resta (qui e nel Pick Processor, doppia barriera).
+
+type MessageIntent = 'subscribe' | 'unsubscribe' | 'pick' | 'other';
+
+interface IntentClassification {
+  intent: MessageIntent;
+  pick: PickExtraction | null;  // valorizzato solo quando intent = 'pick'
+}
+
+interface LLMIntentClassifier {
+  classify(body: string, opts: PickParseOptions): Promise<IntentClassification>;
+}
 ```
+
+**Prompt e output vincolato (classificatore):**
+- Il prompt include: il testo dell'email + la lista canonica delle squadre da `SeasonDataProvider.getTeams()` (data-driven) + il contenuto di `src/llm/team-aliases.md`; il contratto chiede `{ intent, pick }` con `json_object`
+- Output vincolato: `team` come esatto nome canonico dalla lista (JSON schema/enum se supportato dall'API); ambiguo/non riconducibile → `null`
+- **Contratto d'errore (D3):** il Classificatore NON lancia mai eccezioni per il *contenuto* (email ambigua, output non-JSON, squadra fuori lista) → intento `other`/`pick: null`; lancia `LLMError` (src/llm/openai-client.ts) SOLO per problemi di trasporto/HTTP/timeout/body malformato — il wiring tratta `LLMError` come "non processato, resta non letto, retry al tick successivo" (stop batch, D7)
+- **Doppia barriera (D2/C):** il filtro deterministico esatto (team non nella lista → `pick: null`) vive nel classificatore (confine I/O, ADR-004); il check esatto del Game Engine (Pick Processor, passo 2 della cascata → motivo `unknown_team`) resta come seconda barriera di difesa in profondità
+- `OpenAIParser` resta per `llm:parse` (riusa internamente il classificatore dove possibile); il corpo/mittente vuoto è gestito PRIMA della chiamata LLM dal router/wiring (`unknown`), mai dal classificatore
 
 **Prompt e output vincolato:**
 - Il prompt include: il testo dell'email + la lista canonica delle squadre da `SeasonDataProvider.getTeams()` (data-driven: i cambi di squadra stagionali non richiedono modifiche al codice) + il contenuto di `src/llm/team-aliases.md` (file Markdown editabile a mano con alias noti, es. "Juve → Juventus FC"; è una risorsa del prompt, non codice)
@@ -501,19 +559,24 @@ interface LLMParser {
 
 ```typescript
 type EmailType = 
-  | "welcome"
-  | "registration_open_invite"   // notifica apertura fase di iscrizione a una lista di contatti (PRD US7)
+  | "platform_registered"          // conferma iscrizione piattaforma (RF-P1, ADR-009)
+  | "platform_unsubscribe_confirm" // barriera due passi: primo unsubscribe → pending_unsubscribe (RF-P2)
+  | "platform_unsubscribed"        // soft-delete confermata (secondo messaggio, RF-P2)
+  | "platform_already_registered"  // re-iscrizione da account già active: "già iscritto" (RF-P1, ADR-010)
+  | "tournament_open"              // apertura torneo a tutti gli iscritti attivi (RF-P6, sostituisce l'invito)
   | "pick_instructions"
-  | "pick_confirmed"
+  | "pick_confirmed"               // conferma pick; per l'auto-join è l'UNICO messaggio (RF-P5, D5)
   | "pick_rejected"
   | "pick_missing_elimination"
   | "round_result_correct"
   | "round_result_wrong"
   | "pick_postponed"
-  | "auto_registered"            // auto-iscrizione RF-27: UN UNICO messaggio che unisce
-                                 // iscrizione ed esito del pick (PRD §4.1, CL2; D5)
+  | "round_closed_survived"        // riepilogo chiusura round ai SOLI sopravvissuti (RF-P6)
   | "tournament_won"
   | "tournament_shared_win";
+
+// RIMOSSI rispetto a v0.4.0 (ADR-009): "welcome", "registration_open_invite",
+// "auto_registered", "round_closed_eliminated".
 
 interface EmailContext {
   type: EmailType;
@@ -595,10 +658,49 @@ interface Eligibility {
 ```
 
 **Implementazioni:**
-- **POC** — `AlwaysEligibleEligibility` (o equivalente): restituisce sempre `{ eligible: true }` e scrive un log strutturato dell'invocazione (identità, esito). È la **seam** che in Fase 1 ospiterà il controllo quota (`ENTRY_FEE_EUR`, LLD §4.1)
-- **Override US10** — gli override del commissioner (iscrizione manuale, auto-iscrizione forzata) passano per la stessa funzione: il comando CLI specifica esito forzato + motivo (`--reason` obbligatorio, audit) e la chiamata resta registrata nei log
+- **POC (ADR-009)** — il gate legge lo stato dell'account dal **Platform Registry** (§6.6): account `active` → `{ eligible: true }`; account `pending_unsubscribe`/`unsubscribed` o sconosciuto → `{ eligible: false, reason: 'account_not_active' }`. È la **seam** che in Fase 1 ospiterà il controllo quota (`ENTRY_FEE_EUR`, LLD §4.1: attivo + pagato)
+- **Override US10** — gli override del commissioner passano per la stessa funzione: il comando CLI specifica esito forzato + motivo (`--reason` obbligatorio, audit) e la chiamata resta registrata nei log
 
-**Uso nel flusso (PRD §4.1, US10):** la registrazione automatica via email, l'auto-iscrizione (RF-27) e l'iscrizione manuale (RF-28) invocano `checkEligibility` prima di creare il profilo; esito negativo → messaggio di rifiuto con `reason` (nella POC, mai verificato: il risultato è sempre `true`).
+**Uso nel flusso (PRD §4.1, US10):** l'auto-join (RF-P5) invoca `checkEligibility` prima di creare il profilo; esito negativo → rifiuto con `reason`.
+
+### 6.6 PlatformRegistry (ADR-009)
+
+```typescript
+// src/platform/registry.ts — interfaccia astratta + impl SQLite (DbPlatformRegistry).
+// Sorgente degli account piattaforma; SOLO LETTA dai flussi di torneo (gate):
+// nessuna transazione cross-DB (ADR-009, RF-P7).
+
+type PlatformAccountStatus = 'active' | 'pending_unsubscribe' | 'unsubscribed';
+
+interface PlatformAccount {
+  registerId: number;       // registerID INTERNO STABILE (riusato alla re-iscrizione, RF-P3)
+  email: string;
+  status: PlatformAccountStatus;
+  createdAt: string;        // clock iniettato (RF-P8, RNF1)
+  unsubscribedAt: string | null;
+}
+
+interface PlatformRegistry {
+  /** Crea/riattiva l'account (stesso registerID, RF-P1/P3); già active → invariato. */
+  register(email: string, now: Date): PlatformAccount;
+  /** Soft-delete DIRETTO (CLI platform:unregister, RF-P2): status → unsubscribed. */
+  unregister(email: string, now: Date, reason?: string): PlatformAccount | null;
+  /** Primo unsubscribe via email (RF-P2): active → pending_unsubscribe. */
+  beginUnsubscribe(email: string, now: Date): PlatformAccount | null;
+  /** Secondo unsubscribe (RF-P2): pending_unsubscribe → unsubscribed (soft-delete). */
+  confirmUnsubscribe(email: string, now: Date): PlatformAccount | null;
+  /** Ritorno ad active da pending_unsubscribe/unsubscribed (stesso registerID, RF-P3). */
+  reactivate(email: string, now: Date): PlatformAccount | null;
+  /** Lookup per email (null se mai iscritto). */
+  find(email: string): PlatformAccount | null;
+  /** Email degli account SOLO active (destinatari notifiche, RF-P6). */
+  activeEmails(): string[];
+  /** Tutti gli account, ordinati per register_id (vista CLI platform:list). */
+  list(): PlatformAccount[];
+}
+```
+
+**Vincoli (RF-P2):** il primo unsubscribe non elimina MAI: `beginUnsubscribe` → `pending_unsubscribe` + `unsubscribed_at` NULL; `confirmUnsubscribe` soft-delete SOLO da `pending_unsubscribe` (imposta `unsubscribed_at` dal clock iniettato); `unsubscribe` da `unsubscribed`/sconosciuto → `null` (log silenzioso nel chiamante); `register`/`reactivate` da qualunque stato → `active` con lo **stesso** `registerID`. Tutti i metodi ricevono `now` esplicito (RF-P8): mai `datetime('now')` né `new Date()`.
 
 ---
 
@@ -609,7 +711,8 @@ Ogni componente del sistema espone comandi CLI dedicati. I comandi sono organizz
 ### 7.1 Setup
 
 ```bash
-npm run db:migrate                            # Crea tabelle
+npm run db:migrate                            # Crea/migra le tabelle del DB TORNEO (DB_PATH)
+npm run cli -- platform:migrate               # Crea/migra le tabelle del DB PIATTAFORMA (PLATFORM_DB_PATH, ADR-009)
 npm run db:seed                               # Popola dati test
 ```
 
@@ -681,6 +784,9 @@ npm run cli -- llm:parse --input <text>       # Estrae {team, outcome} da testo 
                                               # Lista canonica da getTeams() (DB reale) + contenuto di
                                               # team-aliases.md iniettati per chiamata; DB vuoto → lista
                                               # vuota → {team: null} con messaggio chiaro
+npm run cli -- llm:classify --input <json>    # Classifica {intent, pick} da JSON {"intent": "...", "pick": {...}}
+                                              # o testo: UNA chiamata LLM (ADR-009, RF-P1/P2); output JSON
+                                              # {intent: subscribe|unsubscribe|pick|other, pick}
 npm run cli -- llm:generate --type <email-type> [--player-name <name>] [--tt <n>] [--tc <n>] [--team <name>] [--outcome <outcome>] [--reason <text>] [--deadline <datetime>]
                                               # Genera email da contesto strutturato. Output: SOGGETTO
                                               # (subjectFor, forma compatta TT2TC7) + corpo (segnaposto
@@ -692,42 +798,49 @@ npm run cli -- llm:generate --type <email-type> [--player-name <name>] [--tt <n>
 
 ```bash
 npm run cli -- channel:email:fetch             # Recupera email non lette dalla casella IMAP. Output: JSON array
-npm run cli -- channel:email:process           # Fetch + processa (iscrizioni e pick) tutte le email non lette
+npm run cli -- channel:email:process           # Fetch + processa (intento LLM: subscribe/unsubscribe/pick) tutte le
+                                               # email non lette. Migra ENTRAMBI i DB (torneo + piattaforma, ADR-009)
 npm run cli -- channel:email:send --to <email> --subject <subject> --body <text>
                                                # Invia un'email via SMTP
 ```
 
-### 7.10 Torneo (vista aggregata)
+### 7.10 Piattaforma (ADR-009)
+
+```bash
+npm run cli -- platform:register --email <email> [--name <name>] [--reason <motivo>]
+                                               # UNICO comando di creazione account (RF-P1): NON crea profili.
+                                               # Crea/riattiva l'account con registerID stabile; --reason auditato
+npm run cli -- platform:unregister --email <email> [--reason <motivo>]
+                                               # Soft-delete DIRETTO dell'account (RF-P2, US8): status → unsubscribed
+                                               # con unsubscribed_at dal clock iniettato; il profilo torneo resta intatto
+npm run cli -- platform:list [--json]          # Elenco account (registerID, email, status, created_at, unsubscribed_at)
+                                               # ordinato per registerID (US7)
+```
+
+### 7.11 Torneo (vista aggregata)
 
 ```bash
 npm run cli -- tournament:start [--start-round <n>]   # Avvia la stagione (US6): verifica il calendario, esegue le operazioni
                                                       # preliminari (parametri data-driven, round in stato pending, stato stagione).
                                                       # --start-round <n> = aggancio del torneo a un TC arbitrario (RF-20, ADR-008; default 1).
                                                       # Validazioni RF-21: TC esistente, con partite, deadline TT1 futura → rifiuto atomico
-                                                      # senza stato parziale; aggancio all'ultimo TC → warning informativo (CL12)
-npm run cli -- tournament:status               # Stato torneo: finestra di iscrizione, round corrente, profili attivi/eliminati,
-                                               # vincitore; anomalie (es. chiusure di sicurezza non applicabili, RF-30)
+                                                      # senza stato parziale; aggancio all'ultimo TC → warning informativo (CL12).
+                                                      # DOPO le scritture atomiche invia il broadcast `tournament_open` a tutti gli
+                                                      # account piattaforma active (RF-P6, ADR-009; no-op senza componenti email)
+npm run cli -- tournament:status               # Stato torneo: round corrente, profili attivi/eliminati, conteggio iscritti
+                                               # piattaforma (dal Platform Registry, ADR-009), vincitore; anomalie (RF-30).
+                                               # NESSUNA "finestra di iscrizione" (deprecata)
 npm run cli -- tournament:history <email>      # Storico pick di un profilo (output con coppia TT/TC)
 npm run cli -- tournament:leaderboard          # Classifica profili ancora in gara (output con coppia TT/TC)
-npm run cli -- tournament:register:open [--contacts <file>]
-                                               # Apre la finestra di iscrizione (US7): il sistema accetta iscrizioni automatiche;
-                                               # se è fornita una lista di contatti (--contacts), invia loro la notifica di apertura
-npm run cli -- tournament:register:close [--reason <motivo>]
-                                               # Chiude la finestra di iscrizione (RF-28): stop alle iscrizioni automatiche.
-                                               # Senza --reason = chiusura automatica alla deadline del TT 1 (RF-22) o di sicurezza;
-                                               # con --reason = CHIUSURA FORZATA anticipata (o con deadline TT1 assente), auditata.
-                                               # Non chiude la finestra di pick del TT 1 (finestre indipendenti)
-npm run cli -- tournament:register --email <email> [--name <name>] [--reason <motivo>]
-                                               # Registra manualmente un giocatore (bypass email); unico ingresso a finestra chiusa.
-                                               # --reason obbligatorio (override US10, ADR-008): audit; un nuovo iscritto parte
-                                               # dal round corrente con pool intatto
 npm run cli -- tournament:export               # Dump JSON di tutte le tabelle + metadati (timestamp, parametri derivati,
                                                # start_round e mappatura TT/TC)
                                                # Usi: verifica del determinismo della simulazione (diff tra run),
                                                # trasparenza verso i giocatori, audit pre/post correzioni
 ```
 
-### 7.11 Simulazione
+**Comandi RIMOSSI (ADR-009):** `tournament:register:open`, `tournament:register:close`, `tournament:register` (deprecati nel Task 7 come stub, rimossi nel Task 10): non esiste più alcuna finestra di iscrizione e `platform:register` è l'unico comando di creazione account.
+
+### 7.12 Simulazione
 
 ```bash
 npm run cli -- simulate:full [--start-round <n>] [--seed <n>]   # Simula intera stagione 2025/26 (o dalla finestra [start_round..N] con
@@ -736,32 +849,36 @@ npm run cli -- simulate:round --round <n> [--seed <n>]          # Simula round s
 ```
 
 - Seed del RNG deterministico (mulberry32, funzione pura) — default `42`; stessa
-  seed + stesso clock → `tournament:export` identici (RNF1).
-- Registra `SIM_PLAYERS` profili sintetici (`sim-XX@survivor.test`) via
-  `tournament:register` a finestra aperta; clock di ogni fase DERIVATO dai dati
+  seed + stesso clock + **DB piattaforma pulito** → `tournament:export` identici (RNF1).
+- Il seed crea gli **account piattaforma** sintetici (`sim-XX@survivor.test`) via
+  `PlatformRegistry.register` su un `PLATFORM_DB_PATH` **DEDICATO e distinto** da
+  quello di produzione (mai `./data/platform.db`); i **profili** nascono via
+  **auto-join al primo pick** del round di avvio (TT1) in `simulateRound`, NON più
+  creati dal seed. Guardia: `simulate:*` rifiuta/avvisa se `PLATFORM_DB_PATH`
+  coincide col valore di produzione. Clock di ogni fase DERIVATO dai dati
   (open/receivedAt a deadline − 1min, close a deadline + 1min, score a
   tcClose + 1min) — mai orologio reale.
 - Rifiuta su DB con `season_started=1` o con round non-pending (la simulazione
   richiede un DB senza stato di gioco). I comandi `simulate:*` costruiscono il
   contesto SENZA canale/generatore email (R1): nessuna notifica reale.
 
-### 7.12 Scheduler (solo produzione)
+### 7.13 Scheduler (solo produzione)
 
 ```bash
 npm run cli -- scheduler:tick                   # Orchestratore sottile: verifica quali azioni eseguire in base al
-                                                # calendario e allo stato dei round e della finestra di iscrizione
-                                                # (register:close auto/sicurezza, open/close/score; chiusura di sicurezza
+                                                # calendario e allo stato dei round (open/close/score; chiusura di sicurezza
                                                 # allo scadere del TC se deadline NULL — log safety_close, RF-30).
                                                 # Non contiene logica di gioco; invoca i comandi del Game Engine. Idempotente.
                                                 # Esce senza effetti se SCHEDULER_ENABLED=false (sviluppo/test).
 npm run cli -- scheduler:status                 # Mostra lo stato COMPUTATO dello scheduler (R5: nessuna "ultima
                                                 # esecuzione" persistita — l'audit sta nel log pino): round, anomalie
-                                                # (deadline mancanti, RF-30) e prossime azioni.
+                                                # (deadline mancanti, RF-30) e prossime azioni. NESSUN campo
+                                                # registrationOpen (ADR-009; al suo posto il conteggio iscritti dal registry).
 ```
 
-In produzione, `scheduler:tick` è invocato ogni minuto da cron. In sviluppo (`SCHEDULER_ENABLED=false`), il comando esiste ma non esegue azioni automatiche — il commissioner usa i comandi manuali (`tournament:register:open`, `tournament:register:close`, `round:open`, `round:close`, `round:score`).
+In produzione, `scheduler:tick` è invocato ogni minuto da cron. In sviluppo (`SCHEDULER_ENABLED=false`), il comando esiste ma non esegue azioni automatiche — il commissioner usa i comandi manuali (`round:open`, `round:close`, `round:score`, `platform:*`).
 
-### 7.13 Principi di design per i comandi
+### 7.14 Principi di design per i comandi
 
 - Ogni comando produce output JSON strutturato (`--json`) o testo formattato per lettura umana (default)
 - I comandi di sola lettura non modificano lo stato e sono idempotenti
@@ -794,20 +911,12 @@ Casi aggiuntivi al set di test già definito, da distribuire tra unit/integratio
 - aggancio all'ultimo TC (CL12): ammesso con warning informativo; i tre esiti di vittoria collassano (RF-18/RF-26)
 - aggancio a TC passato o in corso (CL11): rifiuto **atomico** senza stato parziale (RF-21)
 
-**Finestra di iscrizione (RF-22/24/27/28, CL2/CL5):**
-- chiusura automatica della finestra di iscrizione alla deadline del TT 1
-- chiusura forzata anticipata `tournament:register:close --reason`: iscrizioni respinte, pick del TT 1 ancora accettati fino alla deadline (finestre indipendenti)
-- auto-iscrizione + pick valido in un unico messaggio (RF-27): un solo invio crea profilo e registra il pick
-- auto-iscrizione + pick invalido + retry entro deadline (il profilo esiste, il pick viene rifiutato e riprovato)
-- messaggio non interpretabile → richiesta di chiarimento senza profilo creato (CL5)
-- pick da sconosciuto dopo la deadline del TT 1 → respinto senza registrazione (RF-24)
-- unicità del profilo su invii concorrenti (RNF2)
+**Finestra di iscrizione (RF-22/24/27/28, CL2/CL5):** — *superata da ADR-009 (v0.5.0); sostituita dalla sezione 8.2.*
 
 **Chiusura forzata finestra pick (RF-29) e guard anti-frode (RF-31, CL17/CL18):**
 - `round:close --force --reason` anticipata: consolidamento immediato (eliminazioni `missing_pick` + notifiche)
 - pick dopo il fischio d'inizio effettivo con deadline NULL → respinto (guard anti-frode)
 - pick dopo il kickoff effettivo con deadline nominale più tarda (anticipo di calendario, CL18) → respinto; rimedio = override US10 `--reason`
-- auto-iscrizione dopo il kickoff → respinta (nessun profilo creato a partita iniziata)
 - `round:close --force` senza `--reason` → comando rifiutato (audit obbligatorio)
 
 **Chiusura di sicurezza (RF-30):**
@@ -817,7 +926,53 @@ Casi aggiuntivi al set di test già definito, da distribuire tra unit/integratio
 **Comunicazione e audit (RF-25, ADR-008):**
 - coppia (tt, tc) presente in email (forma estesa), log strutturati `{tt, tc}` e output CLI (forma compatta)
 - coppia iniettata deterministicamente nei template: il numero nel testo email proviene dai dati, mai dall'LLM (ADR-004)
-- eligibilità invocata e loggata a ogni registrazione (seam POC ritorna `true`)
-- override con `--reason` auditato (iscrizione manuale, pick fuori accettazione)
+- eligibilità invocata e loggata a ogni auto-join (seam POC = account `active`)
+- override con `--reason` auditato (pick fuori accettazione)
 
 **Regressione:** simulazione full-season da TC 1 (nessun aggancio) con esito invariato rispetto al comportamento legacy (CS3); `tournament:export` identico a parità di seed (RNF1).
+
+### 8.2 Casi di test dell'iscrizione piattaforma (ADR-009, PRD RF-P1…P8 / CL2/CL5)
+
+**Platform Registry (unit, TDD — Task 5):**
+- `register` nuovo mittente → account `active` con `register_id` stabile e `created_at` = clock iniettato (RF-P8)
+- `register` su email esistente `unsubscribed` → riattiva `active` con lo **stesso** `register_id` (RF-P3)
+- unsubscribe a due passi: `beginUnsubscribe` → `pending_unsubscribe` (nessuna soft-delete); `confirmUnsubscribe` → `unsubscribed` con `unsubscribed_at` dal clock (RF-P2)
+- `reactivate` da `pending_unsubscribe`/`unsubscribed` → `active`, stesso `register_id`
+- `unsubscribe` da `unsubscribed`/sconosciuto → `null` (log silenzioso nel chiamante)
+- `activeEmails()` restituisce SOLO account `active`; `list()` ordinata per `register_id`
+- migrazione `platform:migrate` idempotente (riesecuzione no-op)
+
+**Intent Classifier (contract, Task 6):**
+- una chiamata LLM per messaggio (fetch mockato): prompt contiene lista canonica + alias
+- classi di messaggi → intento: iscrizione → `subscribe`, disiscrizione → `unsubscribe`, pick → `pick` (con estrazione), resto → `other`
+- contenuto ambiguo/malformato → `other`/`pick: null` SENZA eccezioni (CS7); trasporto/HTTP → `LLMError`
+- filtro esatto sul pick: squadra fuori lista → `pick: null`
+- contract test dedicato per il comando `llm:classify --input`
+
+**Eligibilità + auto-join (unit/integration, Task 7):**
+- account `active` senza profilo + pick valido nel TT1 → profilo + pick atomici, risposta `pick_confirmed` (RF-P5)
+- pick invalido nel TT1 → rollback senza profilo (nessun profilo orfano)
+- pick da iscritto senza profilo dopo il TT1 → rifiuto con risposta
+- `register_id` replicato su `player`/`profile` alla creazione
+- `pick:register` (CLI) risolve l'email e verifica account `active` (nessun bypass del gate)
+
+**Wiring email (integration, Task 8):**
+- subscribe → `platform_registered`; già `active` → "già iscritto"; da `pending_unsubscribe`/`unsubscribed` → riattiva con stesso `register_id`
+- unsubscribe (primo) → `pending_unsubscribe` + `platform_unsubscribe_confirm`; secondo (intento o body `confermo`/`sì`/`si`/`yes`) → `unsubscribed` + `platform_unsubscribed`
+- unsubscribe da `unsubscribed`/sconosciuto → log silenzioso, marcato letto
+- pick da sconosciuto/disiscritto → log interno, nessuna risposta (RF-P4)
+- subscribe+pick dello stesso mittente nello stesso batch → il pick vede l'account appena attivato (mittenti attivi rivalutati per messaggio, HIGH-2)
+- disiscrizione a torneo in corso: profilo intatto, nessuna email al disiscritto; re-iscrizione prima della deadline → stesso profilo
+- `LLMError` → stop batch invariato (D7)
+
+**Notifiche filtrate (unit/integration, Task 9):**
+- `tournament:start` → `tournament_open` a tutti gli `activeEmails()` (una sola volta); no-op senza componenti email
+- `round:open` → `pick_instructions` ai soli partecipanti attivi (`eliminated = 0`) con account `active`; **all'apertura del TT 1 anche agli account `active` SENZA profilo** (emendamento RF-P6, 2026-08-21), con dedup sulle email dei profili
+- `round:close` → `pick_missing_elimination` ai soli account `active`
+- `round:score` → `round_result_correct`/`round_result_wrong` ai soli account `active`; alla transizione `closed→scored` `round_closed_survived` ai soli sopravvissuti con `summary_sent = 1`; riapertura `round:score` → nessun ri-invio (idempotente)
+- `unsubscribed` e `pending_unsubscribe` esclusi da OGNI email; nessun `round_closed_eliminated`, nessun criterio `eliminated_at >= opened_at`
+
+**Scheduler + simulazione (Task 10):**
+- nessuna azione `register_close_auto`/`register_close_safety`; `scheduler:status` senza `registrationOpen` (con conteggio iscritti dal registry)
+- `simulate:*` crea account piattaforma (registry) e profili via auto-join al TT1; export deterministici a parità di seed con DB piattaforma pulito (RNF1)
+- guardia `simulate:*`: rifiuto/avviso se `PLATFORM_DB_PATH` coincide col valore di produzione

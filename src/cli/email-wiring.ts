@@ -20,13 +20,17 @@ import nodemailer from 'nodemailer';
 
 import type { AppConfig } from '../config.js';
 import { EmailAdapter } from '../channel/email-adapter/index.js';
+import { createConnection } from '../db/connection.js';
+import { migratePlatform } from '../db/platform-schema.js';
+import { DbPlatformRegistry } from '../platform/registry.js';
 import type { GameContext } from '../game/context.js';
 import { OpenAIClient } from '../llm/openai-client.js';
+import { OpenAIIntentClassifier } from '../llm/intent-classifier.js';
 import { OpenAIParser } from '../llm/parser.js';
 import { OpenAIGenerator } from '../llm/generator.js';
 import { createLogger } from '../logger.js';
 
-/** Componenti I/O reali delle Fasi 5–6, pronti da iniettare. */
+/** Componenti I/O reali delle Fasi 5–6/8, pronti da iniettare. */
 export interface EmailComponents {
   /** Canale email concreto (IMAP fetch / SMTP send, flag \Seen via markSeen). */
   channel: EmailAdapter;
@@ -34,6 +38,8 @@ export interface EmailComponents {
   generator: OpenAIGenerator;
   /** Parser LLM delle email in ingresso (lista+alias iniettati per chiamata, D2). */
   parser: OpenAIParser;
+  /** Classificatore di intento LLM (ADR-009, piano Task 8: intento + pick). */
+  classifier: OpenAIIntentClassifier;
 }
 
 /**
@@ -84,16 +90,38 @@ export function buildEmailComponents(config: AppConfig): EmailComponents {
   return {
     channel,
     generator: new OpenAIGenerator(client),
-    parser: new OpenAIParser(client)
+    parser: new OpenAIParser(client),
+    classifier: new OpenAIIntentClassifier(client)
   };
 }
 
 /**
  * Inietta le componenti email reali nel contesto di gioco (pattern
  * "la CLI inietta"): restituisce una copia del contesto con `channel`,
- * `generator` e `parser` impostati.
+ * `generator`, `parser` e `classifier` impostati.
  */
 export function attachEmailToContext(ctx: GameContext, config: AppConfig): GameContext {
-  const { channel, generator, parser } = buildEmailComponents(config);
-  return { ...ctx, channel, generator, parser };
+  const { channel, generator, parser, classifier } = buildEmailComponents(config);
+  return { ...ctx, channel, generator, parser, classifier };
+}
+
+/** Contesto con registry piattaforma + connessione da chiudere a fine comando. */
+export interface PlatformWiring {
+  ctx: GameContext;
+  platformDb: ReturnType<typeof createConnection>;
+}
+
+/**
+ * Wiring del PlatformRegistry (ADR-009, piano Task 10): apre e MIGRA il DB
+ * piattaforma (`PLATFORM_DB_PATH`) e inietta `DbPlatformRegistry` nel
+ * contesto di gioco — il gate `active` delle notifiche (RF-P6) e
+ * dell'eligibilità legge da qui. La connessione va chiusa dal chiamante
+ * (`platformDb.close()`): è una seconda connessione DISTINTA dal DB torneo
+ * (nessuna transazione cross-DB).
+ */
+export function attachPlatformToContext(ctx: GameContext, config: AppConfig): PlatformWiring {
+  const platformDb = createConnection(config.PLATFORM_DB_PATH);
+  migratePlatform(platformDb);
+  const platform = new DbPlatformRegistry(platformDb);
+  return { ctx: { ...ctx, platform }, platformDb };
 }

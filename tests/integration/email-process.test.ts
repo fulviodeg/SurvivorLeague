@@ -1,16 +1,18 @@
 /**
- * Test e2e del wiring `channel:email:process` (piano Task 6.2, LLD §1.3/§7.9;
- * briefing Fase 5-6 §5, D5/D7/D8/M).
+ * Test e2e del wiring `channel:email:process` (piano Task 8, ADR-009;
+ * LLD §1.3/§7.9 v0.5.0, D5/D7/D8/M).
  *
- * DB reale SQLite in-memory + DbSeasonDataProvider reale con la mini-stagione
- * (mai mockati); confini esterni mockati SOLO qui: adapter email fake
- * (scripted inbox, registra gli invii), generator fake e Parser LLM fake
- * (scripted). Coprono: CS1 simulato (profilo completo via email), CL2/RF-27
- * (auto-iscrizione TT1, profilo+pick atomici), CL5 (chiarimento senza
- * profilo), RF-24 (rifiuto dal TT2 senza registrazione), CL3 (nessun round
- * aperto), guard RF-31 (receivedAt forzato oltre il kickoff), flag \Seen a
- * successo e stop del batch su LLMError (D7), finestra iscrizione chiusa
- * (CL2/RF-03), già registrato.
+ * DB reale SQLite in-memory (torneo + PIATTAFORMA) + DbSeasonDataProvider
+ * reale con la mini-stagione (mai mockati); confini esterni mockati SOLO qui:
+ * adapter email fake (scripted inbox, registra gli invii), generator fake e
+ * Intent Classifier fake (scripted). Coprono il modello a due livelli:
+ * subscribe (nuovo/già attivo/riattivazione con stesso registerID, RF-P1/P3),
+ * unsubscribe a due passi (pending → conferma; soft-delete solo col secondo
+ * messaggio, RF-P2), silenzio anti-spam (pick/other/unsubscribe da sconosciuto
+ * o unsubscribed, RF-P4), auto-join al TT1 (RF-P5, risposta pick_confirmed),
+ * rifiuto post-TT1, ri-iscrizione con stesso registerID, subscribe+pick nello
+ * STESSO batch (mittenti rivalutati per messaggio, HIGH-2), gate round (CL3),
+ * guard RF-31, flag \Seen a successo e stop del batch su LLMError (D7).
  */
 import Database from 'better-sqlite3';
 import { pino } from 'pino';
@@ -21,12 +23,17 @@ import { processEmailBatch } from '../../src/channel/email-processor.js';
 import { parseConfig } from '../../src/config.js';
 import { DbSeasonDataProvider } from '../../src/data/db-provider.js';
 import { migrate } from '../../src/db/schema.js';
+import { migratePlatform } from '../../src/db/platform-schema.js';
+import { DbPlatformRegistry } from '../../src/platform/registry.js';
 import type { GameContext } from '../../src/game/context.js';
-import { closeRegistration } from '../../src/game/registration.js';
 import { closeRound, openRound } from '../../src/game/round-manager.js';
 import { LLMError } from '../../src/llm/errors.js';
 import type { EmailContext, LLMGenerator } from '../../src/llm/generator.js';
-import type { LLMParser, PickExtraction, PickParseOptions } from '../../src/llm/parser.js';
+import type {
+  IntentClassification,
+  LLMIntentClassifier
+} from '../../src/llm/intent-classifier.js';
+import type { PickParseOptions } from '../../src/llm/parser.js';
 import { FIXTURE_TEAMS, loadBaseSeason } from '../fixtures/season.js';
 
 const [IM, JU] = FIXTURE_TEAMS;
@@ -34,7 +41,6 @@ const [IM, JU] = FIXTURE_TEAMS;
 const T_OPEN = new Date('2026-09-12T10:00:00.000Z'); // apertura TT1 (deadline 15:30)
 const T_PICK = new Date('2026-09-12T15:00:00.000Z'); // pick entro deadline
 const T_AFTER_KICKOFF = new Date('2026-09-12T16:01:00.000Z'); // guard RF-31
-const T_OPEN2 = new Date('2026-09-19T10:00:00.000Z'); // apertura TT2
 
 /** Adapter email fake: registra gli invii (mock al confine esterno, LLD §8). */
 class FakeChannel implements ChannelAdapter {
@@ -57,27 +63,29 @@ class FakeGenerator implements LLMGenerator {
   }
 }
 
-/** Parser fake: esito scriptato per corpo (o LLMError), registra le chiamate. */
-class FakeParser implements LLMParser {
+/** Classificatore fake: intento scriptato per corpo (o LLMError), registra le chiamate. */
+class FakeClassifier implements LLMIntentClassifier {
   calls: PickParseOptions[] = [];
   constructor(
-    private readonly script: Map<string, PickExtraction | null>,
+    private readonly script: Map<string, IntentClassification>,
     private readonly throwError: Error | undefined = undefined
   ) {}
-  extractPick(emailBody: string, opts: PickParseOptions): Promise<PickExtraction | null> {
+  classify(body: string, opts: PickParseOptions): Promise<IntentClassification> {
     this.calls.push(opts);
     if (this.throwError !== undefined) return Promise.reject(this.throwError);
-    return Promise.resolve(this.script.get(emailBody) ?? null);
+    return Promise.resolve(this.script.get(body) ?? { intent: 'other', pick: null });
   }
 }
 
 interface Harness {
   db: Database.Database;
+  platformDb: Database.Database;
+  platform: DbPlatformRegistry;
   ctx: GameContext;
   channel: FakeChannel;
   generator: FakeGenerator;
   seen: string[];
-  deps: (known: Set<string>) => Parameters<typeof processEmailBatch>[2];
+  deps: () => Parameters<typeof processEmailBatch>[2];
 }
 
 /** Messaggio in ingresso (internaldate = receivedAt, ADR-001). */
@@ -85,18 +93,23 @@ function incoming(from: string, body: string, receivedAt: Date, id: string): Inc
   return { from, channel: 'email', body, receivedAt, id };
 }
 
+/** Classificazione pick canonica per la mini-stagione. */
+function pick(team: string, outcome: 'win' | 'draw' | 'lose'): IntentClassification {
+  return { intent: 'pick', pick: { team, outcome } };
+}
+
 /**
- * Banco di prova: DB in-memory + mini-stagione + stato torneo inizializzato
- * in modo SINCRONO (stessa semantica di tournament:start + round:open):
- * finestra iscrizione aperta (registration_open=1) e TT1 aperto con deadline
- * fissa 15:30 (kickoff 16:00 − anticipo 30').
+ * Banco di prova: DB torneo in-memory + mini-stagione + TT1 aperto (deadline
+ * fissa 15:30, kickoff 16:00 − anticipo 30') + DB PIATTAFORMA in-memory
+ * migrato con registry iniettato (ADR-009).
  */
-function makeHarness(
-  opts: { startTournament?: boolean; testMode?: boolean; offsetDays?: number } = {}
-): Harness {
+function makeHarness(opts: { startTournament?: boolean; testMode?: boolean; offsetDays?: number } = {}): Harness {
   const db = new Database(':memory:');
   migrate(db);
   loadBaseSeason(db);
+  const platformDb = new Database(':memory:');
+  migratePlatform(platformDb);
+  const platform = new DbPlatformRegistry(platformDb);
   const dataProvider = new DbSeasonDataProvider(db);
   const config = parseConfig({
     IMAP_USER: 'u',
@@ -113,9 +126,17 @@ function makeHarness(
   });
   const channel = new FakeChannel();
   const generator = new FakeGenerator();
-  // Parser default: nessun corpo interpretabile → null (i test lo scriptano).
-  const parser = new FakeParser(new Map());
-  const ctx: GameContext = { db, dataProvider, config, now: T_OPEN, channel, generator, parser };
+  const classifier = new FakeClassifier(new Map());
+  const ctx: GameContext = {
+    db,
+    dataProvider,
+    config,
+    now: T_OPEN,
+    channel,
+    generator,
+    classifier,
+    platform
+  };
   if (opts.startTournament !== false) {
     db.prepare(
       `INSERT INTO tournament_state (id, season_started, start_round, registration_open)
@@ -129,14 +150,15 @@ function makeHarness(
   const seen: string[] = [];
   return {
     db,
+    platformDb,
+    platform,
     ctx,
     channel,
     generator,
     seen,
-    deps: (known: Set<string>) => ({
+    deps: () => ({
       teams: ['AC Milan', 'AS Roma', 'FC Internazionale Milano', 'Juventus FC'],
       aliases: '## Alias (fixture)\n- juve → Juventus FC',
-      knownEmails: known,
       markSeen: (m: IncomingMessage) => {
         seen.push(m.id ?? m.from);
         return Promise.resolve();
@@ -146,312 +168,492 @@ function makeHarness(
   };
 }
 
-/** Crea un profilo attivo (giocatore già registrato via CLI). */
-function insertProfile(db: Database.Database, email: string, name = ''): number {
-  const pid = db.prepare('INSERT INTO player (email, name) VALUES (?, ?)').run(email, name)
-    .lastInsertRowid as number;
-  return db.prepare('INSERT INTO profile (player_id) VALUES (?)').run(pid)
-    .lastInsertRowid as number;
+/** Sostituisce il classificatore del contesto con uno scriptato. */
+function useClassifier(ctx: GameContext, script: Map<string, IntentClassification>, throwError?: Error): FakeClassifier {
+  const classifier = new FakeClassifier(script, throwError);
+  ctx.classifier = classifier;
+  return classifier;
 }
 
-describe('channel:email:process — CS1 simulato e flussi principali (Task 6.2)', () => {
-  it('iscrizione via email → profilo creato + welcome con coppia TT/TC (RF-25)', async () => {
-    const { ctx, channel, generator, deps, seen } = makeHarness();
-    const messages = [incoming('Nuovo Giocatore <new@test.it>', 'vorrei iscrivermi al torneo', T_PICK, '1')];
+describe('channel:email:process — subscribe (RF-P1/P3, ADR-009)', () => {
+  it('mittente nuovo → account active + platform_registered (registerID nuovo)', async () => {
+    const { ctx, platform, channel, generator, deps, seen } = makeHarness();
+    useClassifier(ctx, new Map([['vorrei iscrivermi', { intent: 'subscribe', pick: null }]]));
 
-    const result = await processEmailBatch(ctx, messages, deps(new Set()));
+    const result = await processEmailBatch(
+      ctx,
+      [incoming('Nuovo Giocatore <new@test.it>', 'vorrei iscrivermi', T_PICK, '1')],
+      deps()
+    );
 
-    // Profilo creato (CS1 simulato, RF-02/RNF2: identità normalizzata).
-    const player = ctx.db.prepare('SELECT email FROM player WHERE email = ?').get('new@test.it');
-    expect(player).toBeDefined();
-    // Welcome inviato con coppia TT/TC iniettata nel soggetto (D1/RF-25).
-    const welcome = channel.sent[0];
-    expect(welcome?.to).toBe('new@test.it');
-    expect(welcome?.subject).toBe('Survivor League — Benvenuto TT1TC1');
-    expect(generator.contexts[0]).toMatchObject({ type: 'welcome', tt: 1, tc: 1 });
-    // Flag \Seen a successo (D7).
-    expect(result.messages[0]).toMatchObject({ action: 'registration', seen: true });
+    const account = platform.find('new@test.it');
+    expect(account).toMatchObject({ status: 'active', registerId: 1 });
+    expect(generator.contexts[0]).toMatchObject({ type: 'platform_registered' });
+    expect(channel.sent[0]?.subject).toBe('Survivor League — Iscrizione confermata');
+    expect(result.messages[0]).toMatchObject({ action: 'subscribed', seen: true });
     expect(seen).toEqual(['1']);
   });
 
-  it('pick da mittente noto → pick_confirmed (registrazione + conferma)', async () => {
-    const { db, ctx, channel, deps } = makeHarness();
-    insertProfile(db, 'a@test.it', 'Aldo');
-    const known = new Set(['a@test.it']);
-    const parser = new FakeParser(new Map([[`scelgo la ${JU}`, { team: JU, outcome: 'win' }]]));
-    ctx.parser = parser;
+  it('mittente già active → "già iscritto" con tipo email dedicato, nessun duplicato', async () => {
+    const { ctx, platform, generator, deps } = makeHarness();
+    platform.register('a@test.it', T_OPEN);
+    useClassifier(ctx, new Map([['mi iscrivo', { intent: 'subscribe', pick: null }]]));
+
+    await processEmailBatch(ctx, [incoming('a@test.it', 'mi iscrivo', T_PICK, '1')], deps());
+
+    expect(generator.contexts[0]).toMatchObject({
+      type: 'platform_already_registered',
+      reason: 'sei già iscritto alla piattaforma (email_already_registered)'
+    });
+    expect(platform.list()).toHaveLength(1);
+    expect(platform.find('a@test.it')?.status).toBe('active');
+  });
+
+  it('mittente già active → soggetto "Survivor League — Già iscritto alla piattaforma" e action already_subscribed (A7/B6)', async () => {
+    const { ctx, platform, channel, generator, deps } = makeHarness();
+    platform.register('a@test.it', T_OPEN);
+    useClassifier(ctx, new Map([['mi iscrivo di nuovo', { intent: 'subscribe', pick: null }]]));
+
+    const result = await processEmailBatch(
+      ctx,
+      [incoming('a@test.it', 'mi iscrivo di nuovo', T_PICK, '1')],
+      deps()
+    );
+
+    expect(generator.contexts[0]).toMatchObject({ type: 'platform_already_registered' });
+    expect(channel.sent[0]?.subject).toBe('Survivor League — Già iscritto alla piattaforma');
+    expect(result.messages[0]).toMatchObject({ action: 'already_subscribed', seen: true });
+    expect(platform.list()).toHaveLength(1);
+    expect(platform.find('a@test.it')?.status).toBe('active');
+  });
+
+  it('mittente unsubscribed → riattivazione con lo STESSO registerID (RF-P3)', async () => {
+    const { ctx, platform, generator, deps } = makeHarness();
+    const original = platform.register('b@test.it', T_OPEN);
+    platform.beginUnsubscribe('b@test.it', T_OPEN);
+    platform.confirmUnsubscribe('b@test.it', T_OPEN);
+    useClassifier(ctx, new Map([['mi reiscrivo', { intent: 'subscribe', pick: null }]]));
+
+    await processEmailBatch(ctx, [incoming('b@test.it', 'mi reiscrivo', T_PICK, '1')], deps());
+
+    const account = platform.find('b@test.it');
+    expect(account?.status).toBe('active');
+    expect(account?.registerId).toBe(original.registerId);
+    expect(generator.contexts[0]).toMatchObject({ type: 'platform_registered' });
+  });
+});
+
+describe('channel:email:process — unsubscribe a due passi (RF-P2)', () => {
+  it('primo unsubscribe da active → pending_unsubscribe + conferma, NESSUNA soft-delete', async () => {
+    const { ctx, platform, channel, generator, deps, seen } = makeHarness();
+    platform.register('a@test.it', T_OPEN);
+    useClassifier(ctx, new Map([['disiscrivetemi', { intent: 'unsubscribe', pick: null }]]));
+
+    const result = await processEmailBatch(
+      ctx,
+      [incoming('a@test.it', 'disiscrivetemi', T_PICK, '1')],
+      deps()
+    );
+
+    expect(platform.find('a@test.it')?.status).toBe('pending_unsubscribe');
+    expect(platform.find('a@test.it')?.unsubscribedAt).toBeNull();
+    expect(generator.contexts[0]).toMatchObject({ type: 'platform_unsubscribe_confirm' });
+    expect(channel.sent[0]?.subject).toBe('Survivor League — Conferma la disiscrizione');
+    expect(result.messages[0]).toMatchObject({ action: 'unsubscribe_pending', seen: true });
+    expect(seen).toEqual(['1']);
+  });
+
+  it.each(['confermo', 'sì', 'si', 'yes'])(
+    'secondo unsubscribe con body "%s" → soft-delete + platform_unsubscribed',
+    async (body) => {
+      const { ctx, platform, generator, deps } = makeHarness();
+      platform.register('a@test.it', T_OPEN);
+      platform.beginUnsubscribe('a@test.it', T_OPEN);
+      useClassifier(ctx, new Map([[body, { intent: 'unsubscribe', pick: null }]]));
+
+      const result = await processEmailBatch(
+        ctx,
+        [incoming('a@test.it', body, T_PICK, '1')],
+        deps()
+      );
+
+      const account = platform.find('a@test.it');
+      expect(account?.status).toBe('unsubscribed');
+      expect(account?.unsubscribedAt).toBe(T_OPEN.toISOString());
+      expect(generator.contexts[0]).toMatchObject({ type: 'platform_unsubscribed' });
+      expect(result.messages[0]).toMatchObject({ action: 'unsubscribe_confirmed', seen: true });
+    }
+  );
+
+  it('pending + "confermo" classificato other → soft-delete INTENTO-AGNOSTICO (barriera B1, D1/D2)', async () => {
+    const { ctx, platform, generator, deps, seen } = makeHarness();
+    platform.register('a@test.it', T_OPEN);
+    platform.beginUnsubscribe('a@test.it', T_OPEN);
+    // Comportamento reale dell'LLM (report D2): la risposta "confermo" alla
+    // richiesta di conferma è classificata `other`, NON `unsubscribe`. La
+    // barriera (decisione (a)) deve completare la soft-delete comunque.
+    useClassifier(ctx, new Map([['confermo', { intent: 'other', pick: null }]]));
+
+    const result = await processEmailBatch(
+      ctx,
+      [incoming('a@test.it', 'confermo', T_PICK, '1')],
+      deps()
+    );
+
+    const account = platform.find('a@test.it');
+    expect(account?.status).toBe('unsubscribed');
+    expect(account?.unsubscribedAt).toBe(T_OPEN.toISOString());
+    expect(generator.contexts[0]).toMatchObject({ type: 'platform_unsubscribed' });
+    expect(result.messages[0]).toMatchObject({ action: 'unsubscribe_confirmed', seen: true });
+    expect(seen).toEqual(['1']);
+  });
+
+  it('secondo messaggio da pending con body NON di conferma → resta pending, conferma ripetuta', async () => {
+    const { ctx, platform, generator, deps } = makeHarness();
+    platform.register('a@test.it', T_OPEN);
+    platform.beginUnsubscribe('a@test.it', T_OPEN);
+    useClassifier(ctx, new Map([['ma forse no', { intent: 'unsubscribe', pick: null }]]));
+
+    await processEmailBatch(ctx, [incoming('a@test.it', 'ma forse no', T_PICK, '1')], deps());
+
+    expect(platform.find('a@test.it')?.status).toBe('pending_unsubscribe');
+    expect(generator.contexts[0]).toMatchObject({ type: 'platform_unsubscribe_confirm' });
+  });
+
+  it('unsubscribe da unsubscribed o sconosciuto → log SILENZIOSO, marcato letto (RF-P2)', async () => {
+    const { ctx, platform, channel, deps, seen } = makeHarness();
+    platform.register('a@test.it', T_OPEN);
+    platform.beginUnsubscribe('a@test.it', T_OPEN);
+    platform.confirmUnsubscribe('a@test.it', T_OPEN);
+    useClassifier(ctx, new Map([
+      ['disiscrivetemi', { intent: 'unsubscribe', pick: null }],
+      ['toglietemi', { intent: 'unsubscribe', pick: null }]
+    ]));
+
+    const result = await processEmailBatch(
+      ctx,
+      [
+        incoming('a@test.it', 'disiscrivetemi', T_PICK, '1'),
+        incoming('sconosciuto@test.it', 'toglietemi', T_PICK, '2')
+      ],
+      deps()
+    );
+
+    expect(channel.sent).toHaveLength(0);
+    expect(result.messages[0]).toMatchObject({ action: 'unsubscribe_silent', seen: true });
+    expect(result.messages[1]).toMatchObject({ action: 'unsubscribe_silent', seen: true });
+    expect(seen).toEqual(['1', '2']);
+  });
+
+  it('subscribe da pending_unsubscribe → ritorno ad active con stesso registerID (RF-P2/P3)', async () => {
+    const { ctx, platform, deps } = makeHarness();
+    const original = platform.register('a@test.it', T_OPEN);
+    platform.beginUnsubscribe('a@test.it', T_OPEN);
+    useClassifier(ctx, new Map([['ci ripenso, mi iscrivo', { intent: 'subscribe', pick: null }]]));
+
+    await processEmailBatch(ctx, [incoming('a@test.it', 'ci ripenso, mi iscrivo', T_PICK, '1')], deps());
+
+    const account = platform.find('a@test.it');
+    expect(account?.status).toBe('active');
+    expect(account?.registerId).toBe(original.registerId);
+  });
+});
+
+describe('channel:email:process — pick (RF-P4/P5, auto-join)', () => {
+  it('pick da sconosciuto o unsubscribed → log interno, NESSUNA risposta, marcato letto (RF-P4)', async () => {
+    const { ctx, platform, channel, deps, seen } = makeHarness();
+    platform.register('a@test.it', T_OPEN);
+    platform.beginUnsubscribe('a@test.it', T_OPEN);
+    platform.confirmUnsubscribe('a@test.it', T_OPEN);
+    useClassifier(ctx, new Map([
+      [`vado di ${JU}`, pick(JU, 'win')],
+      [`scelgo la ${IM}`, pick(IM, 'win')]
+    ]));
+
+    const result = await processEmailBatch(
+      ctx,
+      [
+        incoming('a@test.it', `vado di ${JU}`, T_PICK, '1'),
+        incoming('sconosciuto@test.it', `scelgo la ${IM}`, T_PICK, '2')
+      ],
+      deps()
+    );
+
+    expect(channel.sent).toHaveLength(0);
+    expect(result.messages[0]).toMatchObject({ action: 'silent_pick', seen: true });
+    expect(result.messages[1]).toMatchObject({ action: 'silent_pick', seen: true });
+    expect(seen).toEqual(['1', '2']);
+    expect(platform.list()).toHaveLength(1);
+  });
+
+  it('pick da pending_unsubscribe → riattiva active e registra il pick', async () => {
+    const { db, ctx, platform, generator, deps } = makeHarness();
+    const account = platform.register('a@test.it', T_OPEN);
+    db.prepare('INSERT INTO player (email, register_id) VALUES (?, ?)').run('a@test.it', account.registerId);
+    const pid = db.prepare('INSERT INTO profile (player_id, register_id) VALUES ((SELECT id FROM player WHERE email = ?), ?)').run('a@test.it', account.registerId).lastInsertRowid as number;
+    platform.beginUnsubscribe('a@test.it', T_OPEN);
+    useClassifier(ctx, new Map([[`vado di ${JU}`, pick(JU, 'win')]]));
+
+    await processEmailBatch(ctx, [incoming('a@test.it', `vado di ${JU}`, T_PICK, '1')], deps());
+
+    expect(platform.find('a@test.it')?.status).toBe('active');
+    expect(generator.contexts[0]).toMatchObject({ type: 'pick_confirmed', team: JU });
+    expect(
+      db.prepare('SELECT team FROM pick WHERE profile_id = ?').get(pid)
+    ).toMatchObject({ team: JU });
+  });
+
+  it('pick da active con profilo → pick_confirmed (cascata attuale)', async () => {
+    const { db, ctx, platform, channel, generator, deps, seen } = makeHarness();
+    const account = platform.register('a@test.it', T_OPEN);
+    db.prepare('INSERT INTO player (email, name, register_id) VALUES (?, ?, ?)').run('a@test.it', 'Aldo', account.registerId);
+    db.prepare('INSERT INTO profile (player_id, register_id) VALUES ((SELECT id FROM player WHERE email = ?), ?)').run('a@test.it', account.registerId);
+    useClassifier(ctx, new Map([[`scelgo la ${JU}`, pick(JU, 'win')]]));
 
     const result = await processEmailBatch(
       ctx,
       [incoming('Aldo <a@test.it>', `scelgo la ${JU}`, T_PICK, '1')],
-      deps(known)
+      deps()
     );
 
-    const pick = db.prepare('SELECT team, outcome, status FROM pick').get();
-    expect(pick).toMatchObject({ team: JU, outcome: 'win', status: 'pending' });
+    const stored = db.prepare('SELECT team, outcome, status FROM pick').get();
+    expect(stored).toMatchObject({ team: JU, outcome: 'win', status: 'pending' });
+    expect(generator.contexts[0]).toMatchObject({ type: 'pick_confirmed', tt: 1, tc: 1 });
     expect(channel.sent[0]?.subject).toBe('Survivor League — Pick registrato TT1TC1');
     expect(result.messages[0]).toMatchObject({ action: 'pick_registered', seen: true });
-    // Lista canonica e alias iniettati al Parser UNA volta per batch (D2/M).
-    expect(parser.calls[0]).toMatchObject({
-      teams: ['AC Milan', 'AS Roma', 'FC Internazionale Milano', 'Juventus FC'],
-      aliases: '## Alias (fixture)\n- juve → Juventus FC'
+    expect(seen).toEqual(['1']);
+  });
+
+  it('pick da active senza profilo nel TT1 → auto-join: profilo+pick atomici, risposta pick_confirmed (RF-P5)', async () => {
+    const { db, ctx, platform, channel, generator, deps } = makeHarness();
+    platform.register('nuovo@test.it', T_OPEN);
+    useClassifier(ctx, new Map([[`vado di ${JU}`, pick(JU, 'win')]]));
+
+    const result = await processEmailBatch(
+      ctx,
+      [incoming('nuovo@test.it', `vado di ${JU}`, T_PICK, '1')],
+      deps()
+    );
+
+    const player = db.prepare('SELECT id, register_id FROM player WHERE email = ?').get('nuovo@test.it') as {
+      id: number;
+      register_id: number;
+    };
+    expect(player).toBeDefined();
+    const profile = db
+      .prepare('SELECT register_id FROM profile WHERE player_id = ?')
+      .get(player.id) as { register_id: number };
+    expect(profile.register_id).toBe(platform.find('nuovo@test.it')?.registerId);
+    const stored = db
+      .prepare('SELECT team, outcome FROM pick WHERE profile_id = (SELECT id FROM profile WHERE player_id = ?)')
+      .get(player.id) as { team: string; outcome: string };
+    expect(stored).toMatchObject({ team: JU, outcome: 'win' });
+    // RF-P5/D5: UN UNICO messaggio, pick_confirmed (nessuna conferma separata).
+    expect(generator.contexts[0]).toMatchObject({ type: 'pick_confirmed', tt: 1, tc: 1 });
+    expect(channel.sent).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({ action: 'auto_joined', seen: true });
+  });
+
+  it('pick da active senza profilo con pick non estratto → chiarimento senza profilo (CL5)', async () => {
+    const { db, ctx, platform, deps } = makeHarness();
+    platform.register('nuovo@test.it', T_OPEN);
+    useClassifier(ctx, new Map([['ciao!', { intent: 'pick', pick: null }]]));
+
+    await processEmailBatch(ctx, [incoming('nuovo@test.it', 'ciao!', T_PICK, '1')], deps());
+
+    expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 0 });
+  });
+
+  it('pick da active senza profilo oltre il kickoff → rollback senza profilo (RF-31)', async () => {
+    const { db, ctx, platform, generator, deps } = makeHarness();
+    platform.register('tardivo@test.it', T_OPEN);
+    useClassifier(ctx, new Map([[`vado di ${JU}`, pick(JU, 'win')]]));
+
+    await processEmailBatch(
+      ctx,
+      [incoming('tardivo@test.it', `vado di ${JU}`, T_AFTER_KICKOFF, '1')],
+      deps()
+    );
+
+    expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 0 });
+    expect(generator.contexts[0]).toMatchObject({ type: 'pick_rejected', reason: 'after_kickoff' });
+  });
+
+  it('pick da active senza profilo dal TT2 → rifiuto "torneo iniziato" (post-TT1)', async () => {
+    const { db, ctx, platform, generator, deps } = makeHarness();
+    platform.register('ritardatario@test.it', T_OPEN);
+    // Apre il TT2: il round corrente diventa il 2.
+    await closeRound(ctx, 1);
+    await openRound(ctx, 2);
+    useClassifier(ctx, new Map([[`vado di ${JU}`, pick(JU, 'win')]]));
+
+    await processEmailBatch(
+      ctx,
+      [incoming('ritardatario@test.it', `vado di ${JU}`, T_PICK, '1')],
+      deps()
+    );
+
+    expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 0 });
+    expect(generator.contexts[0]).toMatchObject({
+      type: 'pick_rejected',
+      reason: expect.stringContaining('torneo iniziato')
+    } as EmailContext);
+  });
+});
+
+describe('channel:email:process — other, unknown, gate round (ADR-009)', () => {
+  it('other da mittente noto → chiarimento; other da sconosciuto → log silenzioso (RF-P4)', async () => {
+    const { ctx, platform, channel, deps, seen } = makeHarness();
+    platform.register('a@test.it', T_OPEN);
+    useClassifier(ctx, new Map([
+      ['come funziona?', { intent: 'other', pick: null }],
+      ['chi siete?', { intent: 'other', pick: null }]
+    ]));
+
+    const result = await processEmailBatch(
+      ctx,
+      [
+        incoming('a@test.it', 'come funziona?', T_PICK, '1'),
+        incoming('sconosciuto@test.it', 'chi siete?', T_PICK, '2')
+      ],
+      deps()
+    );
+
+    expect(channel.sent).toHaveLength(1); // solo il chiarimento al noto
+    expect(channel.sent[0]?.to).toBe('a@test.it');
+    expect(result.messages[0]).toMatchObject({ action: 'clarification', seen: true });
+    expect(result.messages[1]).toMatchObject({ action: 'silent_other', seen: true });
+    expect(seen).toEqual(['1', '2']);
+  });
+
+  it('other da account unsubscribed → NESSUNA risposta, silenzio + seen (A6a/B5, D3, decisione (e))', async () => {
+    const { ctx, platform, channel, deps, seen } = makeHarness();
+    platform.register('a@test.it', T_OPEN);
+    platform.beginUnsubscribe('a@test.it', T_OPEN);
+    platform.confirmUnsubscribe('a@test.it', T_OPEN);
+    // Comportamento reale dell'LLM (report D3): "come funziona?" è `other`.
+    useClassifier(ctx, new Map([['come funziona?', { intent: 'other', pick: null }]]));
+
+    const result = await processEmailBatch(
+      ctx,
+      [incoming('a@test.it', 'come funziona?', T_PICK, '1')],
+      deps()
+    );
+
+    // Decisione 7/ADR-009: NESSUNA email ad account unsubscribed; il messaggio
+    // è comunque marcato letto (niente retry infinito).
+    expect(channel.sent).toHaveLength(0);
+    expect(result.messages[0]).toMatchObject({ action: 'silent_other', seen: true });
+    expect(seen).toEqual(['1']);
+  });
+
+  it('other da account pending_unsubscribe con body NON di conferma → NESSUNA risposta, stato invariato (A6b/B5, D3, decisione (e))', async () => {
+    const { ctx, platform, channel, deps, seen } = makeHarness();
+    platform.register('a@test.it', T_OPEN);
+    platform.beginUnsubscribe('a@test.it', T_OPEN);
+    // Body NON in lista di conferma (`confermo`/`sì`/`si`/`yes`): la barriera
+    // B1 non interviene, si arriva al ramo `other` con account pending.
+    useClassifier(ctx, new Map([['ma forse cambio idea?', { intent: 'other', pick: null }]]));
+
+    const result = await processEmailBatch(
+      ctx,
+      [incoming('a@test.it', 'ma forse cambio idea?', T_PICK, '1')],
+      deps()
+    );
+
+    // Decisione 7/ADR-009: nessuna email ad account pending_unsubscribe; lo
+    // stato resta pending (la disiscrizione si completa solo con la conferma).
+    expect(platform.find('a@test.it')?.status).toBe('pending_unsubscribe');
+    expect(channel.sent).toHaveLength(0);
+    expect(result.messages[0]).toMatchObject({ action: 'silent_other', seen: true });
+    expect(seen).toEqual(['1']);
+  });
+
+  it('corpo vuoto → unknown: marcato letto, nessuna risposta, nessuna chiamata LLM', async () => {
+    const { ctx, channel, deps, seen } = makeHarness();
+    const classifier = useClassifier(ctx, new Map());
+
+    await processEmailBatch(ctx, [incoming('a@test.it', '   ', T_PICK, '1')], deps());
+
+    expect(channel.sent).toHaveLength(0);
+    expect(classifier.calls).toHaveLength(0);
+    expect(seen).toEqual(['1']);
+  });
+
+  it('pick da active senza round aperto → round_not_open (il ramo pick richiede un round)', async () => {
+    const { db, ctx, platform, generator, deps } = makeHarness({ startTournament: false });
+    const account = platform.register('a@test.it', T_OPEN);
+    db.prepare('INSERT INTO player (email, register_id) VALUES (?, ?)').run('a@test.it', account.registerId);
+    db.prepare('INSERT INTO profile (player_id, register_id) VALUES ((SELECT id FROM player WHERE email = ?), ?)').run('a@test.it', account.registerId);
+    useClassifier(ctx, new Map([[`vado di ${JU}`, pick(JU, 'win')]]));
+
+    await processEmailBatch(ctx, [incoming('a@test.it', `vado di ${JU}`, T_PICK, '1')], deps());
+
+    expect(generator.contexts[0]).toMatchObject({
+      type: 'pick_rejected',
+      reason: 'nessun turno è aperto in questo momento (round_not_open)'
     });
   });
 
-  it('pick da mittente noto non interpretabile → rifiuto formato (CL5/CS7)', async () => {
-    const { db, ctx, channel, deps } = makeHarness();
-    insertProfile(db, 'a@test.it');
-    ctx.parser = new FakeParser(new Map()); // tutto null
+  it('subscribe SENZA round aperto → accettata (indipendente dai round, ADR-009)', async () => {
+    const { ctx, platform, generator, deps } = makeHarness({ startTournament: false });
+    useClassifier(ctx, new Map([['mi iscrivo', { intent: 'subscribe', pick: null }]]));
 
-    await processEmailBatch(ctx, [incoming('a@test.it', 'ciao!', T_PICK, '1')], deps(new Set(['a@test.it'])));
+    await processEmailBatch(ctx, [incoming('new@test.it', 'mi iscrivo', T_PICK, '1')], deps());
 
-    expect(channel.sent[0]?.subject).toBe('Survivor League — Pick non registrato TT1TC1');
-    const pick = db.prepare('SELECT COUNT(*) AS n FROM pick').get() as { n: number };
-    expect(pick.n).toBe(0);
+    expect(platform.find('new@test.it')?.status).toBe('active');
+    expect(generator.contexts[0]).toMatchObject({ type: 'platform_registered' });
   });
+});
 
-  it('pick rifiutato dalla cascata: squadra già usata (RF-10/CS5), si può riprovare (RF-09)', async () => {
-    const { db, ctx, channel, generator, deps } = makeHarness();
-    const profileId = insertProfile(db, 'a@test.it');
-    // Il profilo ha GIÀ bruciato JU nel TC 1 (girone di andata): riproporla = rifiuto cascata.
-    db.prepare(
-      "INSERT INTO pick (profile_id, round, team, outcome, status) VALUES (?, 1, ?, 'win', 'pending')"
-    ).run(profileId, JU);
-    ctx.parser = new FakeParser(new Map([[`scelgo la ${JU}`, { team: JU, outcome: 'win' }]]));
-
-    await processEmailBatch(ctx, [incoming('a@test.it', `scelgo la ${JU}`, T_PICK, '1')], deps(new Set(['a@test.it'])));
-
-    expect(channel.sent[0]?.subject).toBe('Survivor League — Pick non registrato TT1TC1');
-    // Motivo esplicito della cascata nel contesto dell'email (RF-09: si può riprovare).
-    expect(generator.contexts[0]).toMatchObject({ type: 'pick_rejected', reason: 'team_already_used' });
-    const picks = db.prepare('SELECT COUNT(*) AS n FROM pick').get() as { n: number };
-    expect(picks.n).toBe(1); // nessun pick duplicato (CL6/RF-08)
-  });
-
-  it('auto-iscrizione RF-27: mittente ignoto interpretabile nel TT1 → profilo+pick atomici (CL2, CS1)', async () => {
-    const { db, ctx, channel, generator, deps } = makeHarness();
-    ctx.parser = new FakeParser(new Map([[`vado di ${JU}`, { team: JU, outcome: 'win' }]]));
+describe('channel:email:process — mittenti rivalutati per messaggio (HIGH-2)', () => {
+  it('subscribe + pick dello stesso mittente nello STESSO batch → il pick è accettato (auto-join)', async () => {
+    const { db, ctx, platform, generator, deps } = makeHarness();
+    useClassifier(ctx, new Map([
+      ['vorrei iscrivermi', { intent: 'subscribe', pick: null }],
+      [`vado di ${JU}`, pick(JU, 'win')]
+    ]));
 
     const result = await processEmailBatch(
       ctx,
-      [incoming('sconosciuto@test.it', `vado di ${JU}`, T_PICK, '1')],
-      deps(new Set())
+      [
+        incoming('sconosciuto@test.it', 'vorrei iscrivermi', T_PICK, '1'),
+        incoming('sconosciuto@test.it', `vado di ${JU}`, T_PICK, '2')
+      ],
+      deps()
     );
 
-    // Profilo + pick atomici (un solo messaggio di risposta: auto_registered, D5).
-    const player = db.prepare('SELECT id FROM player WHERE email = ?').get('sconosciuto@test.it') as
-      | { id: number }
-      | undefined;
-    expect(player).toBeDefined();
-    const pick = db
-      .prepare('SELECT team, outcome FROM pick WHERE profile_id = (SELECT id FROM profile WHERE player_id = ?)')
-      .get(player?.id) as { team: string; outcome: string } | undefined;
-    expect(pick).toMatchObject({ team: JU, outcome: 'win' });
-    expect(generator.contexts[0]?.type).toBe('auto_registered');
-    expect(generator.contexts[0]).toMatchObject({ tt: 1, tc: 1, team: JU, outcome: 'win' });
-    expect(channel.sent).toHaveLength(1); // RF-27: UN UNICO messaggio
-    expect(result.messages[0]).toMatchObject({ action: 'auto_registered', seen: true });
-  });
-
-  it('auto-iscrizione oltre il kickoff effettivo → respinta senza profilo (RF-31/CL17)', async () => {
-    const { db, ctx, deps } = makeHarness();
-    // Pick interpretabile ma ricevuto DOPO il fischio d'inizio (16:00): il guard
-    // RF-31 blocca l'accettazione → ROLLBACK: nessun profilo orfano.
-    ctx.parser = new FakeParser(new Map([[`vado di ${JU}`, { team: JU, outcome: 'win' }]]));
-
-    await processEmailBatch(
-      ctx,
-      [incoming('sconosciuto@test.it', `vado di ${JU}`, T_AFTER_KICKOFF, '1')],
-      deps(new Set())
-    );
-
-    const players = db.prepare('SELECT COUNT(*) AS n FROM player WHERE email = ?').get('sconosciuto@test.it') as {
-      n: number;
-    };
-    expect(players.n).toBe(0); // CL5/CL17: nessun profilo creato a partita iniziata
-  });
-
-  it('mittente ignoto non interpretabile nel TT1 → chiarimento senza registrazione (CL5)', async () => {
-    const { db, ctx, channel, deps } = makeHarness();
-    ctx.parser = new FakeParser(new Map()); // null → chiarimento
-
-    const result = await processEmailBatch(
-      ctx,
-      [incoming('sconosciuto@test.it', 'boh', T_PICK, '1')],
-      deps(new Set())
-    );
-
-    expect(channel.sent[0]?.subject).toBe('Survivor League — Pick non registrato TT1TC1');
-    expect(result.messages[0]).toMatchObject({ action: 'clarification', seen: true });
-    const players = db.prepare('SELECT COUNT(*) AS n FROM player').get() as { n: number };
-    expect(players.n).toBe(0);
-  });
-
-  it('mittente ignoto dal TT2 → rifiuto senza registrazione (RF-24/CL2)', async () => {
-    const { db, ctx, channel, deps } = makeHarness();
-    // Chiude il TT1 e apre il TT2: il primo round open è ora il TC 2.
-    await closeRound(ctx, 1, {});
-    ctx.now = T_OPEN2;
-    await openRound(ctx, 2);
-    ctx.parser = new FakeParser(new Map([[`vado di ${IM}`, { team: IM, outcome: 'win' }]]));
-
-    const result = await processEmailBatch(
-      ctx,
-      [incoming('sconosciuto@test.it', `vado di ${IM}`, new Date('2026-09-19T15:00:00.000Z'), '1')],
-      deps(new Set())
-    );
-
-    expect(result.messages[0]).toMatchObject({ action: 'rejected_tt2', seen: true });
-    expect(channel.sent[0]?.subject).toBe('Survivor League — Pick non registrato TT2TC2');
-    const players = db.prepare('SELECT COUNT(*) AS n FROM player').get() as { n: number };
-    expect(players.n).toBe(0); // RF-24: nessuna registrazione
-  });
-
-  it('nessun round aperto → rifiuto round_not_open e messaggio marcato letto (CL3/D7 esteso)', async () => {
-    const { ctx, channel, deps, seen } = makeHarness({ startTournament: false });
-
-    const result = await processEmailBatch(
-      ctx,
-      [incoming('a@test.it', 'scelgo la Juve', T_PICK, '1')],
-      deps(new Set())
-    );
-
-    expect(result.messages[0]).toMatchObject({ action: 'round_not_open', seen: true });
-    expect(channel.sent[0]?.subject).toBe('Survivor League — Pick non registrato');
-    expect(seen).toEqual(['1']);
-  });
-
-  it('iscrizione via email senza round aperto → profilo creato (finestra aperta; CL3 non si applica all\'iscrizione)', async () => {
-    const { db, ctx, channel, generator, deps, seen } = makeHarness({ startTournament: false });
-    // Stato "finestra aperta, nessun round": equivale a tournament:register:open
-    // PRIMA di tournament:start/round:open (registration_open=1, nessun round_state).
-    db.prepare('INSERT INTO tournament_state (id, registration_open) VALUES (1, 1)').run();
-
-    const result = await processEmailBatch(
-      ctx,
-      [incoming('Nuovo Giocatore <new@test.it>', 'vorrei iscrivermi al torneo', T_PICK, '1')],
-      deps(new Set())
-    );
-
-    // Profilo creato anche senza round aperto: l'iscrizione non dipende dal round.
-    const player = ctx.db.prepare('SELECT email FROM player WHERE email = ?').get('new@test.it');
-    expect(player).toBeDefined();
-    // Nessun round aperto → welcome SENZA coppia TT/TC (D4: assente).
-    expect(generator.contexts[0]).toMatchObject({ type: 'welcome' });
-    expect(generator.contexts[0]?.tt).toBeUndefined();
-    expect(generator.contexts[0]?.tc).toBeUndefined();
-    expect(channel.sent[0]?.subject).toBe('Survivor League — Benvenuto');
-    expect(result.messages[0]).toMatchObject({ action: 'registration', seen: true });
-    expect(seen).toEqual(['1']);
-  });
-
-  it('guard RF-31: pick oltre il kickoff effettivo → after_kickoff (receivedAt = internaldate)', async () => {
-    const { db, ctx, channel, deps } = makeHarness();
-    insertProfile(db, 'a@test.it');
-    ctx.parser = new FakeParser(new Map([[`vado di ${JU}`, { team: JU, outcome: 'win' }]]));
-
-    await processEmailBatch(
-      ctx,
-      [incoming('a@test.it', `vado di ${JU}`, T_AFTER_KICKOFF, '1')],
-      deps(new Set(['a@test.it']))
-    );
-
-    expect(channel.sent[0]?.subject).toBe('Survivor League — Pick non registrato TT1TC1');
-    const pick = db.prepare('SELECT COUNT(*) AS n FROM pick').get() as { n: number };
-    expect(pick.n).toBe(0); // CL17/CL18: nessuna accettazione oltre il fischio
-  });
-
-  it('finestra di iscrizione chiusa → rifiuto "torneo iniziato" senza profilo (CL2/RF-03)', async () => {
-    const { db, ctx, channel, deps } = makeHarness();
-    closeRegistration(ctx, {});
-
-    await processEmailBatch(ctx, [incoming('new@test.it', 'vorrei iscrivermi', T_PICK, '1')], deps(new Set()));
-
-    expect(channel.sent[0]?.subject).toBe('Survivor League — Pick non registrato TT1TC1');
-    const players = db.prepare('SELECT COUNT(*) AS n FROM player').get() as { n: number };
-    expect(players.n).toBe(0);
-  });
-
-  it('mittente con keyword ma già registrato → risposta "già registrato" (knownEmails stale)', async () => {
-    const { db, ctx, channel, deps } = makeHarness();
-    insertProfile(db, 'a@test.it');
-
-    // knownEmails del batch costruito PRIMA della registrazione: caso difensivo.
-    await processEmailBatch(ctx, [incoming('a@test.it', 'mi iscrivo di nuovo', T_PICK, '1')], deps(new Set()));
-
-    expect(channel.sent[0]?.subject).toBe('Survivor League — Pick non registrato TT1TC1');
-    const players = db.prepare('SELECT COUNT(*) AS n FROM player WHERE email = ?').get('a@test.it') as {
-      n: number;
-    };
-    expect(players.n).toBe(1); // nessun duplicato (RNF2)
+    // Il secondo messaggio vede l'account appena creato dal primo (nessuno
+    // snapshot di inizio batch): auto-join riuscito.
+    expect(platform.find('sconosciuto@test.it')?.status).toBe('active');
+    expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 1 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM pick').get()).toEqual({ n: 1 });
+    expect(generator.contexts[0]).toMatchObject({ type: 'platform_registered' });
+    expect(generator.contexts[1]).toMatchObject({ type: 'pick_confirmed' });
+    expect(result.messages[0]).toMatchObject({ action: 'subscribed', seen: true });
+    expect(result.messages[1]).toMatchObject({ action: 'auto_joined', seen: true });
   });
 });
 
 describe('channel:email:process — errori (D7/RNF9)', () => {
   it('LLMError → messaggio NON marcato letto e batch FERMATO (retry al prossimo tick)', async () => {
-    const { db, ctx, channel, deps, seen } = makeHarness();
-    insertProfile(db, 'a@test.it');
-    insertProfile(db, 'b@test.it');
-    insertProfile(db, 'c@test.it');
-    const broken = new FakeParser(new Map(), new LLMError('API giù', 429));
-    // Scripted: il primo messaggio va bene, il secondo fa scattare l'errore.
-    const scripted = {
-      extractPick: (body: string, opts: PickParseOptions) => {
-        if (body === 'vado di inter') return Promise.resolve({ team: IM, outcome: 'win' } satisfies PickExtraction);
-        return broken.extractPick(body, opts);
-      }
-    } as unknown as LLMParser;
-    ctx.parser = scripted;
-
-    const messages = [
-      incoming('a@test.it', 'vado di inter', T_PICK, '1'),
-      incoming('b@test.it', 'vado di roma', T_PICK, '2'),
-      incoming('c@test.it', 'vado di milan', T_PICK, '3')
-    ];
-
-    const result = await processEmailBatch(ctx, messages, deps(new Set(['a@test.it', 'b@test.it', 'c@test.it'])));
-
-    expect(result.messages.map((m) => m.action)).toEqual(['pick_registered', 'error_llm']);
-    expect(result.stopped).toBe(true);
-    expect(seen).toEqual(['1']); // solo il primo è stato marcato letto
-    expect(channel.sent).toHaveLength(1); // nessuna risposta inviata per i falliti
-  });
-});
-
-describe('channel:email:process — offset receivedAt test-only (D9, piano UAT Task 0.3)', () => {
-  it('con testMode=false il receivedAt NON è shiftato: pick oltre il kickoff resta rifiutato (regressione)', async () => {
-    const { db, ctx, deps } = makeHarness();
-    insertProfile(db, 'a@test.it');
-    ctx.parser = new FakeParser(new Map([[`vado di ${JU}`, { team: JU, outcome: 'win' }]]));
-
-    await processEmailBatch(
-      ctx,
-      [incoming('a@test.it', `vado di ${JU}`, T_AFTER_KICKOFF, '1')],
-      deps(new Set(['a@test.it']))
-    );
-
-    // Nessuno shift: receivedAt (16:01) > kickoff (16:00) → after_kickoff.
-    const pick = db.prepare('SELECT COUNT(*) AS n FROM pick').get() as { n: number };
-    expect(pick.n).toBe(0);
-  });
-
-  it('con testMode=true + TEST_OFFSET_DAYS=1 il receivedAt è shiftato indietro di 1 giorno: il pick oltre il kickoff reale diventa accettabile', async () => {
-    // receivedAt reale 16:01 (oltre il kickoff 16:00) → shiftato di 1 giorno a
-    // 09-11T16:01, ben prima della deadline (09-12T15:30): accettato. Dimostra
-    // che lo shift è applicato UNA volta all'ingresso del batch con il delta
-    // giusto (senza shift resterebbe after_kickoff, vedi test di regressione).
-    const { db, ctx, deps } = makeHarness({ testMode: true, offsetDays: 1 });
-    insertProfile(db, 'a@test.it');
-    ctx.parser = new FakeParser(new Map([[`vado di ${JU}`, { team: JU, outcome: 'win' }]]));
+    const { ctx, platform, deps, seen } = makeHarness();
+    platform.register('a@test.it', T_OPEN);
+    platform.register('b@test.it', T_OPEN);
+    useClassifier(ctx, new Map(), new LLMError('API giù', 429));
 
     const result = await processEmailBatch(
       ctx,
-      [incoming('a@test.it', `vado di ${JU}`, T_AFTER_KICKOFF, '1')],
-      deps(new Set(['a@test.it']))
+      [
+        incoming('a@test.it', 'primo', T_PICK, '1'),
+        incoming('b@test.it', 'secondo', T_PICK, '2')
+      ],
+      deps()
     );
 
-    expect(result.messages[0]).toMatchObject({ action: 'pick_registered', seen: true });
-    const pick = db.prepare('SELECT COUNT(*) AS n FROM pick').get() as { n: number };
-    expect(pick.n).toBe(1); // pick accettato grazie allo shift
+    expect(result.stopped).toBe(true);
+    expect(result.messages[0]).toMatchObject({ action: 'error_llm', seen: false });
+    expect(result.processed).toBe(1);
+    expect(seen).toEqual([]);
   });
 });

@@ -4,7 +4,8 @@
  * Su DB reale SQLite in-memory + provider reale con la mini-stagione (LLD §8).
  * Verificano:
  * - avvio con calendario valido: tournament_state scritto (season_started,
- *   start_round, registration_open=1, RF-22) e round_state pending inizializzati;
+ *   start_round; registration_open DEPRECATA resta al default 0, ADR-009/B8a)
+ *   e round_state pending inizializzati;
  * - RF-21: TC di aggancio inesistente / senza partite / deadline TT1 non futura
  *   → rifiuto ATOMICO (DB invariato);
  * - CL12: aggancio all'ultimo TC → warning informativo;
@@ -81,8 +82,9 @@ describe('tournament:start (US6, RF-21, RF-20)', () => {
     });
     expect(res.tt1Kickoff).toBe('2026-09-12T16:00:00.000Z');
     expect(res.tt1Deadline).toBe('2026-09-12T15:30:00.000Z');
+    // registration_open resta 0: colonna DEPRECATA (ADR-009, B8a), mai scritta.
     expect(db.prepare('SELECT season_started, start_round, registration_open FROM tournament_state WHERE id = 1').get())
-      .toEqual({ season_started: 1, start_round: 1, registration_open: 1 });
+      .toEqual({ season_started: 1, start_round: 1, registration_open: 0 });
     const pending = db.prepare("SELECT COUNT(*) AS n FROM round_state WHERE status = 'pending'").get() as { n: number };
     expect(pending.n).toBe(6);
   });
@@ -150,7 +152,7 @@ describe('openRound su round pending (inizializzato da start)', () => {
 });
 
 describe('tournament:status / history / leaderboard / export', () => {
-  it('status espone finestra, round corrente, profili e anomalie deadline_missing', async () => {
+  it('status espone iscritti piattaforma, round corrente, profili e anomalie deadline_missing', async () => {
     const { db, ctx } = makeCtx();
     insertProfile(db, 'a@test.it');
     insertProfile(db, 'b@test.it');
@@ -161,13 +163,15 @@ describe('tournament:status / history / leaderboard / export', () => {
     expect(status).toMatchObject({
       seasonStarted: true,
       startRound: 1,
-      registrationOpen: true,
+      platformSubscribers: 0, // nessun registry iniettato → 0 (ADR-009)
       totalRounds: 6,
       halfBoundary: 4,
       currentRound: { tc: 1, tt: 1, status: 'open' },
       activeProfiles: 2,
       eliminatedProfiles: 0
     });
+    // Nessuna "finestra di iscrizione" esposta (ADR-009).
+    expect(status).not.toHaveProperty('registrationOpen');
     expect(status.winner.finished).toBe(false);
 
     // Anomalia: un round open con deadline NULL (chiusura di sicurezza RF-30).

@@ -49,10 +49,12 @@ function jsonText(content: string): Response {
 
 const opts = { teams: TEAMS, aliases: ALIASES };
 
-describe('LLM Parser — estrazione (D2/E)', () => {
+describe('LLM Parser — estrazione (D2/E, ADR-009: delega al classificatore)', () => {
   it('estrae {team, outcome} con nome canonico e inietta lista + alias nel prompt', async () => {
     const { parser, requests } = makeParser(() =>
-      Promise.resolve(jsonText('{"team": "Juventus FC", "outcome": "win"}'))
+      Promise.resolve(
+        jsonText('{"intent": "pick", "pick": {"team": "Juventus FC", "outcome": "win"}}')
+      )
     );
 
     const result = await parser.extractPick('Ciao, per questo turno scelgo la Juve vincente!', opts);
@@ -76,15 +78,17 @@ describe('LLM Parser — estrazione (D2/E)', () => {
 
   it('squadra fuori lista → null (filtro deterministico, doppia barriera D2/C)', async () => {
     const { parser } = makeParser(() =>
-      Promise.resolve(jsonText('{"team": "Juve Inventata FC", "outcome": "win"}'))
+      Promise.resolve(
+        jsonText('{"intent": "pick", "pick": {"team": "Juve Inventata FC", "outcome": "win"}}')
+      )
     );
     const result = await parser.extractPick('scelgo Juve Inventata FC', opts);
     expect(result).toBeNull();
   });
 
-  it('risposta ambigua (team null) → null', async () => {
+  it('risposta ambigua (pick null) → null', async () => {
     const { parser } = makeParser(() =>
-      Promise.resolve(jsonText('{"team": null, "outcome": null}'))
+      Promise.resolve(jsonText('{"intent": "pick", "pick": null}'))
     );
     expect(await parser.extractPick('non so', opts)).toBeNull();
   });
@@ -96,25 +100,27 @@ describe('LLM Parser — estrazione (D2/E)', () => {
 
   it('output malformato (campi di tipo errato) → null senza crash (CS7)', async () => {
     const { parser } = makeParser(() =>
-      Promise.resolve(jsonText('{"team": 42, "outcome": ["win"]}'))
+      Promise.resolve(jsonText('{"intent": 42, "pick": ["win"]}'))
     );
     expect(await parser.extractPick('42', opts)).toBeNull();
   });
 
   it('esito invalido o assente → null', async () => {
     const bad = makeParser(() =>
-      Promise.resolve(jsonText('{"team": "Juventus FC", "outcome": "vittoria"}'))
+      Promise.resolve(
+        jsonText('{"intent": "pick", "pick": {"team": "Juventus FC", "outcome": "vittoria"}}')
+      )
     );
     expect(await bad.parser.extractPick('juve vittoria', opts)).toBeNull();
 
     const missing = makeParser(() =>
-      Promise.resolve(jsonText('{"team": "Juventus FC"}'))
+      Promise.resolve(jsonText('{"intent": "pick", "pick": {"team": "Juventus FC"}}'))
     );
     expect(await missing.parser.extractPick('juve', opts)).toBeNull();
   });
 
   it('lista vuota (DB senza dati) → null deterministico SENZA chiamare l\'API', async () => {
-    const fetchImpl = vi.fn(() => Promise.resolve(jsonText('{"team": "x", "outcome": "win"}')));
+    const fetchImpl = vi.fn(() => Promise.resolve(jsonText('{"intent": "pick", "pick": null}')));
     const { parser } = makeParser(fetchImpl);
     expect(await parser.extractPick('scelgo x', { teams: [], aliases: ALIASES })).toBeNull();
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -123,7 +129,11 @@ describe('LLM Parser — estrazione (D2/E)', () => {
 
 describe('LLM Parser — non-regressione failover (D3: mai failover su risposta valida/null)', () => {
   it('m1 risponde con JSON valido → m2 NON viene mai chiamato', async () => {
-    const fetchImpl = vi.fn(() => Promise.resolve(jsonText('{"team": "Juventus FC", "outcome": "win"}')));
+    const fetchImpl = vi.fn(() =>
+      Promise.resolve(
+        jsonText('{"intent": "pick", "pick": {"team": "Juventus FC", "outcome": "win"}}')
+      )
+    );
     const client = new OpenAIClient({
       baseUrl: 'https://llm.test.example/v1',
       apiKey: 'k',
@@ -138,7 +148,7 @@ describe('LLM Parser — non-regressione failover (D3: mai failover su risposta 
   });
 
   it('m1 risponde null (pick ambiguo) → UN SOLO fetch, nessun secondo tentativo', async () => {
-    const fetchImpl = vi.fn(() => Promise.resolve(jsonText('{"team": null, "outcome": null}')));
+    const fetchImpl = vi.fn(() => Promise.resolve(jsonText('{"intent": "pick", "pick": null}')));
     const client = new OpenAIClient({
       baseUrl: 'https://llm.test.example/v1',
       apiKey: 'k',

@@ -4,7 +4,7 @@
 
 Implementazione della POC secondo PRD v0.5.2 / HLD v0.4.2 / LLD v0.4.0. La verifica di coerenza dei tre documenti ha evidenziato 3 gap funzionali, 4 ambiguità e disallineamenti minori: tutti risolti dalle decisioni sottostanti, applicate ai documenti nel Task 0.
 
-Dal **2026-08-14** questo piano integra anche i requisiti dell'**aggancio asincrono del torneo** (ADR-008, RF-20…31, CL11–18), definiti nel piano dedicato `tasks/plan-aggancio-torneo-asincrono.md` — questa è la **sorgente dei nuovi requisiti**; il documento `plan.md` resta l'unica roadmap di implementazione. I documenti sono già allineati (PRD 0.5.2, HLD 0.4.2, LLD 0.4.0) e la **migrazione `tournament_state.start_round`** è già applicata in `src/db/schema.ts` (migrazione additiva idempotente, verificata su DB pre-esistente). I moduli torneo/registrazione non sono ancora implementati: i requisiti sono fusi nei Task sotto senza rework.
+Dal **2026-08-14** questo piano integra anche i requisiti dell'**aggancio asincrono del torneo** (ADR-008, RF-20…31, CL11–18), definiti nel piano dedicato `tasks/aggancio-torneo-asincrono/plan-aggancio-torneo-asincrono.md` — questa è la **sorgente dei nuovi requisiti**; il documento `plan.md` resta l'unica roadmap di implementazione. I documenti sono già allineati (PRD 0.5.2, HLD 0.4.2, LLD 0.4.0) e la **migrazione `tournament_state.start_round`** è già applicata in `src/db/schema.ts` (migrazione additiva idempotente, verificata su DB pre-esistente). I moduli torneo/registrazione non sono ancora implementati: i requisiti sono fusi nei Task sotto senza rework.
 
 ## Decisioni confermate (2026-08-13)
 
@@ -24,7 +24,7 @@ Dal **2026-08-14** questo piano integra anche i requisiti dell'**aggancio asincr
 11. **Simulazione**: giocatori simulati con pick **deterministici seeded** (RNG mulberry32; squadra random tra le disponibili, esito random); numero profili configurabile (env `SIM_PLAYERS`, default 10); `receivedAt` forzabile per scavalcare la deadline.
 12. **Default adottati per domande aperte PRD §13** (modificabili): ~~apertura primo TT manuale via `round:open`~~ → **superata (2026-08-14, ADR-008/RF-23): il primo TT si apre all'apertura del torneo, domanda §13.1 risolta**; email di apertura round con **solo squadre disponibili** del profilo; passaggio a Freeze **notificato** con template `pick_postponed` (già previsto in LLD §6.3).
 
-## Decisioni aggancio asincrono (ADR-008, 2026-08-14) — fonte: tasks/plan-aggancio-torneo-asincrono.md
+## Decisioni aggancio asincrono (ADR-008, 2026-08-14) — fonte: tasks/aggancio-torneo-asincrono/plan-aggancio-torneo-asincrono.md
 
 Sintesi delle 8 decisioni bloccate (dettaglio in ADR-008, PRD v0.5.2 RF-20…31/CL11–18, LLD v0.4.0):
 
@@ -39,7 +39,7 @@ Sintesi delle 8 decisioni bloccate (dettaglio in ADR-008, PRD v0.5.2 RF-20…31/
 
 ## Impatto del piano "aggancio asincrono" su questa roadmap (revisione 2026-08-14)
 
-Esito della revisione della roadmap alla luce del piano aggancio (`tasks/plan-aggancio-torneo-asincrono.md`):
+Esito della revisione della roadmap alla luce del piano aggancio (`tasks/aggancio-torneo-asincrono/plan-aggancio-torneo-asincrono.md`):
 
 - **Riordino / dipendenze — nessun riordino necessario.** I requisiti aggancio toccano moduli non ancora implementati (Fase 3-7), il cui ordine resta invariato. La migrazione `start_round` (già applicata) estende il Task 1.3 completato senza nuove dipendenze; il solo prerequisito tecnico nuovo (kickoff effettivo per il guard RF-31) è già coperto da `getFirstMatchDateTime()` nel Task 2.2.
 - **Nuove attività — assorbite nei Task esistenti** (nessun nuovo numero di task): guard anti-frode RF-31 e auto-iscrizione RF-27 (Task 3.2/4.2/6.2); chiusure forzate `round:close --force --reason` (3.5) e `tournament:register:close --reason` (4.2); finestra iscrizione ancorata al TT1 (4.2); seam eligibilità (4.2, §6.5 LLD); coppia TT/TC iniettata (3.5/4.1/5.2/6.1); simulazione con offset `--start-round` (7.1); scheduler con finestra `[start_round..N]` e chiusura di sicurezza RF-30 (7.2); casi di test in LLD §8.1.
@@ -60,7 +60,7 @@ Esito della revisione della roadmap alla luce del piano aggancio (`tasks/plan-ag
 - AGENTS.md: "Stato attuale" → POC in implementazione; riferimenti versioni documenti (PRD 0.5.0, HLD 0.4.0, LLD 0.2.0+); stack invariato.
 - Eliminare `serie_a_2025_26.json`, `fetch_serie_a.py`, `footballdata.org`.
 
-> **Estensione (2026-08-14):** l'allineamento documenti è stato completato in due passate: Task 0 sopra (decisioni 1-12) e, successivamente, l'allineamento all'aggancio asincrono eseguito dal piano `tasks/plan-aggancio-torneo-asincrono.md` — ADR-008, PRD 0.5.2 (RF-20…31/CL11–18), HLD 0.4.2, LLD 0.4.0; colonna `tournament_state.start_round` migrata in `src/db/schema.ts` (migrazione additiva idempotente, Task 1.5 del piano aggancio — già applicata).
+> **Estensione (2026-08-14):** l'allineamento documenti è stato completato in due passate: Task 0 sopra (decisioni 1-12) e, successivamente, l'allineamento all'aggancio asincrono eseguito dal piano `tasks/aggancio-torneo-asincrono/plan-aggancio-torneo-asincrono.md` — ADR-008, PRD 0.5.2 (RF-20…31/CL11–18), HLD 0.4.2, LLD 0.4.0; colonna `tournament_state.start_round` migrata in `src/db/schema.ts` (migrazione additiva idempotente, Task 1.5 del piano aggancio — già applicata).
 
 **Verifica:** grep senza risultati per `StaticProvider`, `CALENDAR_PATH`, `calendar.json` nei documenti aggiornati; documenti internamente coerenti.
 
@@ -185,7 +185,7 @@ Fetch → router (D6) → "round corrente" = primo `round_state open` della fine
 
 ## Fase 7 — Simulazione e scheduler
 
-**Decisioni di implementazione (R1–R8, confermate 2026-08-14 — dettagli in `tasks/briefing-fase-7.md`):**
+**Decisioni di implementazione (R1–R8, confermate 2026-08-14 — dettagli in `tasks/briefing-fasi/briefing-fase-7.md`):**
 R1 — i comandi `simulate:*` costruiscono il contesto SENZA channel/generator (nessuna email reale; `notify()` è no-op in assenza). R2 — clock deterministico della simulazione derivato dai dati per fase: open a deadline − 1min, `receivedAt` = deadline − 1min, close a deadline + 1min, score a tcClose + 1min (registrazione profili sim a kickoff TT1 − anticipo − 2min); con clock fisso due run con stessa seed producono export identici (RNF1). R3 — `simulate:full`/`simulate:round` rifiutano se `season_started=1` o esistono round non-pending; profili sim via `registerPlayer` a finestra aperta. R4 — seed default 42 (`--seed <n>`); RNG mulberry32 a mano (funzione pura); iterazione stabile (ORDER BY id/round). R5 — `scheduler:status` = stato COMPUTATO (niente "ultima esecuzione" persistita; audit nel log pino). R6 — `schedulerTick(ctx, deps)` con `deps.refresh` iniettato (CLI: `importMatches`+`FootballDataClient`; test: stub); errore refresh → warn e prosegui (RNF9). R7 — chiusure di sicurezza come LLD §1.4 (eventi `*_safety` con causa `deadline_missing`; TC non calcolabile → evento `warn_not_calculable` + anomalia in `tournament:status`). R8 — moduli `src/game/simulation.ts`, `src/game/scheduler.ts`, `src/cli/commands/simulate.ts`, `src/cli/commands/scheduler.ts`; registrazione in `src/cli/index.ts`; albero LLD §5 aggiornato. **Decisione A (fix determinismo RNF1):** `created_at` di player/profile/pick scritto esplicitamente dal clock iniettato (`insertPendingPick(..., createdAt)`, `registerPlayer`/`autoRegisterFromPick` con `ctx.now.toISOString()`) — il default SQLite `datetime('now')` resterebbe solo come fallback di schema.
 
 ### Task 7.1 — Simulazione
@@ -248,9 +248,9 @@ Esempio crontab (commento in `.env.example` o `docs/`), `.env.example` completo 
 - `npm run typecheck` e `npm run lint` verdi a ogni task.
 - Criteri di successo PRD §9: CS2/CS4/CS5/CS6 in Fase 3 (automatizzati); CS7 nei contract test LLM; CS3 e determinismo (doppio `tournament:export` identico) in Fase 7 come UAT via CLI con import reale da football-data.org; CS1 come UAT manuale end-to-end su Gmail e LLM reali.
 - **UAT (nessun mock):**DB e `.env` reali; `data:import` reale; `simulate:full` via CLI; almeno un giocatore reale su casella Gmail per CS1.
-- **Requisiti aggancio (ADR-008):** criteri e casi di test dettagliati in `tasks/plan-aggancio-torneo-asincrono.md` (Task 7) e LLD §8.1; ogni Task di questo piano che li tocca ne cita il riferimento.
+- **Requisiti aggancio (ADR-008):** criteri e casi di test dettagliati in `tasks/aggancio-torneo-asincrono/plan-aggancio-torneo-asincrono.md` (Task 7) e LLD §8.1; ogni Task di questo piano che li tocca ne cita il riferimento.
 
 **Riferimenti:**
-- `tasks/plan-aggancio-torneo-asincrono.md` — sorgente dei requisiti aggancio (8 decisioni, RF-20…31, CL11–18, casi di test).
+- `tasks/aggancio-torneo-asincrono/plan-aggancio-torneo-asincrono.md` — sorgente dei requisiti aggancio (8 decisioni, RF-20…31, CL11–18, casi di test).
 - ADR-008 (`docs/decisions/architecture-decisions.md`) — contesto/decisione/alternative/conseguenze.
 - PRD v0.5.2 / HLD v0.4.2 / LLD v0.4.0 — design allineato.

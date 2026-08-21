@@ -87,7 +87,7 @@ describe('schedulerTick (LLD §1.4, R6/R7)', () => {
     expect(db.prepare('SELECT COUNT(*) AS n FROM round_state').get()).toEqual({ n: 0 });
   });
 
-  it('sequenza: start → open TT1 → close finestra+round a deadline → score → open TC2', async () => {
+  it('sequenza: start → open TT1 → close round a deadline → score → open TC2 (nessuna azione finestra, ADR-009)', async () => {
     const { db, ctx } = makeCtx();
     await startTournament(ctx);
 
@@ -95,17 +95,11 @@ describe('schedulerTick (LLD §1.4, R6/R7)', () => {
     const t1 = await schedulerTick(ctx);
     expect(t1.events).toEqual([{ type: 'round_open', round: 1 }]);
 
-    // Deadline del TT1 scaduta: chiusura finestra di iscrizione (RF-22) e
-    // chiusura del round a deadline.
+    // Deadline del TT1 scaduta: chiusura del round a deadline. NESSUNA azione
+    // sulla finestra di iscrizione (ADR-009: non esiste più).
     ctx.now = AFTER_TT1_DEADLINE;
     const t2 = await schedulerTick(ctx);
-    expect(t2.events).toEqual([
-      { type: 'register_close_auto' },
-      { type: 'round_close', round: 1 }
-    ]);
-    expect(db.prepare('SELECT registration_open FROM tournament_state WHERE id = 1').get()).toEqual({
-      registration_open: 0
-    });
+    expect(t2.events).toEqual([{ type: 'round_close', round: 1 }]);
 
     // Risultati disponibili: contabilizzazione del TC1 chiuso (RF-16).
     setScore(db, 1, IM, AC, 1, 0);
@@ -125,7 +119,7 @@ describe('schedulerTick (LLD §1.4, R6/R7)', () => {
     await startTournament(ctx);
     await schedulerTick(ctx); // open TT1
     ctx.now = AFTER_TT1_DEADLINE;
-    await schedulerTick(ctx); // register_close_auto + round_close (TC1)
+    await schedulerTick(ctx); // round_close (TC1)
     await schedulerTick(ctx); // round_score (TC1 closed → scored)
     await schedulerTick(ctx); // TC1 scored → open TC2 (RF-23)
     const t = await schedulerTick(ctx); // stesso clock: nulla da fare
@@ -142,12 +136,8 @@ describe('schedulerTick (LLD §1.4, R6/R7)', () => {
     ctx.now = AFTER_TC1_CLOSE;
     const res = await schedulerTick(ctx);
 
-    expect(res.events).toContainEqual({ type: 'register_close_safety', cause: 'deadline_missing' });
     expect(res.events).toContainEqual({ type: 'round_close_safety', round: 1, cause: 'deadline_missing' });
     expect(db.prepare("SELECT status FROM round_state WHERE round = 1").get()).toEqual({ status: 'closed' });
-    expect(db.prepare('SELECT registration_open FROM tournament_state WHERE id = 1').get()).toEqual({
-      registration_open: 0
-    });
   });
 
   it('warn_not_calculable: round open senza partite e deadline NULL → nessuna chiusura, warn + anomalia', async () => {
@@ -184,7 +174,6 @@ describe('schedulerTick (LLD §1.4, R6/R7)', () => {
     });
     expect(failing.events).toEqual([
       { type: 'refresh_failed' },
-      { type: 'register_close_auto' },
       { type: 'round_close', round: 1 }
     ]);
   });
@@ -196,10 +185,7 @@ describe('schedulerTick (LLD §1.4, R6/R7)', () => {
 
     ctx.now = AFTER_TT1_DEADLINE;
     const t = await schedulerTick(ctx);
-    expect(t.events).toEqual([
-      { type: 'register_close_auto' },
-      { type: 'round_close', round: 1 }
-    ]);
+    expect(t.events).toEqual([{ type: 'round_close', round: 1 }]);
 
     // Round chiuso e non scored: il tick successivo NON emette round_score.
     const t2 = await schedulerTick(ctx);
@@ -251,16 +237,15 @@ describe('computeActions / schedulerStatus (R5)', () => {
     expect(status).toMatchObject({
       enabled: false,
       seasonStarted: true,
-      registrationOpen: true,
+      platformSubscribers: 0,
       startRound: 1,
       totalRounds: 6
     });
+    // NESSUN campo registrationOpen (ADR-009).
+    expect(status).not.toHaveProperty('registrationOpen');
     expect(status.rounds[0]).toMatchObject({ round: 1, tt: 1, tc: 1, status: 'open', deadline: null });
     expect(status.anomalies).toEqual([{ round: 1, type: 'deadline_missing' }]);
-    expect(status.nextActions.map((a) => a.type)).toEqual([
-      'register_close_safety',
-      'round_close_safety'
-    ]);
-    expect(status.nextActions[1]).toMatchObject({ round: 1 });
+    expect(status.nextActions.map((a) => a.type)).toEqual(['round_close_safety']);
+    expect(status.nextActions[0]).toMatchObject({ round: 1 });
   });
 });

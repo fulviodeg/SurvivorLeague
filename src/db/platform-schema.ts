@@ -1,0 +1,48 @@
+/**
+ * Schema del DB PIATTAFORMA (ADR-009, RF-P7) e migrazione.
+ *
+ * Ruolo: definisce il modello dati degli account piattaforma — una singola
+ * tabella `platform_account` con `register_id` interno STABILE (riusato alla
+ * re-iscrizione, RF-P3), email univoca, status soft-delete a due passi
+ * (`active | pending_unsubscribe | unsubscribed`, RF-P2) e date scritte
+ * SEMPRE dal clock iniettato (RF-P8, RNF1: mai il default datetime('now')).
+ *
+ * Storage separato: il DB piattaforma vive in `PLATFORM_DB_PATH` (default
+ * `./data/platform.db`), MAI nello stesso file del DB torneo (`DB_PATH`):
+ * due connessioni distinte, nessuna transazione cross-DB — la piattaforma è
+ * SOLO LETTA dai flussi di torneo (gate notifiche/pick, ADR-009).
+ *
+ * Interazioni: `migratePlatform(db)` è invocata dal comando `platform:migrate`
+ * (src/cli/commands/platform.ts), dal wiring di `channel:email:process` (che
+ * migra ENTRAMBI i DB) e dai comandi `simulate:*`; l'impl del registry è
+ * `DbPlatformRegistry` (src/platform/registry.ts). La connessione è aperta da
+ * src/db/connection.ts con lo stesso pattern del DB torneo.
+ *
+ * Idempotenza: CREATE TABLE IF NOT EXISTS + eventuali migrazioni additive
+ * guardate da PRAGMA table_info (stesso pattern di src/db/schema.ts), così
+ * rieseguire la migrazione è sempre un no-op e non perde dati.
+ */
+import type Database from 'better-sqlite3';
+
+/** DDL del DB piattaforma (ADR-009, LLD §3 — versione 0.5.0). */
+export const PLATFORM_SCHEMA_DDL = `
+-- Account piattaforma (ADR-009, RF-P1/P2/P8): sorgente degli iscritti per le notifiche.
+CREATE TABLE IF NOT EXISTS platform_account (
+  register_id     INTEGER PRIMARY KEY AUTOINCREMENT, -- registerID INTERNO STABILE, riusato alla re-iscrizione (RF-P3)
+  email           TEXT NOT NULL UNIQUE,              -- univocità: il sistema ricorda l'email (RF-P3)
+  status          TEXT NOT NULL DEFAULT 'active'
+                  CHECK (status IN ('active', 'pending_unsubscribe', 'unsubscribed')),
+  created_at      TEXT NOT NULL,      -- SEMPRE dal clock iniettato (RF-P8, RNF1): mai default datetime('now')
+  unsubscribed_at TEXT               -- istante della soft-delete (clock iniettato), NULL finché non disiscritto
+);
+`;
+
+/**
+ * Applica lo schema del DB piattaforma. Idempotente: può essere rieseguita
+ * senza errori e senza perdere dati (CREATE TABLE IF NOT EXISTS; le colonne
+ * future seguono il pattern di migrazione additiva guardata di
+ * src/db/schema.ts).
+ */
+export function migratePlatform(db: Database.Database): void {
+  db.exec(PLATFORM_SCHEMA_DDL);
+}

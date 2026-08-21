@@ -87,4 +87,21 @@ describe('esempi .env* — nessun segreto versionato (piano UAT Task 5)', () => 
       });
     }
   });
+
+  describe('PLATFORM_DB_PATH (ADR-009, piano Task 10)', () => {
+    it('ogni esempio definisce PLATFORM_DB_PATH', () => {
+      for (const file of EXAMPLE_FILES) {
+        expect(assignedValue(readExample(file), 'PLATFORM_DB_PATH'), file).toBeDefined();
+      }
+    });
+
+    it('gli esempi UAT usano un percorso DEDICATO (mai il valore di produzione)', () => {
+      for (const file of ['.env.uat.example', '.env.uat-replay.example'] as const) {
+        const value = assignedValue(readExample(file), 'PLATFORM_DB_PATH');
+        expect(value, file).not.toBe('./data/platform.db');
+        expect(value, file).toBeDefined();
+        expect(value, file).not.toBe('');
+      }
+    });
+  });
 });

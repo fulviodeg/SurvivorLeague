@@ -20,16 +20,30 @@ import { describe, expect, it } from 'vitest';
 import { parseConfig } from '../../src/config.js';
 import { DbSeasonDataProvider } from '../../src/data/db-provider.js';
 import { migrate } from '../../src/db/schema.js';
+import { migratePlatform } from '../../src/db/platform-schema.js';
+import { DbPlatformRegistry } from '../../src/platform/registry.js';
 import type { GameContext } from '../../src/game/context.js';
 import { simulateRound, simulateSeason, mulberry32 } from '../../src/game/simulation.js';
 import { startTournament, tournamentExport } from '../../src/game/tournament.js';
 import { loadBaseSeason, setScore } from '../fixtures/season.js';
 
-/** Crea il contesto con DB in-memory migrato + mini-stagione (clock fisso). */
-function makeCtx(): { db: Database.Database; ctx: GameContext } {
+/**
+ * Crea il contesto con DB in-memory migrato + mini-stagione (clock fisso) e
+ * DB PIATTAFORMA in-memory pulito con registry iniettato (ADR-009: il seed
+ * crea account piattaforma, i profili nascono per auto-join al TT1).
+ */
+function makeCtx(): {
+  db: Database.Database;
+  platformDb: Database.Database;
+  platform: DbPlatformRegistry;
+  ctx: GameContext;
+} {
   const db = new Database(':memory:');
   migrate(db);
   loadBaseSeason(db);
+  const platformDb = new Database(':memory:');
+  migratePlatform(platformDb);
+  const platform = new DbPlatformRegistry(platformDb);
   const ctx: GameContext = {
     db,
     dataProvider: new DbSeasonDataProvider(db),
@@ -41,9 +55,10 @@ function makeCtx(): { db: Database.Database; ctx: GameContext } {
       LLM_API_KEY: 'k',
       FOOTBALL_DATA_TOKEN: 't'
     }),
-    now: new Date('2026-09-01T10:00:00.000Z')
+    now: new Date('2026-09-01T10:00:00.000Z'),
+    platform
   };
-  return { db, ctx };
+  return { db, platformDb, platform, ctx };
 }
 
 /**
@@ -161,19 +176,23 @@ describe('simulateSeason (CS3, RNF1, R3)', () => {
   });
 });
 
-describe('simulateRound (Task 7.1)', () => {
-  it('round singolo su DB fresco: apre la finestra se manca tournament_state, round → scored', async () => {
-    const { db, ctx } = makeCtx();
+describe('simulateRound (Task 7.1/10, ADR-009)', () => {
+  it('round singolo su DB fresco: crea tournament_state con start_round, auto-join al TT1, round → scored', async () => {
+    const { db, platform, ctx } = makeCtx();
     playAllMatches(db);
 
     const report = await simulateRound(ctx, 1, { players: 2, seed: 42 });
 
     expect(report.rounds).toHaveLength(1);
     expect(report.rounds[0]).toMatchObject({ round: 1, tc: 1, tt: 1, status: 'scored' });
-    // openRegistration ha creato la riga tournament_state con finestra aperta.
+    // La riga tournament_state è stata creata con start_round = round (RF-P5);
+    // nessuna finestra di iscrizione (ADR-009: registration_open resta 0).
     expect(
-      db.prepare('SELECT season_started, registration_open FROM tournament_state WHERE id = 1').get()
-    ).toEqual({ season_started: 0, registration_open: 1 });
+      db.prepare('SELECT season_started, start_round, registration_open FROM tournament_state WHERE id = 1').get()
+    ).toEqual({ season_started: 0, start_round: 1, registration_open: 0 });
+    // Gli account sono sulla PIATTAFORMA; i profili sono nati per auto-join.
+    expect(platform.list()).toHaveLength(2);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 2 });
     const scored = db.prepare("SELECT COUNT(*) AS n FROM round_state WHERE status = 'scored'").get() as {
       n: number;
     };
@@ -190,5 +209,11 @@ describe('simulateRound (Task 7.1)', () => {
     const { ctx } = makeCtx();
     await startTournament(ctx);
     await expect(simulateRound(ctx, 1)).rejects.toThrow(/già avviato|avviata/);
+  });
+
+  it('guardia DB piattaforma sporco (ADR-009/RNF1): account pre-esistenti → rifiuto pulito', async () => {
+    const { platform, ctx } = makeCtx();
+    platform.register('estraneo@test.it', new Date('2026-09-01T10:00:00.000Z'));
+    await expect(simulateRound(ctx, 1)).rejects.toThrow(/pulito|pulita/);
   });
 });

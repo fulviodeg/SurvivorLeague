@@ -480,7 +480,7 @@ dalla fase = `npm run typecheck`/`lint`/`test` verdi + contract test LLM
 
 Prompt di base (da precorrere con qualunque task delle Fasi 5–6):
 > Implementa il task <n> delle Fasi 5–6 del piano (`tasks/plan.md`) seguendo
-> **prioritariamente** il briefing `tasks/briefing-fase-5-6.md` (decisioni
+> **prioritariamente** il briefing `tasks/briefing-fasi/briefing-fase-5-6.md` (decisioni
 > D1–D9 e sezioni 2–5) e le sezioni LLD/PRD ivi citate come autorità. Prima
 > di scrivere codice: (1) applica le correzioni di spec della tabella §7 ai
 > documenti (LLD/plan/PRD) nello stesso lavoro, (2) applica AGENTS.md rule 5
