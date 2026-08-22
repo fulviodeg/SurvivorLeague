@@ -187,14 +187,15 @@ export function subjectFor(ctx: EmailContext): string {
 
 /**
  * Limite massimo (caratteri) della narrativa LLM accettata (guardia
- * anti-degenerazione, ADR-004: il testo atteso è di 2-4 frasi BREVI, ~100-150
- * parole): un output oltre questo limite è un dump degenerato (echo del
- * prompt di sistema / "thinking loop", osservato in UAT con corpi da 239 KB)
- * e viene sostituito dal fallback deterministico per tipo. 600 caratteri
- * lasciano ampio margine alle narrative legittime senza far passare la
- * spazzatura.
+ * anti-degenerazione, ADR-004: il testo atteso è di 2-4 frasi BREVI).
+ * VERIFICATO con la stagione reale 2025/26 (tests/unit/llm/narrative-guard-real-season.test.ts):
+ * una narrativa legittima di 4 frasi arriva a ~600 caratteri (~200 token) anche
+ * con contesti ricchi di partite, quindi un limite a 600 produrrebbe FALSI
+ * POSITIVI (fallback su testo valido). 1000 caratteri lasciano margine senza
+ * far passare i dump degenerati (echo del prompt di sistema / "thinking loop",
+ * es. corpi da 239 KB osservati in UAT).
  */
-export const MAX_NARRATIVE_CHARS = 600;
+export const MAX_NARRATIVE_CHARS = 1000;
 
 /**
  * Guardia sull'output dell'LLM (pura): accetta SOLO narrativa non vuota e

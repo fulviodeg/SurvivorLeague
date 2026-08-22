@@ -17,7 +17,7 @@
  *     ovunque supportato: la validazione zod del Parser basta); nessun
  *     `max_tokens` (il JSON non va troncato);
  *   - `text` (Generator): le email sono testo libero, non JSON; `max_tokens`
- *     è impostato a `TEXT_MAX_TOKENS` (200) come cap anti-dump dei modelli
+ *     è impostato a `TEXT_MAX_TOKENS` (300) come cap anti-dump dei modelli
  *     `:free` (output degenerati tipo echo del prompt vengono fermati alla
  *     fonte e la guardia del Generator ripiega sul fallback deterministico).
  *
@@ -88,15 +88,18 @@ const DEFAULT_RETRIES = 3;
 const RETRY_DELAY_MS = 1_000;
 
 /**
- * Token massimi per il formato di risposta `text` (Generator): la narrativa
- * attesa è di 2-4 frasi BREVI in italiano (~150 token bastano), quindi un cap
- * basso limita ALLA FONTE i dump degenerati dei modelli `:free` di OpenRouter
- * (echo del prompt di sistema / "thinking loop", es. corpi da 239 KB osservati
- * in UAT): la risposta viene troncata lato API e la guardia del Generator
- * ripiega sul fallback deterministico. NON si applica a `json_object`
- * (Parser): il JSON di classificazione non va troncato.
+ * Token massimi per il formato di risposta `text` (Generator): cap duro ALLA
+ * FONTE per i dump degenerati dei modelli `:free` di OpenRouter (echo del
+ * prompt / "thinking loop", es. corpi da 239 KB osservati in UAT) — la
+ * risposta viene troncata lato API. VERIFICATO con la stagione reale 2025/26
+ * (tests/unit/llm/narrative-guard-real-season.test.ts): una narrativa
+ * legittima di 4 frasi richiede fino a ~200 token, quindi 300 danno margine
+ * senza troncare testo valido; con un dump, la troncatura a ~300 token
+ * (≈1000 caratteri) viene poi intercettata dalla guardia MAX_NARRATIVE_CHARS
+ * del Generator. NON si applica a `json_object` (Parser): il JSON di
+ * classificazione non va troncato.
  */
-export const TEXT_MAX_TOKENS = 200;
+export const TEXT_MAX_TOKENS = 300;
 
 /** Chat completion: messaggio di sistema + messaggio utente. */
 export interface ChatCompletionMessages {
