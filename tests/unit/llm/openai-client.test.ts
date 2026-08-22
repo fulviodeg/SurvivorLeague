@@ -14,7 +14,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { OpenAIClient, type LlmResponseFormat } from '../../../src/llm/openai-client.js';
+import { OpenAIClient, TEXT_MAX_TOKENS, type LlmResponseFormat } from '../../../src/llm/openai-client.js';
 import { LLMError } from '../../../src/llm/errors.js';
 
 /** Opzioni del client per i test (default: modello singolo, nessun retry). */
@@ -106,13 +106,35 @@ describe('OpenAIClient — richiesta (config-driven, D2/E)', () => {
     const fetchImpl: typeof fetch = ((_url: unknown, init?: unknown) => {
       const body = JSON.parse(String((init as RequestInit).body)) as {
         response_format?: { type: string };
+        max_tokens?: number;
       };
       expect(body.response_format).toEqual({ type: 'json_object' });
+      // Il Parser riceve JSON completo: NESSUN cap max_tokens sul formato json_object.
+      expect(body.max_tokens).toBeUndefined();
       return Promise.resolve(chatResponse('{"team": null}'));
     }) as typeof fetch;
 
     const client = makeClient(fetchImpl);
     await client.chatCompletion({ system: 's', user: 'u' }, 'json_object' as LlmResponseFormat);
+  });
+
+  it('max_tokens nel body SOLO per il formato text (Generator): cap dei dump degenerati', async () => {
+    let captured: { body: { max_tokens?: number } } | undefined;
+    const fetchImpl: typeof fetch = ((_url: unknown, init?: unknown) => {
+      captured = {
+        body: JSON.parse(String((init as RequestInit).body)) as { max_tokens?: number }
+      };
+      return Promise.resolve(chatResponse('narrativa'));
+    }) as typeof fetch;
+
+    const client = makeClient(fetchImpl);
+    const text = await client.chatCompletion({ system: 's', user: 'u' }, 'text');
+
+    expect(text).toBe('narrativa');
+    // 2-4 frasi brevi in italiano: un cap basso limita alla fonte i dump
+    // "thinking loop" (es. 239 KB osservati in UAT) prima della guardia del Generator.
+    expect(TEXT_MAX_TOKENS).toBeGreaterThan(0);
+    expect(captured?.body.max_tokens).toBe(TEXT_MAX_TOKENS);
   });
 });
 

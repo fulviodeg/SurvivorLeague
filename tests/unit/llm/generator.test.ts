@@ -1,30 +1,34 @@
 /**
- * Contract test del LLM Generator (piano Task 5.2, LLD §6.3; briefing Fase 5-6
- * §3, D1/D4/D9).
+ * Contract test del LLM Generator — email v2 (ADR-011; già piano Task 5.2,
+ * LLD §6.3; briefing Fase 5-6 §3, D1/D4/D9).
  *
  * HTTP mockato (fetch iniettato, LLD §8). Coprono: un contract test per OGNI
- * tipo di email (15, allineati ad ADR-009): testo in italiano con
- * la coppia TT/TC esatta (RF-25: iniezione deterministica post-generazione,
- * mai numeri nel prompt); soggetto `subjectFor` con forma compatta (D1);
- * template senza numeri letterali (D4); sostituzione a stringa vuota senza
- * coppia; priorità di `ctx.subject`; date it-IT/fuso Europe/Rome (D9);
- * LLMError propagata (D3).
+ * tipo di email (16, inclusa `clarification`): corpo = renderer deterministico
+ * (header con coppia umana, box, CTA) + narrativa LLM; soggetto `subjectFor`
+ * in forma UMANA "Survivor League — Round N · Turno di campionato M:
+ * etichetta" (RF-25/D1, mai sigle TT/TC); template senza numeri di turno
+ * letterali (D4/ADR-004: mai nel prompt); soggetto neutro per le mail di
+ * esito (convenzione 4); coppia assente → soggetto senza prefisso; priorità
+ * di `ctx.subject`; date it-IT nel fuso iniettato (D9/ADR-011); LLMError
+ * propagata (D3).
  */
 import { describe, expect, it, vi } from 'vitest';
 
 import { OpenAIClient } from '../../../src/llm/openai-client.js';
 import {
   EMAIL_TYPES,
+  MAX_NARRATIVE_CHARS,
   OpenAIGenerator,
+  deterministicNarrative,
   subjectFor,
   type EmailContext,
   type EmailType
 } from '../../../src/llm/generator.js';
-import { EMAIL_TEMPLATES, TURN_PLACEHOLDER_EXTENDED } from '../../../src/llm/templates.js';
+import { EMAIL_TEMPLATES, FALLBACK_NARRATIVES } from '../../../src/llm/templates.js';
 import { LLMError } from '../../../src/llm/errors.js';
 
 /** Generatore con fetch iniettato che registra i prompt (test ermetici). */
-function makeGenerator(fetchImpl: typeof fetch): {
+function makeGenerator(fetchImpl: typeof fetch, timeZone?: string): {
   generator: OpenAIGenerator;
   requests: Array<{ system: string; user: string }>;
 } {
@@ -44,7 +48,7 @@ function makeGenerator(fetchImpl: typeof fetch): {
     retries: 1,
     fetchImpl: wrapper
   });
-  return { generator: new OpenAIGenerator(client), requests };
+  return { generator: new OpenAIGenerator(client, timeZone), requests };
 }
 
 /** Risposta 200 con un testo dell'LLM. */
@@ -55,83 +59,100 @@ function chatOk(content: string): Response {
   );
 }
 
-/** Contesto minimo per il contract test di ogni tipo (coppia TT/TC iniettata). */
+/** Contesto minimo per il contract test di ogni tipo (coppia umana iniettata). */
 function ctxFor(type: EmailType): EmailContext {
   return {
     type,
     playerName: 'Aldo',
-    tt: 2,
-    tc: 7,
+    round: 2,
+    championshipRound: 7,
     team: 'Juventus FC',
     outcome: 'win',
+    playerResult: type.startsWith('round_result') ? (type === 'round_result_correct' ? 'correct' : 'wrong') : undefined,
     reason: 'team_already_used',
     availableTeams: ['AC Milan', 'AS Roma'],
-    deadline: new Date('2026-12-12T15:30:00.000Z')
+    burnedTeams: [{ team: 'AC Milan', round: 2 }],
+    deadline: new Date('2026-12-12T15:30:00.000Z'),
+    deadlineRemaining: '20 ore e 15 minuti'
   };
 }
 
-describe('LLM Generator — contract test per ogni tipo (LLD §6.3)', () => {
+describe('LLM Generator v2 — contract test per ogni tipo (ADR-011)', () => {
   for (const type of EMAIL_TYPES) {
-    it(`[${type}] corpo in italiano con coppia TT/TC esatta e soggetto compatto (RF-25/D1)`, async () => {
-      const { generator, requests } = makeGenerator(() =>
-        Promise.resolve(chatOk(`Testo del messaggio ${TURN_PLACEHOLDER_EXTENDED}`))
-      );
-
+    it(`[${type}] corpo composto dal renderer (header umano) + narrativa; soggetto umano (RF-25/D1)`, async () => {
+      const { generator, requests } = makeGenerator(() => Promise.resolve(chatOk('Narrativa di prova')));
       const ctx = ctxFor(type);
       const body = await generator.generate(ctx);
       const subject = subjectFor(ctx);
 
-      // RF-25: la coppia nel testo deriva dai dati (iniezione deterministica).
-      expect(body).toContain('TT 2, TC 7');
-      expect(body).not.toContain(TURN_PLACEHOLDER_EXTENDED);
-      // D1: soggetto con forma compatta TT2TC7.
-      expect(subject).toMatch(/^Survivor League — .+ TT2TC7$/);
+      // Il corpo è il renderer deterministico: header con coppia UMANA
+      // (mai sigle TT/TC, convenzione 1) + narrativa dell'LLM.
+      expect(body).toContain('Round 2 · Turno di campionato 7');
+      expect(body).toContain('Narrativa di prova');
+      expect(body).toContain('Ciao Aldo!');
+      expect(body).not.toContain('TT 2');
+      expect(body).not.toContain('TC 7');
+      // D1: soggetto in forma umana (mai TT2TC7).
+      expect(subject).toMatch(/^Survivor League — Round 2 · Turno di campionato 7: .+$/);
+      expect(subject).not.toContain('TT2TC7');
 
-      // Il prompt (system) usa il SEGNAPOSTO, mai i numeri di turno (D4/ADR-004).
+      // Il prompt (system/user) NON contiene numeri di turno (D4/ADR-004).
       const prompt = requests[0]?.system ?? '';
       const user = requests[0]?.user ?? '';
-      expect(prompt).toContain(TURN_PLACEHOLDER_EXTENDED);
-      expect(prompt).not.toContain('TT2TC7');
       expect(prompt).not.toMatch(/TT\s*\d|TC\s*\d/);
-      expect(user).not.toContain('{{TT_TC}}');
-      // Dati di contesto serializzati (giocatore, squadra, esito, motivo, disponibili).
+      expect(user).not.toMatch(/Round \d|Turno di campionato \d/);
+      // Dati di contesto serializzati (giocatore, squadra, disponibili).
       expect(user).toContain('Aldo');
       expect(user).toContain('Juventus FC');
       expect(user).toContain('AC Milan, AS Roma');
     });
   }
 
-  it('nessun template contiene numeri di turno letterali (D4)', () => {
+  it('nessun template contiene numeri di turno letterali (D4/ADR-004)', () => {
     for (const type of EMAIL_TYPES) {
       const tpl = EMAIL_TEMPLATES[type];
-      // Il segnaposto {{TT_TC}}/{{TTTC}} è l'unico riferimento alla coppia: mai TT<digit>/TC<digit>.
       expect(tpl, `template ${type}`).not.toMatch(/TT\s*\d|TC\s*\d/);
-      expect(tpl, `template ${type}`).not.toContain('TT2TC7');
+      expect(tpl, `template ${type}`).not.toMatch(/Round \d|Turno di campionato \d/);
     }
   });
 
-  it('senza coppia TT/TC il segnaposto è sostituito con stringa vuota e il soggetto non ha suffisso', async () => {
-    const { generator } = makeGenerator(() =>
-      Promise.resolve(chatOk(`Ciao ${TURN_PLACEHOLDER_EXTENDED} fine`))
+  it('soggetti NEUTRI per le mail di esito round (convenzione 4)', () => {
+    const pair = { round: 2, championshipRound: 7 };
+    expect(subjectFor({ type: 'round_closed_survived', ...pair })).toBe(
+      'Survivor League — Round 2 · Turno di campionato 7: Riepilogo del round'
     );
-    const ctx: EmailContext = { type: 'pick_instructions' };
-    const body = await generator.generate(ctx);
-    expect(body).toBe('Ciao  fine');
-    expect(subjectFor(ctx)).toBe('Survivor League — Invia il tuo pick');
+    expect(subjectFor({ type: 'round_result_correct', ...pair })).toBe(
+      'Survivor League — Round 2 · Turno di campionato 7: Esito del round'
+    );
+    expect(subjectFor({ type: 'round_result_wrong', ...pair })).toBe(
+      'Survivor League — Round 2 · Turno di campionato 7: Esito del round'
+    );
+    expect(subjectFor({ type: 'pick_missing_elimination', ...pair })).toBe(
+      'Survivor League — Round 2 · Turno di campionato 7: Esito del round'
+    );
+  });
+
+  it('senza coppia round/campionato il soggetto non ha prefisso (D1)', () => {
+    expect(subjectFor({ type: 'pick_instructions' })).toBe('Survivor League — Invia il tuo pick');
+    expect(subjectFor({ type: 'clarification' })).toBe('Survivor League — Non ho capito');
   });
 
   it('ctx.subject esplicito ha priorità in subjectFor (D1)', () => {
-    const ctx: EmailContext = { type: 'platform_registered', tt: 1, tc: 1, subject: 'Oggetto custom' };
+    const ctx: EmailContext = { type: 'platform_registered', subject: 'Oggetto custom' };
     expect(subjectFor(ctx)).toBe('Oggetto custom');
   });
 
-  it('la deadline è formattata in it-IT con fuso FISSO Europe/Rome (D9)', async () => {
-    const { generator, requests } = makeGenerator(() => Promise.resolve(chatOk('ok')));
-    // 2026-12-12T15:30 UTC → 16:30 a Roma (CET, inverno): fuso fisso = determinismo (RNF1).
-    await generator.generate(ctxFor('pick_instructions'));
-    const user = requests[0]?.user ?? '';
-    expect(user).toContain('16:30');
-    expect(user).toContain('dicembre');
+  it('la deadline è formattata in it-IT nel FUSO INIETTATO (D9/ADR-011)', async () => {
+    // Europe/Rome (default): 2026-12-12T15:30 UTC → 16:30 a Roma (CET, inverno).
+    const rome = makeGenerator(() => Promise.resolve(chatOk('ok')));
+    await rome.generator.generate(ctxFor('pick_instructions'));
+    expect(rome.requests[0]?.user ?? '').toContain('16:30');
+    expect(rome.requests[0]?.user ?? '').toContain('dicembre');
+
+    // America/New_York: 15:30 UTC → 10:30 a New York (EST, inverno).
+    const ny = makeGenerator(() => Promise.resolve(chatOk('ok')), 'America/New_York');
+    await ny.generator.generate(ctxFor('pick_instructions'));
+    expect(ny.requests[0]?.user ?? '').toContain('10:30');
   });
 
   it('errore di trasporto → LLMError rilanciata (D3, mai silenziosa)', async () => {
@@ -154,7 +175,57 @@ describe('LLM Generator — non-regressione failover (D3: mai failover su rispos
     });
     const generator = new OpenAIGenerator(client);
     const body = await generator.generate(ctxFor('platform_registered'));
-    expect(body).toBe('testo valido');
+    expect(body).toContain('testo valido');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('LLM Generator — guardia anti-degenerazione dell\'output (narrativa)', () => {
+  it('output ENORME (echo del prompt di sistema, oltre MAX_NARRATIVE_CHARS) → fallback deterministico, MAI la spazzatura', async () => {
+    // Caso reale osservato in produzione-UAT (email "Già iscritto alla
+    // piattaforma", corpo da 239.575 caratteri): il modello risputa il prompt
+    // di sistema invece della narrativa. Il fetch iniettato simula la
+    // risposta degenerata; la guardia deve ripiegare sul testo fisso.
+    const promptEcho =
+      'We need to produce a short narrative text (2-4 short sentences) in Italian, enthusiastic and friendly...';
+    const degenerate = (promptEcho + ' ').repeat(400);
+    const { generator } = makeGenerator(() => Promise.resolve(chatOk(degenerate)));
+    const body = await generator.generate({
+      type: 'platform_already_registered',
+      playerName: 'Sara'
+    });
+    expect(body).not.toContain('We need to produce a short narrative text');
+    expect(body).toContain(FALLBACK_NARRATIVES.platform_already_registered);
+    expect(body.length).toBeLessThan(5_000);
+  });
+
+  it('narrativa valida entro MAX_NARRATIVE_CHARS → passata invariata (nessun fallback)', async () => {
+    const { generator } = makeGenerator(() => Promise.resolve(chatOk('Narrativa valida e breve')));
+    const body = await generator.generate({ type: 'pick_instructions', playerName: 'Aldo' });
+    expect(body).toContain('Narrativa valida e breve');
+    expect(body).not.toContain(FALLBACK_NARRATIVES.pick_instructions);
+  });
+});
+
+describe('deterministicNarrative — guardia pura sull\'output LLM', () => {
+  it('narrativa vuota o whitespace → fallback deterministico per tipo', () => {
+    expect(deterministicNarrative({ type: 'tournament_open' }, '   ')).toBe(
+      FALLBACK_NARRATIVES.tournament_open
+    );
+  });
+
+  it('lunghezza al limite MAX → passata; oltre MAX → fallback', () => {
+    const atLimit = 'x'.repeat(MAX_NARRATIVE_CHARS);
+    const over = 'y'.repeat(MAX_NARRATIVE_CHARS + 1);
+    expect(deterministicNarrative({ type: 'pick_confirmed' }, atLimit)).toBe(atLimit);
+    expect(deterministicNarrative({ type: 'pick_confirmed' }, over)).toBe(
+      FALLBACK_NARRATIVES.pick_confirmed
+    );
+  });
+
+  it('fallback narrativo presente per OGNI EmailType (Record completo)', () => {
+    for (const type of EMAIL_TYPES) {
+      expect(FALLBACK_NARRATIVES[type], `fallback per ${type}`).toBeTruthy();
+    }
   });
 });

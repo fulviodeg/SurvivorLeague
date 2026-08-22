@@ -1,49 +1,32 @@
 /**
- * Template di sistema del LLM Generator (LLD §6.3 v0.5.0, piano Task 5.2;
- * briefing Fase 5-6 §3, D4/D9; ADR-009).
+ * Template di sistema del LLM Generator — STILE UNICO "energetic" (ADR-011,
+ * email v2; convenzioni 1-11 approvate).
  *
- * Ruolo: testi STATICI in italiano per ogni `EmailType` (15 tipi, allineati
- * ad ADR-009: entrano `platform_registered`, `platform_unsubscribe_confirm`,
- * `platform_unsubscribed`, `platform_already_registered`, `tournament_open`,
- * `round_closed_survived`; escono `welcome`, `registration_open_invite`,
- * `auto_registered`). Ogni template è
- * un prompt di sistema che istruisce l'LLM su tono, uso dei campi di contesto
- * (arrivano nel messaggio utente, serializzati da `serializeEmailContext`) e
- * vincoli di output.
+ * Ruolo: 16 prompt di sistema (15 tipi esistenti + `clarification`), uno per
+ * `EmailType`. Ogni prompt istruisce l'LLM a produrre SOLO il TESTO
+ * NARRATIVO (2-4 frasi brevi, tono entusiasta, focus sugli eventi principali
+ * e sui prossimi passi): header, box (esito/deadline/bruciate/partite/stato
+ * aggregato), sezioni dati e CTA sono composti DETERMINISTICAMENTE dal
+ * renderer di canale (`src/llm/email-renderer.ts`, "la resa appartiene al
+ * canale, i dati sono canale-agnostici") attorno alla narrativa.
  *
- * Vincoli (RF-25/ADR-004, D4):
- *   - i numeri TT/TC NON entrano MAI nel prompt: dove serve la coppia il
- *     template ordina di scrivere ESATTAMENTE il segnaposto `{{TT_TC}}`
- *     (forma estesa nel corpo) o `{{TTTC}}` (forma compatta), che
- *     l'implementazione sostituisce DOPO la generazione con
- *     `turnExtended(tt,tc)`/`turnCompact(tt,tc)` dai dati di `EmailContext`
- *     (coppia assente → stringa vuota);
+ * Vincoli (RF-25/ADR-004, D4/D9):
+ *   - i numeri di turno NON entrano MAI nel prompt: la coppia "Round N ·
+ *     Turno di campionato M" è scritta dal renderer dai dati (mai sigle
+ *     TT/TC nelle email — convenzione 1);
+ *   - la narrativa NON deve ripetere date, orari, deadline, punteggi o
+ *     conteggi già mostrati dai box deterministici: se un dato è assente,
+ *     non inventarlo — ometti la frase;
+ *   - l'LLM produce SOLO la narrativa (mai oggetto, mai firma, mai markup,
+ *     mai box/righe di separazione: li aggiunge il renderer);
  *   - nessuna data letterale nel template: le date arrivano come dati di
- *     contesto già formattati in `it-IT` con fuso fisso `Europe/Rome` (D9,
- *     determinismo RNF1) via `formatItDate`;
- *   - l'LLM produce SOLO il corpo dell'email (mai oggetto, mai firma).
+ *     contesto già formattati in `it-IT` nel fuso di sistema (TIMEZONE)
+ *     via `formatItDate` (determinismo RNF1).
+ *
+ * Il file storico `templates.old.ts` (stile V1 con segnaposto {{TT_TC}}) è
+ * un file morto di solo riferimento, non importato da alcun modulo.
  */
-import type { EmailType } from './generator.js';
-
-/** Segnaposto della coppia TT/TC in forma estesa (corpo: "TT 2, TC 7"). */
-export const TURN_PLACEHOLDER_EXTENDED = '{{TT_TC}}';
-/** Segnaposto della coppia TT/TC in forma compatta (corpo/CLI: "TT2TC7"). */
-export const TURN_PLACEHOLDER_COMPACT = '{{TTTC}}';
-
-/** Intestazione comune: istruzioni di comportamento per l'LLM. */
-const COMMON_HEADER = [
-  'Sei l\'assistente di Survivor League, un torneo privato di pronostici sulla Serie A tra amici.',
-  'Scrivi un\'email in ITALIANO, cordiale e chiara, rivolta a un giocatore del torneo.',
-  'Usa i dati di contesto forniti nel messaggio utente (giocatore, squadra, esito, motivo,',
-  'squadre disponibili, scadenza). Se un dato è assente, non inventarlo: ometti la frase.',
-  'Dove serve indicare il turno del torneo scrivi ESATTAMENTE il segnaposto ' +
-    `"${TURN_PLACEHOLDER_EXTENDED}" (mai numeri di turno, mai sostituirlo: lo fa il sistema).`,
-  'Rispondi SOLO con il corpo dell\'email: niente oggetto, niente saluti finali di firma,',
-  'niente markup.'
-].join('\n');
-
-/** Chiusura comune: invito all'azione per i messaggi che lo richiedono. */
-const ACTION_CLOSING = `\n\nChiudi ricordando al giocatore di inviare la sua scelta prima della scadenza (${TURN_PLACEHOLDER_EXTENDED} se presente).`;
+import type { EmailContext, EmailType } from './generator.js';
 
 /**
  * Parole di conferma della barriera unsubscribe (RF-P2, decisione (a)/B1):
@@ -56,122 +39,214 @@ const ACTION_CLOSING = `\n\nChiudi ricordando al giocatore di inviare la sua sce
  */
 export const UNSUBSCRIBE_CONFIRM_WORDS = ['confermo', 'sì', 'si', 'yes'] as const;
 
+/** Intestazione comune: comportamento dell'LLM (narrativa pura, tono v2). */
+const COMMON_HEADER = [
+  'Sei l\'assistente di Survivor League, un torneo privato di pronostici sulla Serie A tra amici.',
+  'Scrivi in ITALIANO il TESTO NARRATIVO di un\'email: 2-4 frasi BREVI, tono entusiasta e amichevole,',
+  'focalizzate sull\'evento principale e sul prossimo passo del giocatore. Puoi usare emoji.',
+  'Il sistema compone SEPARATAMENTE intestazione, saluto ("Ciao {nome}!"), box con esito/deadline/',
+  'squadre bruciate, sezioni dati e istruzioni: NON ripetere il saluto né numeri di turno, date,',
+  'orari, scadenze, punteggi o conteggi già mostrati dai box — se un dato del contesto è assente,',
+  'non inventarlo: ometti la frase.',
+  'MAI sigle TT/TC e MAI numeri di turno: li scrive il sistema nella forma umana.',
+  'Rispondi SOLO con il testo narrativo: niente oggetto, niente saluti finali di firma, niente',
+  'markup, niente box o righe di separazione.'
+].join('\n');
+
 /**
- * Template per ogni tipo di email (LLD §6.3). La chiave DEVE coprire tutti i
- * valori di `EmailType` (garanzia compilativa con Record<EmailType, string>).
+ * Template per ogni tipo di email. La chiave DEVE coprire tutti i valori di
+ * `EmailType` (garanzia compilativa con Record<EmailType, string>).
  */
 export const EMAIL_TEMPLATES: Record<EmailType, string> = {
   platform_registered: `${COMMON_HEADER}
-Scrivi la CONFERMA DI ISCRIZIONE alla piattaforma: dai il benvenuto al giocatore, spiega in
-breve il formato del pick (prima di ogni turno si sceglie una squadra tra quelle disponibili
-e un esito: vittoria, pareggio o sconfitta), il limite di una squadra per girone e che per
-partecipare al torneo basta inviare la prima scelta entro la scadenza del primo turno${ACTION_CLOSING}`,
+Argomento: CONFERMA DI ISCRIZIONE alla piattaforma. Dai il benvenuto al giocatore con entusiasmo:
+il torneo è alle porte e la sua partecipazione parte da qui. Accenna in breve al formato del pick
+(scegli una squadra e un esito: vittoria, pareggio o sconfitta) e al prossimo passo (rispondere
+alla prima email di pick quando il round si aprirà).`,
 
   platform_unsubscribe_confirm: `${COMMON_HEADER}
-Scrivi la RICHIESTA DI CONFERMA per la disiscrizione: spiega che per completare la
-disiscrizione dalla piattaforma serve un secondo messaggio di conferma (basta rispondere
+Argomento: RICHIESTA DI CONFERMA per la disiscrizione. Spiega in modo cortese che per completare
+la disiscrizione dalla piattaforma serve un secondo messaggio di conferma (basta rispondere
 "${UNSUBSCRIBE_CONFIRM_WORDS[0]}" o "${UNSUBSCRIBE_CONFIRM_WORDS[1]}") e che la disiscrizione ferma
-le comunicazioni e i pick, senza toccare lo storico del torneo in corso${ACTION_CLOSING}`,
+comunicazioni e pick, senza toccare lo storico del torneo in corso.`,
 
   platform_unsubscribed: `${COMMON_HEADER}
-Scrivi la CONFERMA DI DISISCRIZIONE: comunica che l'account è stato disiscritto, che non
-riceverà più comunicazioni, che può re-iscriversi in qualunque momento rispondendo a questa
-email con una richiesta di iscrizione, e che lo storico del torneo non è stato cancellato`,
+Argomento: CONFERMA DI DISISCRIZIONE. Comunica con garbo che l'account è stato disiscritto e non
+riceverà più comunicazioni; può tornare quando vuole rispondendo a questa email con una richiesta
+di iscrizione; lo storico del torneo non è stato cancellato.`,
 
   platform_already_registered: `${COMMON_HEADER}
-Scrivi il messaggio "SEI GIÀ ISCRITTO ALLA PIATTAFORMA": comunica che l'account del giocatore
-è già attivo e che non serve re-iscriversi; spiega che per partecipare al torneo basta
-inviare la prima scelta (squadra + esito) entro la scadenza del primo turno${ACTION_CLOSING}`,
+Argomento: SEI GIÀ ISCRITTO ALLA PIATTAFORMA. Comunica con tono positivo che l'account è già
+attivo e non serve re-iscriversi; per partecipare al torneo basta inviare la prima scelta
+(squadra + esito) quando arriverà la mail di apertura del primo round.`,
 
   tournament_open: `${COMMON_HEADER}
-Scrivi l'ANNUNCIO DI APERTURA DEL TORNEO: comunica che il torneo è iniziato, spiega che per
-partecipare basta inviare la propria scelta (squadra + esito) entro la scadenza del primo
-turno (segnaposto), il formato del pick e il limite di una squadra per girone${ACTION_CLOSING}`,
+Argomento: ANNUNCIO DI APERTURA DEL TORNEO. Trasmetti entusiasmo: il torneo è ufficialmente
+aperto e il round 1 parte a breve — stai pronto! NON invitare ancora a fare un pick e NON citare
+date: le istruzioni con la scadenza arrivano con una mail dedicata all'apertura del round.`,
 
   pick_instructions: `${COMMON_HEADER}
-Scrivi le ISTRUZIONI PER IL PICK del turno: elenca le squadre disponibili del giocatore
-(campo "squadre disponibili"), ricorda che può sceglierne una sola con l'esito previsto
-(win = vittoria, draw = pareggio, lose = sconfitta), indica la scadenza${ACTION_CLOSING}`,
+Argomento: ISTRUZIONI PER IL PICK. Il round è aperto: incoraggia il giocatore a scegliere UNA
+squadra tra quelle disponibili (campo "squadre disponibili" del contesto) con l'esito previsto
+(vittoria, pareggio o sconfitta) e a inviarla prima della scadenza. Le squadre già bruciate e la
+deadline sono nei box del sistema: non elencarle di nuovo.`,
 
   pick_confirmed: `${COMMON_HEADER}
-Scrivi la CONFERMA del pick registrato: riporta la squadra scelta e l'esito previsto
-(campo "squadra" e "esito"), il turno in corso (segnaposto) e la scadenza entro cui
-l'eventuale correzione è ancora possibile${ACTION_CLOSING}`,
+Argomento: CONFERMA DEL PICK REGISTRATO. Festeggia la mossa del giocatore (squadra ed esito sono
+nel box del sistema); ricorda che può correggere la scelta finché il round è aperto.`,
 
   pick_rejected: `${COMMON_HEADER}
-Scrivi il RIFIUTO del pick con il motivo indicato nel campo "motivo" (spiegandolo in modo
-semplice e costruttivo): il giocatore può riprovare con una nuova email. Se il motivo è
-una richiesta di chiarimento, spiega esattamente cosa non si è capito e come formulare
-la scelta (squadra + esito)${ACTION_CLOSING}`,
+Argomento: PICK NON REGISTRATO. Spiega il motivo (campo "motivo" del contesto) in modo semplice,
+costruttivo e incoraggiante: il giocatore può riprovare con una nuova email, formulando squadra
+ed esito in modo riconoscibile.`,
 
   pick_missing_elimination: `${COMMON_HEADER}
-Scrivi la NOTIFICA DI ELIMINAZIONE per pick mancante: comunica che non è arrivato alcun
-pick per il turno (segnaposto) e che per questo il giocatore è eliminato dal torneo,
-con tono rispettoso e senza colpevolizzare${ACTION_CLOSING}`,
+Argomento: NESSUN PICK ARRIVATO. Comunica con rispetto e senza colpevolizzare che non è arrivato
+alcun pick entro la scadenza e che per questo l'avventura del giocatore si ferma qui (l'esito è
+nel box del sistema); ringrazia con calore per essere stato con noi. NON invitare a seguire i
+prossimi round (gli eliminati non li seguono) e MAI dire "grazie per averci giocato".`,
 
   round_result_correct: `${COMMON_HEADER}
-Scrivi la NOTIFICA DI ESITO CORRETTO: la squadra scelta (campo "squadra") ha prodotto
-l'esito previsto nel turno (segnaposto); il giocatore resta in gara e può preparare
-la prossima scelta${ACTION_CLOSING}`,
+Argomento: PICK CORRETTO. Esprimi gioia autentica: la squadra scelta ha prodotto l'esito previsto
+e il giocatore resta in gara (l'esito è nel box del sistema). Proietta sul prossimo round:
+riceverà le istruzioni quando si aprirà.`,
 
   round_result_wrong: `${COMMON_HEADER}
-Scrivi la NOTIFICA DI ESITO SBAGLIATO: la squadra scelta (campo "squadra") non ha
-prodotto l'esito previsto nel turno (segnaposto) e per questo il giocatore è eliminato
-dal torneo, con tono rispettoso${ACTION_CLOSING}`,
+Argomento: PICK SBAGLIATO. Comunica con tono rispettoso e sportivo che la squadra scelta non ha
+prodotto l'esito previsto e che l'avventura del giocatore si ferma qui (l'esito è nel box del
+sistema); ringrazia per essere stato con noi. MAI "grazie per averci giocato" e MAI invitare a
+seguire i prossimi round (gli eliminati non li seguono).`,
 
   pick_postponed: `${COMMON_HEADER}
-Scrivi la NOTIFICA DI PARTITA RINVIATA: la partita della squadra scelta (campo "squadra")
-è stata rinviata/sospesa; il pick resta in attesa (Freeze) e sarà valutato quando la
-partita sarà giocata${ACTION_CLOSING}`,
+Argomento: PARTITA RINVIATA. Rassicura il giocatore: la partita della squadra scelta è stata
+rinviata o sospesa; il pick resta in attesa (Freeze) e sarà valutato quando la partita verrà
+giocata — niente è deciso.`,
 
   round_closed_survived: `${COMMON_HEADER}
-Scrivi il RIEPILOGO DI CHIUSURA DEL TURNO per un giocatore SOPRAVVISSUTO: il turno
-(segnaposto) è chiuso e il giocatore resta in gara; ricorda che riceverà le istruzioni
-per la prossima scelta all'apertura del prossimo turno${ACTION_CLOSING}`,
+Argomento: RIEPILOGO DI CHIUSURA DEL ROUND. Il round è chiuso e il giocatore resta in gara:
+breve carica positiva, i numeri del round (superstiti ed eliminati) sono nel box del sistema.
+Il prossimo passo è la mail di istruzioni all'apertura del prossimo round.`,
 
   tournament_won: `${COMMON_HEADER}
-Scrivi il messaggio di VITTORIA del torneo: congratulazioni al giocatore, ha vinto
-l'intero torneo restando l'ultimo in gara${ACTION_CLOSING}`,
+Argomento: VITTORIA DEL TORNEO. Esplodi di gioia: congratulazioni al campione, ha vinto l'intero
+torneo restando l'ultimo in gara. Chiudi con un festeggiamento.`,
 
   tournament_shared_win: `${COMMON_HEADER}
-Scrivi il messaggio di VITTORIA CONDIVISA: il torneo termina con più vincitori
-(come previsto dalle regole); congratulazioni al giocatore${ACTION_CLOSING}`
+Argomento: VITTORIA CONDIVISA. Festeggia: il torneo termina con più vincitori, come previsto
+dalle regole; congratulazioni al giocatore, campione insieme ai suoi compagni di vetta.`,
+
+  clarification: `${COMMON_HEADER}
+Argomento: CHIARIMENTO. Non hai capito la richiesta del giocatore: dillo con leggerezza e
+simpatica, poi elenca le tre cose che può fare: iscriversi, disiscriversi, o inviare un pick
+(squadra + esito). Se nel contesto c'è una scadenza attiva, accenna solo che il tempo stringe
+(senza date). Se non è iscritto, ricorda la formula: dire il proprio nome e scrivere "voglio
+iscrivermi".`
 };
 
 /**
- * Formatta una data in italiano con fuso FISSO Europe/Rome (D9): le date di
- * gioco sono UTC; il fuso fisso rende il testo deterministico (RNF1).
- * Formato: data completa + ora breve (es. "sabato 12 settembre 2026 alle 17:30").
+ * Narrativa FALLBACK per ogni tipo di email (guardia anti-degenerazione del
+ * Generator, src/llm/generator.ts): testo DETERMINISTICO, fisso e in italiano
+ * (2-4 frasi brevi, tono entusiasta) usato quando l'output dell'LLM è
+ * degenerato (dump enorme tipo "thinking loop", echo del prompt), vuoto o
+ * oltre `MAX_NARRATIVE_CHARS`. È un testo di ripiego generico: NON ripete
+ * dati dei box (potrebbero essere assenti) e rispetta i vincoli PO
+ * (chiusura "grazie per essere stato con noi", mai elenchi nominativi, mai
+ * inviti a seguire i round per gli eliminati). Mai spedire spazzatura:
+ * il fallback è sempre meglio di un corpo illeggibile.
  */
-export function formatItDate(date: Date): string {
+export const FALLBACK_NARRATIVES: Record<EmailType, string> = {
+  platform_registered:
+    'Benvenuto a bordo! La tua iscrizione alla piattaforma è andata a buon fine: il torneo è alle porte. Quando si aprirà il round, ti basterà scegliere una squadra e un esito per partecipare.',
+  platform_unsubscribe_confirm:
+    'Abbiamo ricevuto la tua richiesta di disiscrizione. Per completarla rispondi a questa email con "confermo" o "sì". Se cambi idea nel frattempo, puoi restare con noi: nessun problema.',
+  platform_unsubscribed:
+    'La tua disiscrizione è stata completata: non riceverai più comunicazioni. Lo storico del torneo resta intatto. Quando vorrai, potrai tornare rispondendo a questa email.',
+  platform_already_registered:
+    'Sei già iscritto alla piattaforma, non serve re-iscriverti! Quando arriverà la mail di apertura del primo round ti basterà inviare la tua prima scelta (squadra + esito). Resta pronto: il torneo sta per partire.',
+  tournament_open:
+    'Il torneo è ufficialmente aperto! Il round 1 parte a breve: stai pronto. Le istruzioni con la scadenza del pick arriveranno con una mail dedicata all\'apertura del round.',
+  pick_instructions:
+    'Il round è aperto e tocca a te! Scegli una squadra tra quelle disponibili e indica l\'esito previsto (vittoria, pareggio o sconfitta), poi invia il tuo pick prima della scadenza. In bocca al lupo!',
+  pick_confirmed:
+    'Pick registrato, mossa perfetta! Puoi correggere la scelta rispondendo con un nuovo pick finché il round è aperto. Resta concentrato: ogni round conta.',
+  pick_rejected:
+    'Il tuo pick non è stato registrato, ma nessun problema: riprova rispondendo a questa email con squadra ed esito ben riconoscibili (win, draw, lose). Siamo qui per aiutarti.',
+  pick_missing_elimination:
+    'Non è arrivato alcun pick entro la scadenza e per questa volta l\'avventura si ferma qui. Grazie per essere stato con noi: è stato un piacere averti in gara!',
+  round_result_correct:
+    'Pick corretto, sei ancora in gara! Ottima mossa. Le istruzioni per il prossimo round arriveranno all\'apertura: continua così.',
+  round_result_wrong:
+    'Questa volta la squadra scelta non ha prodotto l\'esito previsto e l\'avventura si ferma qui. Grazie per essere stato con noi: sei stato un avversario in gamba!',
+  pick_postponed:
+    'La partita della tua squadra è stata rinviata: niente panico! Il tuo pick resta in attesa e sarà valutato quando la partita verrà giocata. Ti terremo aggiornato.',
+  round_closed_survived:
+    'Round chiuso e sei ancora in gara: ottimo lavoro! Le istruzioni per il prossimo pick arriveranno all\'apertura del prossimo round.',
+  tournament_won:
+    'Hai vinto il torneo! Complimenti campione: sei rimasto l\'ultimo in gara e la vittoria è tutta tua. Festeggia, te la sei meritata!',
+  tournament_shared_win:
+    'Il torneo è finito e la vittoria è condivisa! Complimenti campioni: insieme ai tuoi compagni di vetta avete portato a casa il torneo. Festeggiate, ve lo siete meritato!',
+  clarification:
+    'Non ho capito bene la tua richiesta: puoi ripeterla? Se vuoi, puoi iscriverti, disiscriverti o inviare un pick: ti guido io.'
+};
+
+/**
+ * Formatta una data in italiano nel FUSO richiesto (D9): le date di gioco
+ * sono istanti UTC assoluti; il fuso (TIMEZONE di sistema, default
+ * Europe/Rome) conta SOLO al momento della comunicazione verso l'esterno e
+ * rende il testo deterministico nei test (RNF1: fuso esplicito). Formato:
+ * data completa + ora breve (es. "sabato 12 settembre 2026 alle 17:30").
+ */
+export function formatItDate(date: Date, timeZone: string): string {
   return new Intl.DateTimeFormat('it-IT', {
-    timeZone: 'Europe/Rome',
+    timeZone,
     dateStyle: 'full',
     timeStyle: 'short'
   }).format(date);
 }
 
 /**
- * Serializza i dati di contesto per il messaggio utente (mai tt/tc: la coppia
- * entra SOLO come segnaposto post-generazione, RF-25/ADR-004). Le date sono
- * formattate con `formatItDate` (it-IT, Europe/Rome — D9).
+ * Serializza i dati di contesto per il messaggio utente della narrativa.
+ * I numeri di turno (`round`/`championshipRound`) NON sono serializzati
+ * (ADR-004/RF-25: mai nel prompt — la coppia la scrive il renderer); le date
+ * sono formattate con `formatItDate` nel fuso iniettato.
  */
-export function serializeEmailContext(ctx: {
-  playerName?: string;
-  team?: string;
-  outcome?: string;
-  reason?: string;
-  availableTeams?: string[];
-  deadline?: Date;
-}): string {
-  const lines: string[] = ['Ecco i dati a disposizione per comporre l\'email:'];
+export function serializeEmailContext(ctx: EmailContext, timeZone: string): string {
+  const lines: string[] = ['Ecco i dati a disposizione per comporre il testo narrativo:'];
   if (ctx.playerName !== undefined) lines.push(`- Giocatore: ${ctx.playerName}`);
   if (ctx.team !== undefined) lines.push(`- Squadra: ${ctx.team}`);
-  if (ctx.outcome !== undefined) lines.push(`- Esito: ${ctx.outcome}`);
+  if (ctx.outcome !== undefined) lines.push(`- Esito previsto: ${ctx.outcome}`);
+  if (ctx.playerResult !== undefined) lines.push(`- Esito del pick: ${ctx.playerResult}`);
   if (ctx.reason !== undefined) lines.push(`- Motivo: ${ctx.reason}`);
   if (ctx.availableTeams !== undefined && ctx.availableTeams.length > 0) {
     lines.push(`- Squadre disponibili: ${ctx.availableTeams.join(', ')}`);
   }
-  if (ctx.deadline !== undefined) lines.push(`- Scadenza: ${formatItDate(ctx.deadline)}`);
+  if (ctx.burnedTeams !== undefined && ctx.burnedTeams.length > 0) {
+    lines.push(`- Squadre bruciate: ${ctx.burnedTeams.map((b) => b.team).join(', ')}`);
+  }
+  if (ctx.matches !== undefined && ctx.matches.length > 0) {
+    lines.push(
+      `- Partite: ${ctx.matches
+        .map((m) =>
+          m.score !== undefined
+            ? `${m.home} ${m.score.home}-${m.score.away} ${m.away}`
+            : `${m.home}-${m.away}${m.postponed === true ? ' (rinviata)' : ''}`
+        )
+        .join('; ')}`
+    );
+  }
+  if (ctx.roundStart !== undefined) {
+    lines.push(`- Inizio del round: ${formatItDate(ctx.roundStart, timeZone)}`);
+  }
+  if (ctx.deadline !== undefined) {
+    lines.push(`- Scadenza: ${formatItDate(ctx.deadline, timeZone)}`);
+  }
+  if (ctx.inGameCount !== undefined) lines.push(`- Giocatori in gara: ${ctx.inGameCount}`);
+  if (ctx.eliminatedWrong !== undefined) {
+    lines.push(`- Eliminati per pick sbagliato: ${ctx.eliminatedWrong}`);
+  }
+  if (ctx.eliminatedMissing !== undefined) {
+    lines.push(`- Eliminati senza pick: ${ctx.eliminatedMissing}`);
+  }
+  if (ctx.platformCount !== undefined) lines.push(`- Iscritti alla piattaforma: ${ctx.platformCount}`);
   return lines.join('\n');
 }
