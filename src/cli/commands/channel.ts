@@ -30,6 +30,7 @@ import { buildEmailComponents } from '../email-wiring.js';
 import { loadTeamAliasesFor } from '../../llm/parser.js';
 import { makeNow } from '../../clock.js';
 import { jsonWithTestMode, printTestModeBanner } from '../output.js';
+import { acquireLock, lockPathFor, readHolderPid, releaseLock, touchLock, TOUCH_INTERVAL_MS } from '../email-process-lock.js';
 
 interface JsonArg {
   json: boolean;
@@ -114,9 +115,39 @@ export const channelEmailProcessCommand: CommandModule<object, JsonArg> = {
     }),
   handler: async (argv) => {
     const config = getConfig();
+    const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode);
+
+    // Lock anti-concorrenza (src/cli/email-process-lock.ts): il cron può
+    // lanciare un secondo run mentre il primo è ancora in elaborazione (batch
+    // > 1 min con retry LLM); senza lock i due processi leggerebbero le stesse
+    // email non lette e produrrebbero risposte duplicate/contraddittorie.
+    const lockPath = lockPathFor(config.DB_PATH);
+    const lock = acquireLock(lockPath);
+    if (lock === null) {
+      const holderPid = readHolderPid(lockPath);
+      logger.info(
+        { lockPath, holderPid },
+        'email:process skipped: another instance is running (lock file held by a live process)'
+      );
+      if (argv.json) {
+        console.log(jsonWithTestMode(config, { skipped: true, lockPath, holderPid }));
+      } else {
+        printTestModeBanner(config);
+        console.log(
+          `Processo email già in esecuzione (lock ${lockPath}, pid ${holderPid ?? '?'}): esecuzione saltata`
+        );
+      }
+      return;
+    }
+
+    // Touch periodico del lock (mtime) durante l'elaborazione: un run lungo
+    // non appare mai stantio. `unref()`: il timer non tiene vivo il processo
+    // oltre il termine del handler.
+    const touchTimer = setInterval(() => touchLock(lock), TOUCH_INTERVAL_MS);
+    touchTimer.unref();
+
     const db = createConnection(config.DB_PATH);
     const platformDb = createConnection(config.PLATFORM_DB_PATH);
-    const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode);
     try {
       // Migra ENTRAMBI i DB (ADR-009): torneo + piattaforma.
       migrate(db);
@@ -161,6 +192,8 @@ export const channelEmailProcessCommand: CommandModule<object, JsonArg> = {
         );
       }
     } finally {
+      clearInterval(touchTimer);
+      releaseLock(lock);
       db.close();
       platformDb.close();
     }
