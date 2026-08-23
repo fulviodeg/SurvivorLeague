@@ -6,13 +6,16 @@
  * della connessione IMAP e il transport SMTP come dipendenze iniettate.
  * Verificano: fetch → connect/logout + messaggi; errore di connessione →
  * EmailAdapterError (mai crash CLI); sendMessage → transport con soggetto
- * (D1); errore di invio → EmailAdapterError; markSeen → flag \Seen per UID
- * (D7); markSeen senza id → no-op.
+ * (D1), separatore di sistema anteposto (piano email-reply-quote-stripping
+ * D2/D3) e banner TEST MODE dopo il separatore in test mode; errore di invio
+ * → EmailAdapterError; markSeen → flag \Seen per UID (D7); markSeen senza id
+ * → no-op.
  */
 import { describe, expect, it } from 'vitest';
 
 import { EmailAdapter, EmailAdapterError } from '../../../src/channel/email-adapter/index.js';
 import type { ImapConnection } from '../../../src/channel/email-adapter/imap-client.js';
+import { SYSTEM_EMAIL_SEPARATOR } from '../../../src/channel/email-adapter/reply-cleaner.js';
 import type { SmtpTransport } from '../../../src/channel/email-adapter/smtp-client.js';
 
 /** Connessione IMAP fake con registrazione delle chiamate. */
@@ -121,14 +124,14 @@ describe('EmailAdapter.fetchMessages (D7)', () => {
 });
 
 describe('EmailAdapter.sendMessage (D1)', () => {
-  it('passa soggetto dal chiamante al transport', async () => {
+  it('passa soggetto dal chiamante al transport e antepone il separatore di sistema (D2/D3)', async () => {
     const { adapter, smtp } = makeAdapter();
     await adapter.sendMessage('a@test.it', 'corpo', 'Survivor League — Benvenuto TT1TC1');
     expect(smtp.calls[0]).toEqual({
       from: 'league@x.it',
       to: 'a@test.it',
       subject: 'Survivor League — Benvenuto TT1TC1',
-      text: 'corpo'
+      text: `${SYSTEM_EMAIL_SEPARATOR}\ncorpo`
     });
   });
 
@@ -142,8 +145,8 @@ describe('EmailAdapter.sendMessage (D1)', () => {
   });
 });
 
-describe('EmailAdapter.sendMessage — banner TEST MODE (piano UAT, D2)', () => {
-  it('con testMode=true antepone il banner al corpo (seam unico di invio, mai nei template LLM)', async () => {
+describe('EmailAdapter.sendMessage — separatore + banner TEST MODE (piano email-reply-quote-stripping D2/D3)', () => {
+  it('con testMode=true il separatore precede il banner, che precede il corpo (seam unico di invio, mai nei template LLM)', async () => {
     const imap = fakeImap();
     const smtp = fakeSmtp();
     const adapter = new EmailAdapter({
@@ -154,17 +157,17 @@ describe('EmailAdapter.sendMessage — banner TEST MODE (piano UAT, D2)', () => 
     });
     await adapter.sendMessage('a@test.it', 'corpo', 'Soggetto');
     const text = smtp.calls[0]?.text as string;
-    expect(text).toContain('TEST MODE');
-    // Il banner è ANTEposto: il corpo originale resta in coda.
+    expect(text).toBe(`${SYSTEM_EMAIL_SEPARATOR}\n[TEST MODE] This email was sent by a test instance of Survivor League.\n\ncorpo`);
+    // Il banner è ANTEposto al corpo: il corpo originale resta in coda.
     expect(text.endsWith('corpo')).toBe(true);
     // Il soggetto NON viene toccato (il banner è solo sul corpo, D2).
     expect(smtp.calls[0]?.subject).toBe('Soggetto');
   });
 
-  it('con testMode=false (default) il corpo resta identico, senza banner (regressione)', async () => {
+  it('con testMode=false (default) resta solo il separatore anteposto, senza banner (regressione)', async () => {
     const { adapter, smtp } = makeAdapter();
     await adapter.sendMessage('a@test.it', 'corpo');
-    expect(smtp.calls[0]?.text).toBe('corpo');
+    expect(smtp.calls[0]?.text).toBe(`${SYSTEM_EMAIL_SEPARATOR}\ncorpo`);
     expect(smtp.calls[0]?.text).not.toContain('TEST MODE');
   });
 });

@@ -20,6 +20,12 @@
  *     (vale sempre il default 0).
  *   - `allowPastDeadline` è una SEAM per la simulazione su dati storici
  *     (Task 7.1): in produzione il vincolo RF-21 resta sempre attivo.
+ *   - ADR-011 (§5.5): `tournament:start` è RIAMMISSIBILE se il torneo
+ *     precedente è chiuso a tutti gli effetti (`winner_notified = 1`): la
+ *     transazione di inizializzazione azzera atomicamente il DB di GIOCO
+ *     (pick/profile/player/round_state) e resetta tournament_state; il DB
+ *     piattaforma resta intatto (ADR-009) e l'export automatico della
+ *     chiusura è l'archivio del torneo precedente.
  *
  * Viste (sola lettura):
  *   - `tournament:status` — round corrente, profili attivi/eliminati,
@@ -96,6 +102,14 @@ export interface TournamentStatusResult {
   eliminatedProfiles: number;
   /** Esito del Winner Engine (finished/winners/case). */
   winner: Awaited<ReturnType<typeof checkWinner>>;
+  /**
+   * ADR-011: chiusura AUTOMATICA del torneo — true se winner_notified = 1
+   * (vincitori notificati, export archiviato, scheduler inibito);
+   * `finishedAt` è l'istante di chiusura (ISO-8601, clock iniettato), null
+   * finché il torneo non è chiuso.
+   */
+  closed: boolean;
+  finishedAt: string | null;
   /** Anomalie rilevabili dallo stato (es. deadline mancante su round open, RF-30). */
   anomalies: Array<{ round: number; type: 'deadline_missing' }>;
 }
@@ -166,18 +180,53 @@ export interface ExportResult {
   };
 }
 
-/** Legge lo stato registrato del torneo (season_started/start_round/registration_open). */
-function getTournamentState(db: Database.Database): {
+/**
+ * Nome del file di export automatico (UNICA fonte, PURO, nessun fs — ADR-011
+ * §1.3): derivato dal clock iniettato (deterministico, RNF1: nessun RNG/UUID).
+ * Il dedup `-N` su file esistente è gestito dal wiring di archiviazione
+ * (src/cli/archive-wiring.ts), non qui.
+ */
+export function exportFilename(now: Date): string {
+  return `tournament-export-${now.toISOString().replaceAll(':', '-')}.json`;
+}
+
+/**
+ * Torneo CHIUSO a tutti gli effetti? (ADR-011, emendamento post-revisione):
+ * legge `winner_notified = 1`. Gate di `round:open` (rifiuto) e di
+ * `round:score` (tace sulle email di esito) — MEDIUM-1/2.
+ */
+export function isTournamentClosed(db: Database.Database): boolean {
+  return getTournamentState(db)?.winner_notified === 1;
+}
+
+/**
+ * Legge lo stato registrato del torneo (season_started/start_round/
+ * registration_open/winner_notified/finished_at/export_path). Lettore
+ * CONDIVISO (fix review 2026-08-23): esportato anche per `scheduler.ts` e
+ * per il recupero export di `settleWinnerIfNeeded` (round-manager) — un solo
+ * punto di lettura di `tournament_state`, mai copie divergenti.
+ */
+export function getTournamentState(db: Database.Database): {
   season_started: number;
   start_round: number | null;
   registration_open: number;
+  winner_notified: number;
+  finished_at: string | null;
+  export_path: string | null;
 } | undefined {
   return db
     .prepare(
-      'SELECT season_started, start_round, registration_open FROM tournament_state WHERE id = 1'
+      'SELECT season_started, start_round, registration_open, winner_notified, finished_at, export_path FROM tournament_state WHERE id = 1'
     )
     .get() as
-    | { season_started: number; start_round: number | null; registration_open: number }
+    | {
+        season_started: number;
+        start_round: number | null;
+        registration_open: number;
+        winner_notified: number;
+        finished_at: string | null;
+        export_path: string | null;
+      }
     | undefined;
 }
 
@@ -230,14 +279,33 @@ export async function startTournament(
     );
   }
 
-  // Già avviato / gioco iniziato → rifiuto pulito.
+  // Già avviato / gioco iniziato → rifiuto pulito. ECCEZIONE ADR-011 (§5.5):
+  // se il torneo precedente è CHIUSO a tutti gli effetti
+  // (`winner_notified = 1`: vincitori notificati + export archiviato), il
+  // riavvio è AMMESSO: la transazione di inizializzazione qui sotto azzera
+  // il DB di GIOCO (pick/profile/player/round_state) e resetta
+  // tournament_state per il nuovo torneo. Il DB PIATTAFORMA non viene mai
+  // toccato (ADR-009: account e nomi sopravvivono ai reset del DB torneo);
+  // l'export automatico della chiusura è l'archivio che rende sicuro il
+  // reset. Senza torneo chiuso → rifiuto come oggi ("stagione già avviata").
   const state = getTournamentState(db);
-  if (state?.season_started === 1) {
+  const isClosed = state?.winner_notified === 1;
+  // HIGH-1 (riavvio sicuro, ADR-011 §5.5 emendamento post-revisione): un
+  // torneo chiuso è RIAMMISSIBILE SOLO se l'export automatico è stato
+  // archiviato (`export_path` non-null ⇒ file scritto, writeFileSync
+  // sincrona): senza archivio il reset distruggerebbe l'unico storico del
+  // torneo precedente → riavvio rifiutato.
+  if (isClosed && (state?.export_path ?? null) === null) {
+    throw new Error(
+      'Torneo chiuso senza export archiviato: riavvio rifiutato (verifica TOURNAMENT_EXPORT_DIR)'
+    );
+  }
+  if (state?.season_started === 1 && !isClosed) {
     throw new Error('Stagione già avviata');
   }
   const existingRounds = getRoundStates(db, startRound, totalRounds);
   const started = existingRounds.some((r) => r.status !== 'pending');
-  if (started) {
+  if (started && !isClosed) {
     throw new Error('Il gioco è già iniziato: non posso avviare di nuovo la stagione');
   }
 
@@ -246,12 +314,22 @@ export async function startTournament(
 
   // Scritture atomiche. `registration_open` NON è scritta (colonna DEPRECATA,
   // ADR-009, B8a): non esiste più una finestra di iscrizione da aprire, la
-  // colonna resta al default 0 per compatibilità dello schema.
+  // colonna resta al default 0 per compatibilità dello schema. ADR-011
+  // (§5.5): su torneo chiuso il RESET del DB di gioco avviene nella STESSA
+  // transazione dell'inizializzazione (atomico: mai un torneo a metà) e
+  // azzera anche winner_notified/finished_at (nuovo torneo non chiuso).
   const init = db.transaction(() => {
+    if (isClosed) {
+      db.prepare('DELETE FROM pick').run();
+      db.prepare('DELETE FROM profile').run();
+      db.prepare('DELETE FROM player').run();
+      db.prepare('DELETE FROM round_state').run();
+    }
     db.prepare(
-      `INSERT INTO tournament_state (id, season_started, start_round)
-       VALUES (1, 1, ?)
-       ON CONFLICT(id) DO UPDATE SET season_started = 1, start_round = excluded.start_round`
+      `INSERT INTO tournament_state (id, season_started, start_round, winner_notified, finished_at, export_path)
+       VALUES (1, 1, ?, 0, NULL, NULL)
+       ON CONFLICT(id) DO UPDATE SET season_started = 1, start_round = excluded.start_round,
+         winner_notified = 0, finished_at = NULL, export_path = NULL`
     ).run(startRound);
     const insertPending = db.prepare(
       "INSERT INTO round_state (round, status) VALUES (?, 'pending')"
@@ -264,16 +342,24 @@ export async function startTournament(
 
   // Broadcast `tournament_open` (RF-P6, ADR-009): DOPO le scritture atomiche, a
   // TUTTI gli iscritti ATTIVI della piattaforma (sostituisce l'invito a una
-  // lista di contatti). No-op senza channel/generator/registry nel contesto
-  // (es. simulazione, R1).
+  // lista di contatti). ADR-011 (convenzione 8, correzione PO): la mail è
+  // SOLO un annuncio — niente invito al pick né date (il commissioner/
+  // scheduler decide quando aprire il round 1): "il round 1 parte a breve".
+  // Il contesto porta solo il conteggio aggregato degli iscritti alla
+  // piattaforma (MAI elenchi nominativi). No-op senza channel/generator/
+  // registry nel contesto (es. simulazione, R1).
   let notified = 0;
   if (ctx.channel !== undefined && ctx.generator !== undefined && ctx.platform !== undefined) {
-    for (const email of ctx.platform.activeEmails()) {
-      const body = await ctx.generator.generate({ type: 'tournament_open' });
+    const activeEmails = ctx.platform.activeEmails();
+    for (const email of activeEmails) {
+      const body = await ctx.generator.generate({
+        type: 'tournament_open',
+        platformCount: activeEmails.length
+      });
       await ctx.channel.sendMessage(
         email,
         body,
-        subjectFor({ type: 'tournament_open' })
+        subjectFor({ type: 'tournament_open', platformCount: activeEmails.length })
       );
       notified += 1;
     }
@@ -328,6 +414,8 @@ export async function tournamentStatus(ctx: GameContext): Promise<TournamentStat
     activeProfiles: counts.active ?? 0,
     eliminatedProfiles: counts.eliminated ?? 0,
     winner: await checkWinner(ctx),
+    closed: state?.winner_notified === 1,
+    finishedAt: state?.finished_at ?? null,
     anomalies
   };
 }
@@ -462,7 +550,17 @@ export async function tournamentExport(ctx: GameContext): Promise<ExportResult> 
       pick: dump('pick'),
       match: dump('match'),
       round_state: dump('round_state'),
-      tournament_state: dump('tournament_state')
+      // `export_path` è ESCLUSO dal dump di tournament_state: è metadato
+      // operativo auto-referenziale (il path filesystem di QUESTO archivio,
+      // scritto SOLO DOPO l'archiviazione) e farebbe dipendere l'export da
+      // TOURNAMENT_EXPORT_DIR, violando il determinismo RNF1 (due ambienti
+      // diversi produrrebbero dump diversi). L'archivio contiene SOLO la
+      // storia del torneo.
+      tournament_state: db
+        .prepare(
+          'SELECT id, season_started, registration_open, start_round, registration_notified, winner_notified, finished_at FROM tournament_state'
+        )
+        .all() as unknown[]
     }
   };
 }

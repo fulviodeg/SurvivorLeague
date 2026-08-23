@@ -36,10 +36,16 @@ import { UNSUBSCRIBE_CONFIRM_WORDS } from './templates.js';
 /** Intenti riconosciuti dal classificatore (ADR-009, LLD §6.2). */
 export type MessageIntent = 'subscribe' | 'unsubscribe' | 'pick' | 'other';
 
-/** Esito della classificazione: intento + pick (valorizzato solo per `pick`). */
+/**
+ * Esito della classificazione: intento + pick (valorizzato solo per `pick`)
+ * + `name` (ADR-011, RF-P1): il nome del giocatore dedotto dalla mail di
+ * REGISTRAZIONE (valorizzato solo per `subscribe`); null se non indicato —
+ * in tal caso il sistema usa l'indirizzo email al posto del nome.
+ */
 export interface IntentClassification {
   intent: MessageIntent;
   pick: PickExtraction | null;
+  name: string | null;
 }
 
 /** Contratto del classificatore (LLD §6.2): mai eccezioni per il contenuto. */
@@ -48,7 +54,7 @@ export interface LLMIntentClassifier {
   classify(body: string, opts: PickParseOptions): Promise<IntentClassification>;
 }
 
-/** Schema zod dell'output LLM: intento enum + pick nullable (D3). */
+/** Schema zod dell'output LLM: intento enum + pick nullable + name (D3, ADR-011). */
 const classificationSchema = z.object({
   intent: z.enum(['subscribe', 'unsubscribe', 'pick', 'other']).nullable(),
   pick: z
@@ -56,7 +62,8 @@ const classificationSchema = z.object({
       team: z.string().nullable(),
       outcome: z.enum(['win', 'draw', 'lose']).nullable()
     })
-    .nullable()
+    .nullable(),
+  name: z.string().nullable().optional()
 });
 
 /**
@@ -91,8 +98,11 @@ export function buildClassifySystemPrompt(opts: PickParseOptions): string {
     '- "other": qualunque altra cosa (chiarimenti, domande, saluti, testo non riconducibile).',
     '',
     'Rispondi SOLO con un oggetto JSON di questo formato esatto:',
-    '{"intent": "subscribe"|"unsubscribe"|"pick"|"other", "pick": {"team": "<nome canonico o null>", "outcome": "win"|"draw"|"lose"|null} | null}',
+    '{"intent": "subscribe"|"unsubscribe"|"pick"|"other", "pick": {"team": "<nome canonico o null>", "outcome": "win"|"draw"|"lose"|null} | null, "name": "<nome del giocatore o null>"}',
     'Se intent non è "pick", il campo "pick" DEVE essere null.',
+    'Il campo "name" vale SOLO per "subscribe": è il NOME del giocatore dedotto dal testo',
+    'di iscrizione (es. "mi chiamo Mario e voglio iscrivermi" → "name": "Mario").',
+    'Se il testo di iscrizione non contiene un nome → "name": null. Per gli altri intenti → "name": null.',
     '',
     'Lista canonica delle squadre (il campo "team" DEVE essere esattamente uno di questi nomi,',
     'nessuna variante, abbreviazione o traduzione):',
@@ -153,17 +163,22 @@ export class OpenAIIntentClassifier implements LLMIntentClassifier {
     try {
       data = JSON.parse(raw);
     } catch {
-      return { intent: 'other', pick: null };
+      return { intent: 'other', pick: null, name: null };
     }
     const parsed = classificationSchema.safeParse(data);
-    if (!parsed.success) return { intent: 'other', pick: null };
-    const { intent, pick } = parsed.data;
-    if (intent === null || intent !== 'pick') return { intent: intent ?? 'other', pick: null };
-    if (pick === null) return { intent: 'pick', pick: null };
+    if (!parsed.success) return { intent: 'other', pick: null, name: null };
+    const { intent, pick, name } = parsed.data;
+    // `name` (ADR-011): vale SOLO per l'iscrizione; vuoto/non stringa → null.
+    const playerName =
+      intent === 'subscribe' && typeof name === 'string' && name.trim() !== '' ? name.trim() : null;
+    if (intent === null || intent !== 'pick') {
+      return { intent: intent ?? 'other', pick: null, name: playerName };
+    }
+    if (pick === null) return { intent: 'pick', pick: null, name: null };
     const { team, outcome } = pick;
     // Filtro deterministico esatto (D2): solo nomi canonici ed esiti validi.
-    if (team === null || outcome === null) return { intent: 'pick', pick: null };
-    if (!teams.includes(team)) return { intent: 'pick', pick: null };
-    return { intent: 'pick', pick: { team, outcome } };
+    if (team === null || outcome === null) return { intent: 'pick', pick: null, name: null };
+    if (!teams.includes(team)) return { intent: 'pick', pick: null, name: null };
+    return { intent: 'pick', pick: { team, outcome }, name: null };
   }
 }

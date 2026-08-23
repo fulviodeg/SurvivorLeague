@@ -47,6 +47,8 @@ describe('parseConfig', () => {
     expect(config.LLM_TIMEOUT_MS).toBe(15000);
     expect(config.LLM_RETRIES).toBe(3);
     expect(config.DB_PATH).toBe('./data/survivor.db');
+    expect(config.TIMEZONE).toBe('Europe/Rome');
+    expect(config.TOURNAMENT_EXPORT_DIR).toBe('./data/exports/');
     expect(config.LOG_LEVEL).toBe('info');
     expect(config.IMAP_POLL_MS).toBe(60000);
     // §4.3 parametri dati stagione
@@ -119,6 +121,27 @@ describe('parseConfig', () => {
 
   it('rifiuta un LOG_LEVEL fuori enum, nominandolo', () => {
     expect(() => parseConfig({ ...requiredEnv, LOG_LEVEL: 'verbose' })).toThrowError(/LOG_LEVEL/);
+  });
+
+  describe('TIMEZONE e TOURNAMENT_EXPORT_DIR (ADR-011)', () => {
+    it('TIMEZONE valida → accettata; default Europe/Rome', () => {
+      expect(parseConfig({ ...requiredEnv }).TIMEZONE).toBe('Europe/Rome');
+      expect(parseConfig({ ...requiredEnv, TIMEZONE: 'America/New_York' }).TIMEZONE).toBe(
+        'America/New_York'
+      );
+    });
+
+    it('TIMEZONE non IANA → ConfigError che nomina la variabile (validazione al boot)', () => {
+      expect(() => parseConfig({ ...requiredEnv, TIMEZONE: 'Marte/Roma' })).toThrowError(/TIMEZONE/);
+      expect(() => parseConfig({ ...requiredEnv, TIMEZONE: '' })).toThrowError(/TIMEZONE/);
+    });
+
+    it('TOURNAMENT_EXPORT_DIR: default e override', () => {
+      expect(parseConfig({ ...requiredEnv }).TOURNAMENT_EXPORT_DIR).toBe('./data/exports/');
+      expect(
+        parseConfig({ ...requiredEnv, TOURNAMENT_EXPORT_DIR: '/tmp/exports' }).TOURNAMENT_EXPORT_DIR
+      ).toBe('/tmp/exports');
+    });
   });
 
   describe('test mode (§0.1/D9, gating a consumo §0.3)', () => {

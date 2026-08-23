@@ -83,6 +83,37 @@ const testRefreshAllowedParam = () =>
 export const PLATFORM_DB_PATH_DEFAULT = './data/platform.db';
 
 /**
+ * Parametro fuso orario di sistema `TIMEZONE` (ADR-011 "Email v2"): stringa
+ * IANA (es. `Europe/Rome`, `America/New_York`), default `Europe/Rome`.
+ * VALIDATA AL BOOT con una prova di formattazione `Intl.DateTimeFormat`
+ * (una stringa non-IANA produce un ConfigError chiaro che nomina la
+ * variabile). Semantica: il sistema di gioco elabora SOLO istanti UTC
+ * assoluti (clock iniettato); il fuso conta ESCLUSIVAMENTE quando si
+ * comunica verso l'esterno — formattazione delle date nelle email
+ * (src/llm/email-renderer.ts) e timestamp dei log pino (src/logger.ts).
+ * Cambiarlo NON altera alcuna decisione di gioco: sposta solo le date
+ * mostrate.
+ */
+const timezoneParam = () =>
+  z
+    .string()
+    .min(1, 'variabile richiesta vuota o mancante')
+    .default('Europe/Rome')
+    .refine((value) => {
+      try {
+        // LOW-2: la sonda usa il locale NEUTRO 'en-US' (sempre presente anche
+        // nelle build small-icu): la VALIDITÀ di una timezone IANA non dipende
+        // dal locale, quindi un nodo senza dati `it-IT` non fa fallire
+        // erroneamente il boot. L'output `it-IT`/`en-CA` delle email e dei log
+        // richiede full-icu (Node ≥13 lo fornisce di default).
+        new Intl.DateTimeFormat('en-US', { timeZone: value }).format(new Date());
+        return true;
+      } catch {
+        return false;
+      }
+    }, 'timezone IANA non valida (es. Europe/Rome, America/New_York)');
+
+/**
  * Schema completo delle variabili d'ambiente (LLD §4 + SIM_PLAYERS).
  * I default corrispondono a quelli di .env.example: cambiare un default qui
  * richiede di aggiornare anche .env.example e LLD §4.
@@ -103,6 +134,21 @@ const configSchema = z.object({
   WINNER_SHARE_PCT: z.coerce.number().min(0).max(100).default(85),
 
   // --- §4.2 Parametri infrastruttura ---
+  // Fuso orario di sistema (stringa IANA) per la comunicazione verso
+  // l'esterno (ADR-011): date nelle email + timestamp dei log pino. Il
+  // sistema di gioco lavora SEMPRE su istanti UTC assoluti: il fuso conta
+  // solo quando si mostra una data. Valori: qualunque timezone IANA
+  // (es. Europe/Rome, America/New_York); una stringa non valida fa fallire
+  // l'avvio con un errore che nomina la variabile. Cambiarlo non altera le
+  // decisioni di gioco: sposta solo le date mostrate verso l'esterno.
+  TIMEZONE: timezoneParam(),
+  // Directory di destinazione degli export AUTOMATICI del torneo
+  // (ADR-011, chiusura automatica): quando il torneo si chiude il sistema
+  // scrive qui il dump JSON completo (riuso di tournamentExport, filename
+  // con timestamp dal clock iniettato). La directory è creata se assente;
+  // l'export è l'archivio che rende sicuro il reset del DB di gioco al
+  // riavvio. Valore: percorso relativo o assoluto scrivibile dal processo.
+  TOURNAMENT_EXPORT_DIR: z.string().min(1).default('./data/exports/'),
   IMAP_HOST: z.string().default('imap.gmail.com'),
   IMAP_PORT: intParam().default(993),
   IMAP_USER: required(),

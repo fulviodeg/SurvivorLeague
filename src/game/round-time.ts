@@ -45,3 +45,34 @@ export function computeTcClose(matches: Match[], durationMin: number, skewMin: n
   );
   return new Date(uppStart.getTime() + (durationMin + skewMin) * MINUTE_MS);
 }
+
+const HOUR_MS = 60 * MINUTE_MS;
+
+/**
+ * Countdown leggibile tra due istanti ("Mancano circa …"), puro e
+ * deterministico (RNF1): riceve entrambi gli istanti, MAI il clock. Forme
+ * per il box deadline del renderer email (opzione 2 approvata):
+ *   - differenza ≤ 0 → "meno di un minuto";
+ *   - < 60 minuti → "meno di un'ora" (o "meno di N minuti"? no: <1h → "meno
+ *     di un'ora", precisione inutile su orari non esatti);
+ *   - < 24 ore → "X ore e Y minuti" (Y = 0 → "X ore");
+ *   - ≥ 24 ore → "X giorni e Y ore" (Y = 0 → "X giorni");
+ * singolare/plurale corretti (1 ora, 2 ore; 1 minuto, 2 minuti; 1 giorno,
+ * 2 giorni). I minuti sono scartati oltre le 24 ore (approssimazione "circa").
+ */
+export function formatRemaining(from: Date, to: Date): string {
+  const diffMs = to.getTime() - from.getTime();
+  if (diffMs <= 0) return 'meno di un minuto';
+  const totalMinutes = Math.floor(diffMs / MINUTE_MS);
+  if (totalMinutes < 60) return "meno di un'ora";
+  const hours = Math.floor(diffMs / HOUR_MS);
+  const minutes = totalMinutes % 60;
+  if (hours < 24) {
+    const hoursText = hours === 1 ? '1 ora' : `${hours} ore`;
+    return minutes === 0 ? hoursText : `${hoursText} e ${minutes} ${minutes === 1 ? 'minuto' : 'minuti'}`;
+  }
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  const daysText = days === 1 ? '1 giorno' : `${days} giorni`;
+  return remainingHours === 0 ? daysText : `${daysText} e ${remainingHours} ${remainingHours === 1 ? 'ora' : 'ore'}`;
+}

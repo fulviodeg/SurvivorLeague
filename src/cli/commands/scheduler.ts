@@ -35,6 +35,7 @@ import {
 } from '../../game/scheduler.js';
 import { createLogger, type Logger } from '../../logger.js';
 import { attachEmailToContext, attachPlatformToContext } from '../email-wiring.js';
+import { attachArchiveToContext } from '../archive-wiring.js';
 import { makeNow } from '../../clock.js';
 import { jsonWithTestMode, printTestModeBanner } from '../output.js';
 import { SKIP_IMPORT_REFRESH_TEST_MODE, refreshAllowedWarnMessage } from './data.js';
@@ -69,9 +70,14 @@ function makeSchedulerContext(): {
   // Manager (es. riepilogo non inviato a un destinatario durante
   // round:score, B2 decisione (b)) restano visibili nei log del tick senza
   // far fallire l'azione.
-  const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode);
+  const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode, config.TIMEZONE);
   const base: GameContext = { db, dataProvider, config, now: makeNow(config), logger };
-  const { ctx, platformDb } = attachPlatformToContext(attachEmailToContext(base, config), config);
+  // Seam di archiviazione iniettato (ADR-011 §1.3): la chiusura automatica in
+  // produzione scrive l'export in TOURNAMENT_EXPORT_DIR.
+  const { ctx, platformDb } = attachPlatformToContext(
+    attachArchiveToContext(attachEmailToContext(base, config), config),
+    config
+  );
   return {
     ctx,
     db,
@@ -213,7 +219,7 @@ export const schedulerStatusCommand: CommandModule<object, JsonArg> = {
         } else {
           printTestModeBanner(config);
           console.log(
-            `Scheduler: ${status.enabled ? 'abilitato' : 'disabilitato'} (SCHEDULER_ENABLED) — torneo ${status.seasonStarted ? 'avviato' : 'non avviato'}, iscritti piattaforma (attivi): ${status.platformSubscribers}, start TC ${status.startRound} (${status.totalRounds} TC)`
+            `Scheduler: ${status.enabled ? 'abilitato' : 'disabilitato'} (SCHEDULER_ENABLED) — torneo ${status.tournamentFinished ? 'FINITO (chiuso automaticamente)' : status.seasonStarted ? 'avviato' : 'non avviato'}, iscritti piattaforma (attivi): ${status.platformSubscribers}, start TC ${status.startRound} (${status.totalRounds} TC)`
           );
           for (const r of status.rounds) {
             console.log(

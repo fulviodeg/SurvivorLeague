@@ -310,6 +310,19 @@ ENV_FILE=.env.uat npm run cli -- round:close --round <N> --force --reason "chius
 ENV_FILE=.env.uat npm run cli -- round:score --round <N>
 ```
 
+> **Apertura a deadline scaduta (guardia, incidente UAT 2026-08-22).** Se si
+> tenta `round:open` quando la deadline del round è **già passata** (es.
+> `--first-kickoff-offset-min` troppo piccolo rispetto al tempo impiegato tra
+> seed e apertura), il comando **rifiuta** con l'errore `Deadline del round N
+> non futura (…): apertura rifiutata (nessun pick sarebbe accettabile)` — e NON
+> scrive nulla. È la protezione contro la trappola reale osservata in UAT:
+> un round aperto 24 secondi dopo la sua deadline produceva ZERO pick
+> registrati e ZERO profili creati (ogni pick veniva rifiutato dal gate RF-31
+> e l'auto-join faceva ROLLBACK), con i giocatori invitati a fare
+> l'impossibile. Se incontri l'errore: **non forzare** — rifai il seed con
+> margini ampi (`--first-kickoff-offset-min 60` e i valori di §1.3) e apri il
+> round SUBITO dopo il seed, prima della deadline.
+
 **Verifica e controllo per ogni giornata (sola lettura):**
 
 ```bash
@@ -457,6 +470,26 @@ crontab del sistema (ogni minuto):
   aprire/chiudere — le azioni `register_close_auto`/`register_close_safety`
   sono rimosse: l'iscrizione piattaforma è sempre aperta e la partecipazione
   è gated dalla deadline del TT1 (auto-join).
+
+> **Nota ADR-011 — torneo chiuso automaticamente (attività di chiusura del
+> commissioner).** Quando il sistema identifica il vincitore (dopo `round:close`
+> o `round:score`, in automatico anche in cron), il torneo si chiude da solo:
+> notifica ai vincitori, **export automatico** in `TOURNAMENT_EXPORT_DIR`
+> (archivio JSON del torneo) e **scheduler fermo** (`scheduler:status` mostra
+> "FINITO (chiuso automaticamente)", nessuna azione ulteriore: il sistema NON
+> apre più round né invia email di gioco). Resta quindi una sola attività
+> **operativa manuale** del commissioner a torneo chiuso: **rimuovere la riga
+> crontab di `scheduler:tick`** (la prima delle due righe), così il cron non
+> esegue più tick inutili; `channel:email:process` può restare attivo
+> (iscrizioni/disiscrizioni e chiarimenti continuano a funzionare). Lo
+> storico del torneo chiuso è consultabile nell'export automatico e con
+> `winner:check` (sola lettura). Per avviare un **nuovo torneo** dallo
+> stesso sistema: `tournament:start` è riammesso quando il torneo precedente
+> è chiuso (`winner_notified=1`): azzera il solo DB di gioco
+> (pick/profile/player/round_state) in una transazione atomica, lascia
+> INTATTO il DB piattaforma (account e nomi, ADR-009) e riparte con la
+> finestra richiesta; l'export della chiusura è l'archivio del torneo
+> precedente (verificarne la presenza PRIMA del riavvio).
 
 **Vincolo fondamentale (cron):** in modalità cron su calendario sintetico,
 `TEST_REFRESH_ALLOWED` deve restare `false` (il default). Così il refresh

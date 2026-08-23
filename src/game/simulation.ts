@@ -170,7 +170,8 @@ function registerSimAccounts(ctx: GameContext, count: number, now: Date): string
   const emails: string[] = [];
   for (let i = 1; i <= count; i++) {
     const email = simEmail(i);
-    platform.register(email, now);
+    // Nome sintetico deterministico (ADR-011): "Sim <N>" → "Sim-01", ecc.
+    platform.register(email, `Sim-${String(i).padStart(2, '0')}`, now);
     emails.push(email);
   }
   return emails;
@@ -324,6 +325,14 @@ export async function simulateSeason(
   assertSimulable(db, 'simulate:full');
   assertPlatformClean(ctx, 'simulate:full');
 
+  // Dry-run (R1, ADR-011 §5.5): la simulazione riproduce l'intera stagione
+  // SENZA la chiusura automatica del torneo (nessun winner_notified/export/
+  // inibizione scheduler): il vincitore è riportato a fine run da
+  // `checkWinner` (sola lettura). Con l'auto-close attivo un caso-1 precoce
+  // fermerebbe la stagione simulata (e `round:open` rifiuterebbe i round
+  // successivi), vanificando CS3 ("contabilizzazione su tutta la stagione").
+  ctx.autoClose = false;
+
   // Seam di simulazione: salta RF-21 (deadline del TT 1 non futura). Mai
   // usata dai flussi reali (tournament:start CLI la lascia attiva).
   const started = await startTournament(ctx, { startRound, allowPastDeadline: true });
@@ -371,6 +380,10 @@ export async function simulateRound(
 
   assertSimulable(db, 'simulate:round');
   assertPlatformClean(ctx, 'simulate:round');
+
+  // Dry-run (R1, ADR-011 §5.5): nessuna chiusura automatica (vedi
+  // simulateSeason) — il vincitore è riportato da `checkWinner` a fine run.
+  ctx.autoClose = false;
 
   // Allinea start_round al round simulato (RF-P5: auto-join = TT1); crea la
   // riga tournament_state se assente (pattern storico openRegistration, R3/D).

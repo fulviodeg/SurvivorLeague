@@ -22,8 +22,10 @@
  * determinazione del vincitore.
  *
  * Interazioni: invocato dal comando CLI `winner:check`
- * (src/cli/commands/winner.ts) e — in Fasi successive — dal Round Manager dopo
- * la contabilizzazione. Sola lettura: non scrive nulla.
+ * (src/cli/commands/winner.ts) e dal Round Manager dopo la contabilizzazione
+ * (`settleWinnerIfNeeded` in src/game/round-manager.ts, ADR-011: alla
+ * chiusura di ogni round il sistema verifica automaticamente se c'è un
+ * vincitore, lo notifica e chiude il torneo). Sola lettura: non scrive nulla.
  */
 import type Database from 'better-sqlite3';
 

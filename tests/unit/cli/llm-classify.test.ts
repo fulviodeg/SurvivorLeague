@@ -71,7 +71,7 @@ describe('llm:classify — wiring input→classify→output (fetch mockato, A9/B
     );
     const body = classifyInputBody('{"body": "vorrei iscrivermi al torneo!"}');
     const result = await classifier.classify(body, { teams: TEAMS, aliases: ALIASES });
-    expect(result).toEqual({ intent: 'subscribe', pick: null });
+    expect(result).toEqual({ intent: 'subscribe', pick: null, name: null });
   });
 
   it('input JSON di pick → output {intent: "pick", pick} coerente con l\'input', async () => {
@@ -82,7 +82,7 @@ describe('llm:classify — wiring input→classify→output (fetch mockato, A9/B
     );
     const body = classifyInputBody('{"body": "per questo turno scelgo la Juve vincente"}');
     const result = await classifier.classify(body, { teams: TEAMS, aliases: ALIASES });
-    expect(result).toEqual({ intent: 'pick', pick: { team: 'Juventus FC', outcome: 'win' } });
+    expect(result).toEqual({ intent: 'pick', pick: { team: 'Juventus FC', outcome: 'win' }, name: null });
   });
 
   it('contenuto ambiguo (output LLM non interpretabile) → {intent: "other", pick: null} senza crash', async () => {
@@ -90,7 +90,8 @@ describe('llm:classify — wiring input→classify→output (fetch mockato, A9/B
     const body = classifyInputBody('{"body": "che bella giornata!"}');
     expect(await classifier.classify(body, { teams: TEAMS, aliases: ALIASES })).toEqual({
       intent: 'other',
-      pick: null
+      pick: null,
+      name: null
     });
   });
 

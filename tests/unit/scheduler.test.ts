@@ -208,11 +208,12 @@ describe('schedulerTick (LLD §1.4, R6/R7)', () => {
     setScore(db, 1, JU, MA, 0, 0);
     const res = await schedulerTick(ctx);
 
-    // Round 1 scored con frozen → rivalutazione; TC1 scored → si apre il TC2.
-    expect(res.events).toEqual([
-      { type: 'round_score_frozen', round: 1 },
-      { type: 'round_open', round: 2 }
-    ]);
+    // Round 1 scored con frozen → rivalutazione. Il recupero lascia un unico
+    // superstite → la chiusura automatica (caso 1, ADR-011) chiude il torneo
+    // DURANTE round_score_frozen: l'azione round_open del TC2, già calcolata a
+    // inizio tick, viene rifiutata da openRound (MEDIUM-1) e il tick la salta
+    // (check-then-act, RNF9). Resta quindi un solo evento.
+    expect(res.events).toEqual([{ type: 'round_score_frozen', round: 1 }]);
     const pick = db.prepare('SELECT status FROM pick WHERE profile_id = ?').get(pid) as {
       status: string;
     };

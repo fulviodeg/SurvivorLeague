@@ -49,9 +49,10 @@ export interface EmailComponents {
  * IMAP: `secure: true` su porta 993, auth user/pass (App Password Gmail).
  */
 export function buildEmailComponents(config: AppConfig): EmailComponents {
-  // Il logger porta il binding testMode quando il test mode è attivo (D3):
-  // ogni riga pino emessa dal canale/LLM reca il campo strutturato testMode.
-  const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode);
+  // Il logger porta il binding testMode quando il test mode è attivo (D3) e
+  // il timestamp nel fuso di sistema (ADR-011): ogni riga pino emessa dal
+  // canale/LLM reca il campo strutturato testMode e l'orario locale.
+  const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode, config.TIMEZONE);
   const client = new OpenAIClient({
     baseUrl: config.LLM_API_BASE_URL,
     apiKey: config.LLM_API_KEY,
@@ -89,7 +90,9 @@ export function buildEmailComponents(config: AppConfig): EmailComponents {
   });
   return {
     channel,
-    generator: new OpenAIGenerator(client),
+    // Fuso di sistema iniettato nel generatore (ADR-011): il renderer del
+    // canale formatta le date delle email nel TIMEZONE configurato.
+    generator: new OpenAIGenerator(client, config.TIMEZONE),
     parser: new OpenAIParser(client),
     classifier: new OpenAIIntentClassifier(client)
   };

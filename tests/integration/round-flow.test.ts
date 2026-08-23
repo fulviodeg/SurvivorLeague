@@ -72,7 +72,7 @@ class FakeGenerator implements LLMGenerator {
   contexts: EmailContext[] = [];
   generate(ctx: EmailContext): Promise<string> {
     this.contexts.push(ctx);
-    return Promise.resolve(`[${ctx.type}] TT${ctx.tt ?? '?'}TC${ctx.tc ?? '?'}`);
+    return Promise.resolve(`[${ctx.type}] TT${ctx.round ?? '?'}·TC${ctx.championshipRound ?? '?'}`);
   }
 }
 
@@ -136,11 +136,11 @@ describe('flusso open → pick → close → score (RF-16)', () => {
     const b = insertProfile(db, 'b@test.it', 'Beppe');
     // Account piattaforma `active` per i due profili (ADR-009/RF-P6): senza
     // registry o senza account le notifiche non partono (filtro fail-closed).
-    platform.register('a@test.it', T_OPEN);
-    platform.register('b@test.it', T_OPEN);
+    platform.register('a@test.it', null, T_OPEN);
+    platform.register('b@test.it', null, T_OPEN);
     // c@test.it: account `active` SENZA profilo — all'apertura del TT 1 riceve
     // comunque pick_instructions (amendment RF-P6, 2026-08-21).
-    platform.register('c@test.it', T_OPEN);
+    platform.register('c@test.it', null, T_OPEN);
 
     // OPEN: deadline fissa 15:30; i 2 profili attivi + il registrato senza
     // profilo vengono notificati.
@@ -156,14 +156,18 @@ describe('flusso open → pick → close → score (RF-16)', () => {
     expect(opened.deadline).toBe('2026-09-12T15:30:00.000Z');
     const invites = generator.contexts.filter((c) => c.type === 'pick_instructions');
     expect(invites).toHaveLength(3);
-    // Coppia TT/TC iniettata deterministicamente (RF-25) + sole squadre disponibili.
-    expect(invites[0]).toMatchObject({ tt: 1, tc: 1 });
+    // Coppia UMANA iniettata deterministicamente (ADR-011) + sole squadre disponibili.
+    expect(invites[0]).toMatchObject({ round: 1, championshipRound: 1 });
     // (getTeams() è ordinata alfabeticamente: AC Milan, AS Roma, Inter, Juventus)
     expect(invites[0]?.availableTeams).toEqual([AC, MA, IM, JU]);
-    // Il contesto del senza-profilo (ultimo invio): stesse squadre in giornata,
-    // nessun playerName (account piattaforma senza nome).
-    expect(invites[2]).toMatchObject({ tt: 1, tc: 1, availableTeams: [AC, MA, IM, JU] });
-    expect('playerName' in (invites[2] ?? {})).toBe(false);
+    // Il contesto del senza-profilo (ultimo invio): stesse squadre in giornata;
+    // ADR-011: nome dall'account piattaforma → email se assente.
+    expect(invites[2]).toMatchObject({
+      round: 1,
+      championshipRound: 1,
+      availableTeams: [AC, MA, IM, JU],
+      playerName: 'c@test.it'
+    });
     expect(channel.sent).toHaveLength(3);
 
     // PICK: A registra IM win entro la deadline.
@@ -178,7 +182,7 @@ describe('flusso open → pick → close → score (RF-16)', () => {
     expect(closed).toMatchObject({ status: 'closed', eliminatedMissing: [b], forced: false });
     expect(checkElimination(db, b)).toMatchObject({ eliminated: true, reason: 'missing_pick' });
     expect(
-      generator.contexts.some((c) => c.type === 'pick_missing_elimination' && c.tt === 1 && c.tc === 1)
+      generator.contexts.some((c) => c.type === 'pick_missing_elimination' && c.round === 1 && c.championshipRound === 1)
     ).toBe(true);
 
     // SCORE: IM-AC finisce 2-1 → pick di A corretto; nessun pending → scored.
@@ -187,9 +191,12 @@ describe('flusso open → pick → close → score (RF-16)', () => {
     expect(scored.status).toBe('scored');
     expect(scored.evaluated).toEqual([{ profileId: a, team: IM, outcome: 'win', result: 'correct' }]);
     expect(scored.newlyEliminated).toEqual([]);
+    // MEDIUM-2 (emendamento post-revisione ADR-011): il closeRound ha già
+    // chiuso il torneo (caso 1: A è l'unico superstite) → round:score aggiorna
+    // lo stato DB ma TACE sulle email di esito (nessun round_result_correct).
     expect(
       generator.contexts.some((c) => c.type === 'round_result_correct' && c.team === IM)
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('round:score è idempotente (RF-17): una seconda esecuzione non valuta nulla', async () => {
@@ -215,10 +222,10 @@ describe('flusso open → pick → close → score (RF-16)', () => {
     expect(second.status).toBe('scored');
   });
 
-  it('pick sbagliato → wrong + eliminazione wrong_pick (con notifica)', async () => {
+  it('pick sbagliato → wrong + eliminazione wrong_pick', async () => {
     const { db, generator, platform, ctxAt } = makeHarness();
     const a = insertProfile(db, 'a@test.it');
-    platform.register('a@test.it', T_OPEN); // account active → notifica attesa
+    platform.register('a@test.it', null, T_OPEN); // account active → notifica attesa
     await openRound(ctxAt(T_OPEN), 1);
     await registerPick(ctxAt(T_PICK), {
       profileId: a,
@@ -234,7 +241,12 @@ describe('flusso open → pick → close → score (RF-16)', () => {
     expect(scored.evaluated[0]?.result).toBe('wrong');
     expect(scored.newlyEliminated).toEqual([a]);
     expect(checkElimination(db, a)).toMatchObject({ eliminated: true, reason: 'wrong_pick' });
-    expect(generator.contexts.some((c) => c.type === 'round_result_wrong')).toBe(true);
+    // MEDIUM-2 (emendamento post-revisione ADR-011): il closeRound ha già
+    // chiuso il torneo (caso 1: unico superstite) → round:score aggiorna lo
+    // stato DB (eliminazione) ma TACE sull'email di esito (nessun
+    // round_result_wrong). La notifica round_result_wrong è coperta dal test
+    // "round:score con eliminati" in round-notifications.test.ts (2 profili).
+    expect(generator.contexts.some((c) => c.type === 'round_result_wrong')).toBe(false);
   });
 });
 
@@ -263,7 +275,12 @@ describe('rinvii: CL7 (entro finestra), CL1/CL8 (oltre tcClose), recupero (froze
   it('CL1/CL8: rinviata oltre tcClose → frozen (con notifica pick_postponed)', async () => {
     const { db, generator, platform, ctxAt } = makeHarness();
     const a = insertProfile(db, 'a@test.it');
-    platform.register('a@test.it', T_OPEN); // account active → notifica attesa
+    // Secondo profilo che sopravvive: evita che il closeRound chiuda il torneo
+    // (caso 1, unico superstite) prima di round:score, così la notifica
+    // pick_postponed resta osservabile (MEDIUM-2 tace solo a torneo già chiuso).
+    const b = insertProfile(db, 'b@test.it');
+    platform.register('a@test.it', null, T_OPEN); // account active → notifica attesa
+    platform.register('b@test.it', null, T_OPEN);
     await openRound(ctxAt(T_OPEN), 1);
     await registerPick(ctxAt(T_PICK), {
       profileId: a,
@@ -272,8 +289,16 @@ describe('rinvii: CL7 (entro finestra), CL1/CL8 (oltre tcClose), recupero (froze
       outcome: 'win',
       receivedAt: T_PICK
     });
+    await registerPick(ctxAt(T_PICK), {
+      profileId: b,
+      round: 1,
+      team: IM,
+      outcome: 'win',
+      receivedAt: T_PICK
+    });
     await closeRound(ctxAt(T_CLOSE), 1);
     setPostponedFlag(db, 1, JU, MA);
+    setScore(db, 1, IM, AC, 2, 1); // IM vince: il pick di b è corretto
 
     // 21:00 > tcClose (20:45): frozen; i frozen sono terminali per il TT → scored.
     const scored = await scoreRound(ctxAt(T_AFTER_TC_CLOSE), 1);
@@ -410,6 +435,41 @@ describe('chiusura forzata (RF-29) e invarianti', () => {
     const { ctxAt } = makeHarness();
     await openRound(ctxAt(T_OPEN), 1);
     await expect(openRound(ctxAt(T_OPEN), 1)).rejects.toThrow(/esiste già/);
+  });
+});
+
+describe('guardia apertura con deadline già scaduta (fix UAT 2026-08-22)', () => {
+  it('round:open con now DOPO la deadline → rifiuto pulito, NESSUN round_state scritto', async () => {
+    const { db, ctxAt } = makeHarness();
+    // Fixture: kickoff R1 = 16:00Z, deadline = 15:30Z (anticipo 30'). Aprire il
+    // round alle 15:45 (dopo la deadline, prima del kickoff) renderebbe OGNI
+    // pick inaccettabile (RF-31: receivedAt > deadline → after_acceptance): il
+    // fix UAT rifiuta l'apertura con un errore chiaro invece di creare una
+    // trappola (come l'UAT reale del 2026-08-22, round aperto 24s dopo la
+    // deadline con 0 pick registrati e 0 profili creati).
+    await expect(openRound(ctxAt(new Date('2026-09-12T15:45:00.000Z')), 1)).rejects.toThrow(
+      /non futura/
+    );
+    const row = db.prepare('SELECT round FROM round_state WHERE round = 1').get();
+    expect(row).toBeUndefined();
+  });
+
+  it('round:open con now ESATTAMENTE alla deadline → rifiuto (finestra pick nulla)', async () => {
+    const { db, ctxAt } = makeHarness();
+    await expect(openRound(ctxAt(new Date('2026-09-12T15:30:00.000Z')), 1)).rejects.toThrow(
+      /non futura/
+    );
+    expect(db.prepare('SELECT round FROM round_state WHERE round = 1').get()).toBeUndefined();
+  });
+
+  it('round:open con now PRIMA della deadline → apertura normale (regressione su flusso OK)', async () => {
+    const { db, ctxAt } = makeHarness();
+    const opened = await openRound(ctxAt(T_OPEN), 1);
+    expect(opened.deadline).toBe('2026-09-12T15:30:00.000Z');
+    const row = db.prepare('SELECT status FROM round_state WHERE round = 1').get() as {
+      status: string;
+    };
+    expect(row.status).toBe('open');
   });
 });
 

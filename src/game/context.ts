@@ -76,4 +76,22 @@ export interface GameContext {
    * comandi senza email): in quel caso i moduli non emettono log.
    */
   logger?: Logger;
+  /**
+   * ADR-011 (§1.3): archivia l'export JSON del torneo e restituisce il path
+   * assoluto del file scritto; iniettato dal wiring (mai `node:fs` nei moduli
+   * di gioco). Assente nei contesti dry-run (simulazione, test senza
+   * archiviazione): in quel caso `settleWinnerIfNeeded` logga un warn e NON
+   * scrive export né `tournament_state.export_path` (riavvio rifiutato).
+   */
+  archiveTournament?: (dump: unknown, now: Date) => string;
+  /**
+   * ADR-011 (§5.5): se `false`, la CHIUSURA AUTOMATICA del torneo è
+   * disattivata — `closeRound`/`scoreRound` NON invocano
+   * `settleWinnerIfNeeded` (nessun winner_notified/export/inibizione). Usato
+   * SOLO dalla simulazione (`simulate:*`, dry-run R1): riproduce l'intera
+   * stagione senza i side-effect di produzione, e il vincitore è riportato a
+   * fine run da `checkWinner` (sola lettura). Default (assente) = `true`: i
+   * flussi reali chiudono il torneo automaticamente.
+   */
+  autoClose?: boolean;
 }

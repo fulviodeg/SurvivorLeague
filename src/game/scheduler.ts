@@ -37,6 +37,7 @@ import type Database from 'better-sqlite3';
 import type { GameContext } from './context.js';
 import { closeRound, openRound, scoreRound } from './round-manager.js';
 import { computeTcClose } from './round-time.js';
+import { getTournamentState, isTournamentClosed } from './tournament.js';
 import { getStartRound, turnFor } from './turn.js';
 
 /** Un'azione pendente calcolata dallo stato (decisione pura, nessuna scrittura). */
@@ -80,6 +81,13 @@ export interface SchedulerStatusResult {
   totalRounds: number;
   /** Iscritti ATTIVI della piattaforma (dal PlatformRegistry, ADR-009). */
   platformSubscribers: number;
+  /**
+   * ADR-011: true se il torneo è CHIUSO (`winner_notified = 1`) — lo
+   * scheduler non produce più azioni; `finishedAt` è l'istante di chiusura
+   * (ISO-8601, clock iniettato), null finché il torneo non è chiuso.
+   */
+  tournamentFinished: boolean;
+  finishedAt: string | null;
   rounds: Array<{
     round: number;
     tt: number;
@@ -93,24 +101,11 @@ export interface SchedulerStatusResult {
   nextActions: PendingAction[];
 }
 
-/** Riga `tournament_state` letta dal DB. */
-interface TournamentStateRow {
-  season_started: number;
-  start_round: number | null;
-}
-
 /** Riga `round_state` letta dal DB (sola lettura). */
 interface RoundStateRow {
   round: number;
   status: string;
   deadline: string | null;
-}
-
-/** Legge lo stato registrato del torneo. */
-function getTournamentState(db: Database.Database): TournamentStateRow | undefined {
-  return db
-    .prepare('SELECT season_started, start_round FROM tournament_state WHERE id = 1')
-    .get() as TournamentStateRow | undefined;
 }
 
 /** Legge le righe round_state della finestra `[start..N]`, ordinate per round. */
@@ -145,6 +140,15 @@ async function computeRoundTcClose(ctx: GameContext, round: number): Promise<Dat
 export async function computeActions(ctx: GameContext): Promise<PendingAction[]> {
   const { db, dataProvider, config, now } = ctx;
   const actions: PendingAction[] = [];
+
+  // ADR-011 (§5.4): torneo CHIUSO → NESSUNA azione, nessun invio: lo
+  // scheduler si ferma da solo alla chiusura automatica. Predicato UNICO
+  // `isTournamentClosed` condiviso con tournament.ts (fix review 2026-08-23:
+  // prima la condizione `winner_notified = 1` era ripetuta inline in tre
+  // punti). La riga crontab fisica resta responsabilità operativa del
+  // commissioner (documentata nella guida test-mode come attività di
+  // chiusura).
+  if (isTournamentClosed(db)) return [];
 
   const state = getTournamentState(db);
   const totalRounds = await dataProvider.getTotalRounds();
@@ -265,6 +269,8 @@ export async function schedulerStatus(ctx: GameContext): Promise<SchedulerStatus
     startRound,
     totalRounds,
     platformSubscribers: ctx.platform?.activeEmails().length ?? 0,
+    tournamentFinished: isTournamentClosed(db),
+    finishedAt: state?.finished_at ?? null,
     rounds: rounds.map((r) => {
       const { tt, tc } = turnFor(db, r.round);
       return { round: r.round, tt, tc, status: r.status, deadline: r.deadline };

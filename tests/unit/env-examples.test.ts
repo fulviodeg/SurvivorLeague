@@ -104,4 +104,20 @@ describe('esempi .env* — nessun segreto versionato (piano UAT Task 5)', () => 
       }
     });
   });
+
+  describe('TIMEZONE e TOURNAMENT_EXPORT_DIR (ADR-011)', () => {
+    it('ogni esempio definisce TIMEZONE con un fuso IANA valido', () => {
+      for (const file of EXAMPLE_FILES) {
+        const value = assignedValue(readExample(file), 'TIMEZONE');
+        expect(value, file).toBeDefined();
+        expect(value, file).toMatch(/^[A-Za-z_]+\/[A-Za-z_]+$/);
+      }
+    });
+
+    it('ogni esempio definisce TOURNAMENT_EXPORT_DIR', () => {
+      for (const file of EXAMPLE_FILES) {
+        expect(assignedValue(readExample(file), 'TOURNAMENT_EXPORT_DIR'), file).toBeDefined();
+      }
+    });
+  });
 });

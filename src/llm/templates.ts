@@ -23,8 +23,8 @@
  *     contesto già formattati in `it-IT` nel fuso di sistema (TIMEZONE)
  *     via `formatItDate` (determinismo RNF1).
  *
- * Il file storico `templates.old.ts` (stile V1 con segnaposto {{TT_TC}}) è
- * un file morto di solo riferimento, non importato da alcun modulo.
+ * Il vecchio prompt-set V1 (stile con segnaposto {{TT_TC}}) è stato RIMOSSO
+ * (fix review 2026-08-23): nessun file storico morto nel repo.
  */
 import type { EmailContext, EmailType } from './generator.js';
 

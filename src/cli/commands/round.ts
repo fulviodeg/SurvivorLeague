@@ -33,6 +33,7 @@ import {
   scoreRound
 } from '../../game/round-manager.js';
 import { attachEmailToContext, attachPlatformToContext } from '../email-wiring.js';
+import { attachArchiveToContext } from '../archive-wiring.js';
 import { makeNow } from '../../clock.js';
 import { createLogger } from '../../logger.js';
 import { jsonWithTestMode, printTestModeBanner } from '../output.js';
@@ -56,11 +57,16 @@ function makeGameContext(): {
   const db = createConnection(config.DB_PATH);
   migrate(db);
   const dataProvider = new DbSeasonDataProvider(db);
-  const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode);
+  const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode, config.TIMEZONE);
   const base: GameContext = { db, dataProvider, config, now: makeNow(config), logger };
   // Registry piattaforma iniettato (ADR-009, RF-P6): le notifiche di
-  // round:open/close/score filtrano su account `active`.
-  const { ctx, platformDb } = attachPlatformToContext(attachEmailToContext(base, config), config);
+  // round:open/close/score filtrano su account `active`. Seam di
+  // archiviazione iniettato (ADR-011 §1.3): la chiusura automatica scrive
+  // l'export in TOURNAMENT_EXPORT_DIR (mai node:fs nei moduli di gioco).
+  const { ctx, platformDb } = attachPlatformToContext(
+    attachArchiveToContext(attachEmailToContext(base, config), config),
+    config
+  );
   return { ctx, db, platformDb };
 }
 
