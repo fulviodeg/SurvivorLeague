@@ -105,7 +105,7 @@ Il Game Engine non conosce i dettagli di trasporto. Dialoga con un'interfaccia a
 | **ChannelAdapter** (interfaccia) | Contratto astratto per qualsiasi canale di comunicazione: `fetchMessages()`, `sendMessage()` |
 | **EmailAdapter** (implementazione) | Unica implementazione nella PoC. Al suo interno contiene: |
 | &nbsp;&nbsp;├─ **IMAP Client** | Si connette alla casella Gmail, recupera le nuove email (`imapflow`). Popola `IncomingMessage.receivedAt` con l'`internaldate` del messaggio (arrivo in casella), non con l'header `Date` (PRD §5.3) |
-| &nbsp;&nbsp;├─ **Message Router** | Normalizza l'identità del mittente in `ExternalIdentity { channel, identifier }` (ADR-008): per l'email `{channel: 'email', identifier: <indirizzo minuscolo, senza nome visualizzato>}` (D6/K). **La decisione di intento è dell'LLM (ADR-009):** il router NON usa più keyword (`REGISTRATION_KEYWORDS` rimossa) e produce `{ kind: 'classified', identity, body }`; corpo/mittente vuoto → `kind: 'unknown'` (nessuna chiamata LLM). **Il router NON decide nulla di gioco** (auto-join/rifiuti = Game Engine, PRD §4.1): il wiring (6.2) decide. **"Round corrente" del wiring (D8):** il primo `round_state` con `status='open'` nella finestra `[start_round..N]` (stessa semantica di `tournament:status`); nessun round aperto → rifiuto `round_not_open` (CL3) per il ramo pick |
+| &nbsp;&nbsp;├─ **Message Router** | Normalizza l'identità del mittente in `ExternalIdentity { channel, identifier }` (ADR-008): per l'email `{channel: 'email', identifier: <indirizzo minuscolo, senza nome visualizzato>}` (D6/K). **La decisione di intento è del classificatore (ADR-009, LLM o deterministico — ADR-014):** il router NON usa più keyword (`REGISTRATION_KEYWORDS` rimossa) e produce `{ kind: 'classified', identity, body, subject? }`; corpo e subject vuoti → `kind: 'unknown'` (nessuna chiamata di classificazione). **Il router NON decide nulla di gioco** (auto-join/rifiuti = Game Engine, PRD §4.1): il wiring (6.2) decide. **"Round corrente" del wiring (D8):** il primo `round_state` con `status='open'` nella finestra `[start_round..N]` (stessa semantica di `tournament:status`); nessun round aperto → rifiuto `round_not_open` (CL3) per il ramo pick |
 | &nbsp;&nbsp;└─ **SMTP Client** | Invia email di risposta e notifica (`nodemailer`): `sendMail({from, to, subject, text})`, soggetto dal chiamante (D1) |
 
 **Adapters futuri** (fuori scope PoC, da FUTURE_EXPLORATIONS.md punto 7):
@@ -319,7 +319,8 @@ Tutti i parametri modificabili vivono in variabili d'ambiente, validate con `zod
 | LLM model | `LLM_MODEL` | `gpt-4o-mini` | Lista separata da virgola, in ordine di priorità (failover client-side: il primo è il primario, i successivi sono fallback). Il failover scatta SOLO su errore di trasporto/HTTP (`LLMError`), MAI su `null` (D3: per il Parser `null` è una risposta valida = pick ambiguo, e non deve cambiare modello) |
 | LLM timeout (ms) | `LLM_TIMEOUT_MS` | `15000` | Timeout di una singola richiesta LLM. Abbassarlo rende il failover più rapido ma scarta risposte lente (tier free); worst case latenza per messaggio: Σ modelli × tentativi × timeout ≈ 135 s con 3×3×15 s (i fallimenti reali 429/5xx sono però immediati) |
 | LLM retries | `LLM_RETRIES` | `3` | Tentativi TOTALI per modello (1 richiesta + N-1 ritentativi) su errori ritentabili (429, 5xx, timeout, rete, body malformato), con ~1 s di pausa tra i tentativi; `1` = nessun ritentativo. I 4xx deterministici (400/401/403/404) non vengono ritentati: failover diretto al modello successivo |
-| Generazione IA email | `AI_EMAIL_GENERATOR` | `false` | Interruttore email v3 (ADR-013): `true` = narrativa LLM con fallback deterministico su `LLMError`/narrativa degenerata; assente/`false` = generatore deterministico (`DeterministicGenerator`, MAI chiamate LLM per i testi email). NON tocca Parser/Classificatore (lato input), che restano sempre LLM. Lettura a ogni invocazione CLI (nessun daemon da riavviare) |
+| Generazione IA email | `AI_EMAIL_GENERATOR` | `false` | Interruttore email v3 (ADR-013): `true` = narrativa LLM con fallback deterministico su `LLMError`/narrativa degenerata; assente/`false` = generatore deterministico (`DeterministicGenerator`, MAI chiamate LLM per i testi email). Lettura a ogni invocazione CLI (nessun daemon da riavviare) |
+| Classificazione IA input | `AI_EMAIL_PARSER` | `false` | Interruttore email v3 Parte B (ADR-014): `true` = classificazione LLM con fallback per-messaggio sul deterministico; assente/`false` = `DeterministicIntentClassifier` (formule univoche `ISCRIZIONE [NOME]`/`DISISCRIZIONE`/`<TEAM> <ESITO>` nel subject o corpo, MAI chiamate LLM per la classificazione). Con entrambi i flag AI false `LLM_API_KEY` non è richiesta (run senza IA) |
 | Database path | `DB_PATH` | `./data/survivor.db` | |
 | Database piattaforma path | `PLATFORM_DB_PATH` | `./data/platform.db` | DB **separato** per gli account piattaforma (ADR-009, RF-P7): MAI uguale a `DB_PATH`; `platform:migrate` lo migra; `channel:email:process`/`simulate:*` lo richiedono (errore esplicito se assente). `simulate:*` rifiuta/avvisa se coincide col valore di produzione |
 | Log level | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
@@ -505,7 +506,9 @@ Autenticazione via header HTTP `X-Auth-Token`; il client deve rispettare gli hea
 
 ### 6.2 LLM Parser e Intent Classifier
 
-> **Emendamento ADR-011 (nome del giocatore, RF-P1).** L'output della classificazione diventa `{intent, pick, name?}`: `name` è il nome del giocatore dedotto dalla mail di REGISTRAZIONE (valorizzato SOLO per `subscribe`, null altrimenti). Il prompt del classificatore istruisce a dedurlo (es. "mi chiamo Mario e voglio iscrivermi" → `"name": "Mario"`); senza nome nel testo → `null` (il sistema usa l'email al posto del nome). Formula di iscrizione ovunque: "dimmi il tuo nome e scrivi voglio iscrivermi".
+> **Emendamento ADR-011 (nome del giocatore, RF-P1).** L'output della classificazione diventa `{intent, pick, name?}`: `name` è il nome del giocatore dedotto dalla mail di REGISTRAZIONE (valorizzato SOLO per `subscribe`, null altrimenti). Il prompt del classificatore istruisce a dedurlo (es. "mi chiamo Mario e voglio iscrivermi" → `"name": "Mario"`); senza nome nel testo → `null` (il sistema usa l'email al posto del nome).
+>
+> **Emendamento ADR-014 (email v3 Parte B, parser deterministico).** `LLMIntentClassifier` ha due implementazioni selezionate da `AI_EMAIL_PARSER` (default `false`): `OpenAIIntentClassifier` (LLM, invariato) e `DeterministicIntentClassifier` (`src/llm/deterministic-parser.ts`) con FORMULE UNIVOCHE riconosciute nel subject (`opts.subject`) O nel corpo — `ISCRIZIONE [NOME]` (nome a fine riga, trim, max 40 char), `DISISCRIZIONE`, `<TEAM> <ESITO>` (lista canonica + tabella alias, longest-match, normalizzazione maiuscole/accenti; sinonimi esito); altrimenti `other`. Le formule libere ("voglio iscrivermi") NON sono riconosciute; l'istruzione d'iscrizione ovunque è `ISCRIZIONE [NOME]` (sostituisce la vecchia "dici voglio iscrivermi"). Con `AI_EMAIL_PARSER=true` l'LLM è avvolto da `FallbackIntentClassifier` (su `LLMError` → deterministico, batch continua). `IncomingMessage.subject` è plumbato dal router.
 
 ```typescript
 // Definito UNA volta in src/llm/parser.ts e riusato da game/registration.ts
@@ -800,13 +803,17 @@ npm run cli -- winner:check                   # Verifica se il torneo è finito 
 ### 7.8 LLM Adapter
 
 ```bash
-npm run cli -- llm:parse --input <text>       # Estrae {team, outcome} da testo libero. Output: JSON.
-                                              # Lista canonica da getTeams() (DB reale) + contenuto di
-                                              # team-aliases.md iniettati per chiamata; DB vuoto → lista
-                                              # vuota → {team: null} con messaggio chiaro
-npm run cli -- llm:classify --input <json>    # Classifica {intent, pick, name} da JSON {"intent": "...", "pick": {...}}
-                                              # o testo: UNA chiamata LLM (ADR-009, RF-P1/P2); output JSON
-                                              # {intent: subscribe|unsubscribe|pick|other, pick, name} (ADR-011)
+npm run cli -- llm:parse --input <text> [--mode <llm|deterministic>]
+                                               # Estrae {team, outcome} da testo libero. Output: JSON.
+                                               # Lista canonica da getTeams() (DB reale) + contenuto di
+                                               # team-aliases.md iniettati per chiamata; DB vuoto → lista
+                                               # vuota → {team: null} con messaggio chiaro. --mode forza
+                                               # llm o deterministic (default = AI_EMAIL_PARSER, ADR-014)
+npm run cli -- llm:classify --input <json> [--mode <llm|deterministic>]
+                                               # Classifica {intent, pick, name} da JSON {"intent": "...", "pick": {...}}
+                                               # o testo: LLM (ADR-009, RF-P1/P2) o deterministico con formule
+                                               # univoche (ADR-014); output JSON {intent: subscribe|unsubscribe|pick|other, pick, name}
+                                               # --mode forza llm o deterministic (default = AI_EMAIL_PARSER)
 npm run cli -- llm:generate --type <email-type> [--player-name <name>] [--tt <n>] [--tc <n>] [--team <name>] [--outcome <outcome>] [--reason <text>] [--deadline <datetime>] [--available-teams <comma,sep>] [--mode <llm|deterministic>]
                                                # Genera email da contesto strutturato. Output: SOGGETTO
                                                # (subjectFor: "⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - {etichetta}",

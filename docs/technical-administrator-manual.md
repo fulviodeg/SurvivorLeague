@@ -143,9 +143,11 @@ round — the **Turno del Torneo (TT)**.
 
 1. **Platform account.** A player registers to the platform by email at any
    time (before, during, after a tournament): the message intent
-   (registration / unsubscription / pick) is understood automatically. The
-   fundamental instruction players receive is: *"inserisci il tuo nome e dici
-   voglio iscrivermi"* (tell your name and write "voglio iscrivermi"). The
+   (registration / unsubscription / pick) is understood automatically (LLM or
+   deterministic, per `AI_EMAIL_PARSER`). The fundamental instruction players
+   receive is the unique formula: `ISCRIZIONE [NOME]` (e.g. `ISCRIZIONE Mario`)
+   to register, `DISISCRIZIONE` to unsubscribe, `<TEAM> <ESITO>` for a pick —
+   in the subject or the body. The
    account keeps a stable internal `registerID` and a status
    (`active` / `pending_unsubscribe` / `unsubscribed`). Accounts live in a
    **separate database** from the tournament.
@@ -612,8 +614,8 @@ work.
 
 Before the tournament, the platform is open for registrations at any time:
 
-- players register by email ("inserisci il tuo nome e dici voglio
-  iscrivermi") and the system answers `platform_registered` — processed by
+- players register by email with the formula `ISCRIZIONE [NOME]` (e.g.
+  `ISCRIZIONE Mario`) and the system answers `platform_registered` — processed by
   `channel:email:process` (cron) or on demand;
 - the commissioner can create accounts directly with `platform:register`;
 - `platform:list` shows the current accounts and their status.

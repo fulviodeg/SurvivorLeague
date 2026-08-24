@@ -121,6 +121,8 @@ i seguenti componenti cambiano comportamento rispetto alla produzione:
 | **Timestamp di ricezione email** | `receivedAt` reale (internaldate IMAP) | Spostato indietro dello **stesso** `TEST_OFFSET_DAYS` **solo se** > 0 (replay); con 0 resta reale |
 | **Scheduler — refresh dati** | Aggiorna i risultati dall'API a ogni tick | Con `TEST_REFRESH_ALLOWED=false` (default) **salta** il refresh e lo segnala a log; con `=true` esegue ma emette un WARN di consenso a ogni operazione |
 
+**Nota email v3 Parte B (parser deterministico, ADR-014).** Con `AI_EMAIL_PARSER=false` (default) l'intento NON è classificato dall'LLM ma da un parser deterministico che riconosce SOLO formule univoche nel subject o nel corpo: `ISCRIZIONE [NOME]` (iscrizione, nome dopo la keyword), `DISISCRIZIONE` (disiscrizione) e `<TEAM> <ESITO>` (pick: squadra — nome canonico o alias — + esito `win`/`draw`/`lose` o sinonimi italiani). Qualunque altra cosa → chiarimento (`other`). Le formule libere ("voglio iscrivermi", "mi iscrivo") NON sono riconosciute. Con `AI_EMAIL_PARSER=true` si usa l'LLM con fallback per-messaggio sul deterministico. Con `AI_EMAIL_GENERATOR=false` e `AI_EMAIL_PARSER=false` la `LLM_API_KEY` non è richiesta (run senza IA).
+
 Le **squadre del calendario sintetico** (dalla risorsa alias sintetica, Serie B
 2025/26) sono otto:
 
@@ -384,12 +386,12 @@ disponibile** via email (intento classificato dall'LLM) o via CLI, e la
 **partecipazione al torneo** nasce **da sola al primo pick valido nel TT 1**
 (auto-join, RF-P5):
 
-- **via email:** il giocatore scrive "voglio iscrivermi" → il sistema crea
+- **via email:** il giocatore scrive `ISCRIZIONE [NOME]` (es. `ISCRIZIONE Mario`) → il sistema crea
   l'account (con un `registerID` stabile, riusato a ogni re-iscrizione) e
   risponde `platform_registered`; il suo **primo pick valido nel
   TT1** lo rende partecipante (risposta `pick_confirmed`, nessuna conferma di
   iscrizione separata);
-- **già iscritto:** un account `active` che riscrive "voglio iscrivermi"
+- **già iscritto:** un account `active` che riscrive `ISCRIZIONE [NOME]`
   riceve la risposta `platform_already_registered` (oggetto "Già iscritto
   alla piattaforma"), nessun account duplicato;
 - **via CLI (unico comando di creazione account, NON crea profili):**
@@ -636,7 +638,7 @@ ENV_FILE=.env.uat npm run cli -- data:calendar
 **Iscrizioni piattaforma (ADR-009: nessuna finestra da aprire/chiudere):**
 
 ```bash
-# (i giocatori si iscrivono via email "voglio iscrivermi"; processa le email:)
+# (i giocatori si iscrivono via email "ISCRIZIONE [NOME]"; processa le email:)
 ENV_FILE=.env.uat npm run cli -- channel:email:process
 # oppure iscrizione diretta via CLI (l'unico comando di creazione account):
 ENV_FILE=.env.uat npm run cli -- platform:register --email alice@example.com --reason "test smoke 2h"

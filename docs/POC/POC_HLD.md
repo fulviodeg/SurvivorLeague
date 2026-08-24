@@ -71,7 +71,7 @@ Principio architetturale vincolante (AGENTS.md): le responsabilità sono affidat
 |---|---|---|
 | **Game Engine** (round, pick, eliminazioni, vincitore) | Definisce l'esito e lo stato di gioco: validazione, contabilizzazione, eliminazioni, determinazione del vincitore | Non interagisce direttamente coi giocatori, non interpreta linguaggio naturale, non fornisce dati stagione |
 | **Platform Registry** (archivio account piattaforma) | Sorgente degli iscritti: account persistente (`registerID` stabile, email, status `active`/`pending_unsubscribe`/`unsubscribed`), iscrizione/disiscrizione a due passi (ADR-009, RF-P1/P2); `activeEmails()` per le notifiche | Non conosce il torneo: nessuna scrittura su profili/pick; è **solo letto** dai flussi di torneo (gate) |
-| **Intent Classifier** (confine LLM) | Classifica l'intento di un messaggio (`subscribe`/`unsubscribe`/`pick`/`other`) ed estrae il pick in **una sola chiamata LLM** (ADR-004/009) | Non decide nulla di gioco: l'esito è poi filtrato dal check deterministico esatto sul pick |
+| **Intent Classifier** (confine LLM/deterministico) | Classifica l'intento di un messaggio (`subscribe`/`unsubscribe`/`pick`/`other`) ed estrae il pick: implementazione **LLM** (una sola chiamata, ADR-004/009) o **deterministica** (formule univoche `ISCRIZIONE [NOME]`/`DISISCRIZIONE`/`<TEAM> <ESITO>`, ADR-014), selezionate da `AI_EMAIL_PARSER` | Non decide nulla di gioco: l'esito è poi filtrato dal check deterministico esatto sul pick |
 | **Contabilizzazione** (Round Manager) | Riceve i risultati e aggiorna lo stato dei pick in modo incrementale; decide gli stati `correct` / `wrong` / `frozen` e la chiusura del TT | Non decide il calendario, non trasporta messaggi, non genera testi |
 | **Canale di comunicazione** (EmailAdapter) | Consegna e riceve i messaggi (iscrizione, disiscrizione, pick, notifiche) | Non prende alcuna decisione di gioco: trasporta solo messaggi |
 | **Dati stagione** (SeasonDataProvider) | Fornisce calendario e risultati come fonte unica | Non decide nulla: espone dati già pronti |
@@ -197,7 +197,7 @@ Il dettaglio delle query e delle regole di derivazione (es. squadre bruciate) è
 
 ### 5.3 LLM Adapter
 
-Confinato al solo I/O (ADR-004, ADR-009): l'**Intent Classifier** classifica l'intento del messaggio (`subscribe`/`unsubscribe`/`pick`/`other`) ed estrae `{team, outcome}` in **una sola chiamata LLM** (PRD §4.1/§6, RF-P1/RF-07); il **Generator** produce email in italiano da contesto strutturato. Non prende decisioni di gioco, non accede allo stato del torneo; contenuto ambiguo → `other`/`pick: null` (mai eccezioni di contenuto); l'estrazione del pick è poi filtrata dal check deterministico esatto (ADR-004). Contratti in LLD §6.2-6.3.
+Confinato al solo I/O (ADR-004, ADR-009, ADR-014): l'**Intent Classifier** classifica l'intento del messaggio (`subscribe`/`unsubscribe`/`pick`/`other`) ed estrae `{team, outcome}` — con due implementazioni: **LLM** (una sola chiamata, PRD §4.1/§6, RF-P1/RF-07) o **deterministica** (formule univoche nel subject o corpo, `AI_EMAIL_PARSER`, ADR-014); il **Generator** produce email in italiano da contesto strutturato. Non prende decisioni di gioco, non accede allo stato del torneo; contenuto ambiguo → `other`/`pick: null` (mai eccezioni di contenuto); l'estrazione del pick è poi filtrata dal check deterministico esatto (ADR-004). Contratti in LLD §6.2-6.3.
 
 ### 5.4 Channel Adapter
 
@@ -502,7 +502,7 @@ Rischi rilevati dalla revisione architetturale indipendente (2026-08-11/12) e ri
 
 | # | Rischio | Prob. | Impatto | Mitigazione |
 |---|---------|-------|---------|-------------|
-| R1 | LLM API non disponibile durante la finestra pick in produzione | Media | Alto | Fallback parser regex per formati semplici + generatore deterministico delle email (`DeterministicGenerator`, default — mitigato da ADR-013) + retry con backoff (review HIGH-04) |
+| R1 | LLM API non disponibile durante la finestra pick in produzione | Media | Alto | Parser deterministico in input (`DeterministicIntentClassifier`, ADR-014) + generatore deterministico delle email (`DeterministicGenerator`, default — mitigato da ADR-013) + retry con backoff (review HIGH-04) |
 | R2 | Cron job non eseguito / fallisce in silenzio | Bassa | Critico | `health:check` con exit code per il monitoring, heartbeat, log strutturati (review HIGH-05) |
 | R3 | Dati API errati / corretti a posteriori → eliminazioni errate | Bassa | Critico | Riconciliazione con la fonte ufficiale + `round:rescore` con audit (review HIGH-06, MED-03) |
 | R4 | Rinvio partita non rilevato dalla fonte dati | Media | Alto | Distinzione "dato mancante" vs "rinviata": contabilizzazione incrementale (ADR-003) |

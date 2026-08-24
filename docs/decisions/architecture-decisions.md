@@ -320,4 +320,29 @@
 
 ---
 
+## ADR-014: Email v3 Parte B — Parser deterministico dell'input con interruttore
+
+- **Status:** Accepted
+- **Date:** 2026-08-24
+- **Riferimenti:** ADR-009 (decisione 5, emendata), ADR-013, ADR-004 · LLD §6.2 · Piano `.kilo/plans/1787519052097-email-v3-deterministic-parser.md` · correzione PO `ai_email_generator_env_var` (estesa al parser)
+
+**Contesto.** ADR-009 (decisione 5) prevede la classificazione di intento SOLO via LLM ("intento + pick in una chiamata"). Email v3 Parte B estende all'INPUT il principio del generatore deterministico (ADR-013): il PO ha chiesto di poter eseguire il sistema SENZA LLM (run senza IA, `LLM_API_KEY` non richiesta quando entrambi i flag AI sono false). Serve quindi una seconda implementazione del classificatore, deterministica, selezionabile via config.
+
+**Decisione.**
+
+1. **Interfaccia con due implementazioni (emenda ADR-009 decisione 5).** `LLMIntentClassifier` resta il contratto `{intent, pick, name}` (mai eccezioni di contenuto, CS7). Due implementazioni: `OpenAIIntentClassifier` (LLM, invariato) e `DeterministicIntentClassifier` (`src/llm/deterministic-parser.ts`), selezionate da `AI_EMAIL_PARSER` (default `false` = deterministico). Il filtro deterministico esatto sul pick (ADR-004) resta invariato in entrambe.
+2. **Formule univoche (deterministico).** `ISCRIZIONE [NOME]` → `subscribe` (nome = testo dopo la keyword, fine riga, trim, max ~40 char; vuoto → `null` → il sistema usa l'email, RF-P1); `DISISCRIZIONE` → `unsubscribe`; `<TEAM> <ESITO>` → `pick` (lista canonica + tabella alias parse, longest-match, normalizzazione minuscolo/trim/accenti; sinonimi esito win/draw/lose). Formule riconosciute nel subject O nel corpo (`IncomingMessage.subject` plumbato); il resto dell'email è scartato. Qualunque altra cosa → `other` → chiarimento (CL5) che insegna le formule. Le formule libere ("voglio iscrivermi", "mi iscrivo", "partecipo") NON sono riconosciute. Lista squadre vuota → `other` senza chiamate.
+3. **Sostituzione del vincolo `registration_invitation_name_wording`.** L'istruzione d'iscrizione ovunque diventa `ISCRIZIONE [NOME]` (le mail di chiarimento della Parte A la insegnano già); la vecchia formula "dici voglio iscrivermi" è superata.
+4. **Fallback in modalità LLM.** Con `AI_EMAIL_PARSER=true` l'`OpenAIIntentClassifier` è avvolto da `FallbackIntentClassifier`: su `LLMError` il messaggio è classificato dal deterministico e il batch **continua** (warn pino `{reason}`, nessuno stop-and-retry); gli esiti di contenuto `other`/`pick:null` NON vengono rieseguiti. In modalità LLM il subject NON è iniettato nel prompt (comportamento invariato): la formula va nel corpo.
+5. **`LLM_API_KEY` opzionale (run senza IA).** Con `AI_EMAIL_GENERATOR=false` e `AI_EMAIL_PARSER=false` la chiave non è richiesta; con almeno un flag `true` resta obbligatoria (validazione condizionale).
+
+**Alternative considerate.**
+- *Solo LLM (status quo ADR-009)* — scartata: non consente il run senza IA richiesto dal PO.
+- *Keyword deterministiche libere (status quo del router pre-ADR-009)* — scartata: fragili sul linguaggio; le formule univoche sono esatte e l'ambiguità va al chiarimento (CL5).
+- *Subject iniettato nel prompt LLM* — scartata: il subject resta un'ancora del solo parser deterministico; il comportamento LLM è verificato invariato.
+
+**Conseguenze.** Con i flag AI false il sistema gira senza LLM e senza `LLM_API_KEY`; il parser deterministico è più rigido (più chiarimenti, mitigati dal file alias editabile e dalle mail che insegnano le formule); il fallback per-messaggio in modalità LLM rende la classificazione robusta ai blackout (il batch non si ferma). `DeterministicIntentClassifier`/`FallbackIntentClassifier` sono coperti da test unitari; i body reali UID 291/295 sono regressione.
+
+---
+
 *Fine del log ADR.*

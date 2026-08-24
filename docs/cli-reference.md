@@ -997,20 +997,22 @@ of the system is independently invocable), not part of the tournament flow.
 ### `llm:parse`
 
 ```
-llm:parse --input <text> [--json]
+llm:parse --input <text> [--mode <llm|deterministic>] [--json]
 ```
 
 **Purpose.** Extracts `{team, outcome}` from free text (as a player's email
-would be): the LLM receives the canonical team list from the database plus
-the alias resource (synthetic Serie B roster in TEST MODE) and returns the
-canonical name and the predicted outcome, or `null` when the pick is not
-recognizable or ambiguous.
+would be): the LLM (or, with `--mode deterministic`, the deterministic
+parser with unique formulas) receives the canonical team list from the
+database plus the alias resource (synthetic Serie B roster in TEST MODE) and
+returns the canonical name and the predicted outcome, or `null` when the pick
+is not recognizable or ambiguous.
 
 **Parameters.**
 
 | Option | Type | Description |
 |---|---|---|
 | `--input` | string, **required** | Player's email text to analyze. |
+| `--mode` | string | Extraction mode: `llm` (LLM) or `deterministic` (unique formulas `<TEAM> <ESITO>`); default follows `AI_EMAIL_PARSER`. |
 | `--json` | boolean (default `false`) | JSON output `{"testMode":…, "team":…, "outcome":…}` (or `{"team": null}`). Text output: `{team: "<team>", outcome: "<outcome>"}` or `{team: null} — pick non riconosciuto o ambiguo` (or the empty-canonical-list message when the DB has no teams). |
 
 ---
@@ -1018,19 +1020,24 @@ recognizable or ambiguous.
 ### `llm:classify`
 
 ```
-llm:classify --input <text|json> [--json]
+llm:classify --input <text|json> [--mode <llm|deterministic>] [--json]
 ```
 
-**Purpose.** Classifies a message's **intent** and pick in a single LLM call:
+**Purpose.** Classifies a message's **intent** and pick:
 `{intent: subscribe|unsubscribe|pick|other, pick: {team, outcome}|null}` —
 the classification used by the email channel to route incoming messages.
-Also extracts the player's **name** from a registration message.
+With `--mode llm` it is a single LLM call; with `--mode deterministic` (or
+`AI_EMAIL_PARSER=false`) the unique formulas `ISCRIZIONE [NOME]`,
+`DISISCRIZIONE`, `<TEAM> <ESITO>` are recognized in the subject or body
+(anything else → `other`). Also extracts the player's **name** from a
+registration message.
 
 **Parameters.**
 
 | Option | Type | Description |
 |---|---|---|
 | `--input` | string, **required** | The message body as plain text, or as JSON `{"body": "<text>"}` (the JSON form is convenient when the body contains quotes/newlines). |
+| `--mode` | string | Classification mode: `llm` (LLM) or `deterministic` (unique formulas); default follows `AI_EMAIL_PARSER`. |
 | `--json` | boolean (default `false`) | JSON output `{"testMode":…, "intent":…, "pick":…}`. Text output: `{intent: "pick", pick: {team: "<t>", outcome: "<o>"}}` or `{intent: "<intent>", pick: …}`. |
 
 ---
