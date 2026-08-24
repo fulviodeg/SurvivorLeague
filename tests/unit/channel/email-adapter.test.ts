@@ -126,11 +126,11 @@ describe('EmailAdapter.fetchMessages (D7)', () => {
 describe('EmailAdapter.sendMessage (D1)', () => {
   it('passa soggetto dal chiamante al transport e antepone il separatore di sistema (D2/D3)', async () => {
     const { adapter, smtp } = makeAdapter();
-    await adapter.sendMessage('a@test.it', 'corpo', 'Survivor League — Benvenuto TT1TC1');
+    await adapter.sendMessage('a@test.it', 'corpo', '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 1 di Campionato - Pick Registrato');
     expect(smtp.calls[0]).toEqual({
       from: 'league@x.it',
       to: 'a@test.it',
-      subject: 'Survivor League — Benvenuto TT1TC1',
+      subject: '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 1 di Campionato - Pick Registrato',
       text: `${SYSTEM_EMAIL_SEPARATOR}\ncorpo`
     });
   });

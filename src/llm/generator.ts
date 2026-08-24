@@ -15,9 +15,10 @@
  *   - i TIPI condivisi (`EmailType`, `EmailContext`, `LLMGenerator`), usati
  *     dal Game Engine e mockati nei suoi test;
  *   - l'helper puro `subjectFor(ctx)` (D1): soggetto deterministico in forma
- *     UMANA "Survivor League — Round N · Turno di campionato M: etichetta"
- *     (coppia assente → senza prefisso). MAI dall'LLM, MAI sigle TT/TC
- *     (RF-25, convenzione 1/4 approvata: soggetti neutri per gli esiti);
+ *     "⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - etichetta" (TC
+ *     assente → senza prefisso di turno; il subject porta il SOLO turno di
+ *     campionato, la coppia TT/TC resta nel corpo). MAI dall'LLM, MAI sigle
+ *     TT/TC (RF-25, convenzione 1/4 approvata: soggetti neutri per gli esiti);
  *   - la guardia anti-degenerazione `deterministicNarrative` (+ costante
  *     `MAX_NARRATIVE_CHARS`): l'output LLM è validato (lunghezza, non vuoto)
  *     e, se degenerato/vuoto, sostituito dal fallback fisso per tipo
@@ -145,44 +146,46 @@ export interface LLMGenerator {
  * Etichetta del soggetto per ogni tipo di email (deterministica, D1).
  * Convenzione 4 (approvata): i soggetti delle mail di ESITO round sono
  * NEUTRI — non rivelano se il giocatore è ancora in gara o eliminato:
- * `round_closed_survived` usa "riepilogo del round", gli esiti
+ * `round_closed_survived` usa "Riepilogo Round", gli esiti
  * (`round_result_correct`/`round_result_wrong`/`pick_missing_elimination`)
- * usano "esito del round".
+ * usano "Esito Round". Etichette iper-condensate, senza articoli/preposizioni
+ * (email v3).
  */
 const SUBJECT_LABELS: Record<EmailType, string> = {
-  platform_registered: 'Iscrizione confermata',
-  platform_unsubscribe_confirm: 'Conferma la disiscrizione',
-  platform_unsubscribed: 'Disiscrizione confermata',
-  platform_already_registered: 'Già iscritto alla piattaforma',
-  tournament_open: 'Il torneo è aperto',
-  pick_instructions: 'Invia il tuo pick',
-  pick_confirmed: 'Pick registrato',
-  pick_rejected: 'Pick non registrato',
-  pick_missing_elimination: 'Esito del round',
-  round_result_correct: 'Esito del round',
-  round_result_wrong: 'Esito del round',
-  pick_postponed: 'Partita rinviata',
-  round_closed_survived: 'Riepilogo del round',
-  tournament_won: 'Hai vinto il torneo',
-  tournament_shared_win: 'Vittoria condivisa',
-  clarification: 'Non ho capito'
+  platform_registered: 'Iscrizione Confermata',
+  platform_unsubscribe_confirm: 'Richiesta conferma disiscrizione',
+  platform_unsubscribed: 'Disiscrizione Confermata',
+  platform_already_registered: 'Già Iscritto',
+  tournament_open: 'Torneo Aperto',
+  pick_instructions: 'Round Aperto',
+  pick_confirmed: 'Pick Registrato',
+  pick_rejected: 'Pick Rifiutato',
+  pick_missing_elimination: 'Esito Round',
+  round_result_correct: 'Esito Round',
+  round_result_wrong: 'Esito Round',
+  pick_postponed: 'Partita Rinviata',
+  round_closed_survived: 'Riepilogo Round',
+  tournament_won: 'Hai Vinto',
+  tournament_shared_win: 'Vittoria Condivisa',
+  clarification: 'Non Ho Capito'
 };
 
 /**
- * Compone il soggetto dell'email in modo DETERMINISTICO (D1, RF-25) in
- * forma UMANA (convenzione 1: mai sigle TT/TC nelle email):
- * "Survivor League — Round N · Turno di campionato M: {etichetta}";
- * coppia assente → "Survivor League — {etichetta}". Mai dall'LLM, mai
- * numeri inventati. `ctx.subject` esplicito ha priorità.
+ * Compone il soggetto dell'email in modo DETERMINISTICO (D1, RF-25) in forma
+ * "⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - {etichetta}"; TC
+ * assente → "⚽🏆SURVIVOR LEAGUE🏆⚽ - {etichetta}". Il subject porta il SOLO
+ * turno di campionato (TC): la coppia "Round N · Turno di campionato M" resta
+ * nel corpo (renderer). Mai dall'LLM, mai numeri inventati. `ctx.subject`
+ * esplicito ha priorità.
  */
 export function subjectFor(ctx: EmailContext): string {
   if (ctx.subject !== undefined && ctx.subject.trim() !== '') return ctx.subject;
   const label = SUBJECT_LABELS[ctx.type];
-  const pair =
-    ctx.round !== undefined && ctx.championshipRound !== undefined
-      ? `Round ${ctx.round} · Turno di campionato ${ctx.championshipRound}: `
+  const turno =
+    ctx.championshipRound !== undefined
+      ? `Turno ${ctx.championshipRound} di Campionato - `
       : '';
-  return `Survivor League — ${pair}${label}`;
+  return `⚽🏆SURVIVOR LEAGUE🏆⚽ - ${turno}${label}`;
 }
 
 /**

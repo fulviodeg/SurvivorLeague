@@ -33,13 +33,13 @@ describe('sendMail (D1)', () => {
     await sendMail(transport, {
       from: 'league@x.it',
       to: 'a@test.it',
-      subject: 'Survivor League — Benvenuto TT1TC1',
+      subject: '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 1 di Campionato - Pick Registrato',
       text: 'Ciao!'
     });
     expect(calls[0]).toEqual({
       from: 'league@x.it',
       to: 'a@test.it',
-      subject: 'Survivor League — Benvenuto TT1TC1',
+      subject: '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 1 di Campionato - Pick Registrato',
       text: 'Ciao!'
     });
   });

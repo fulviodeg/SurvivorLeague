@@ -320,7 +320,7 @@ describe('chiusura automatica — caso 3 (superstiti dopo l’ultimo TC scored)'
 
     const shared = h.generator.byType('tournament_shared_win');
     expect(shared).toHaveLength(2);
-    const sharedSent = h.channel.sent.filter((s) => s.subject?.includes('Vittoria condivisa'));
+    const sharedSent = h.channel.sent.filter((s) => s.subject?.includes('Vittoria Condivisa'));
     expect(sharedSent.map((s) => s.to).sort()).toEqual(['a@test.it', 'b@test.it']);
   });
 });
