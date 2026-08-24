@@ -319,6 +319,7 @@ Tutti i parametri modificabili vivono in variabili d'ambiente, validate con `zod
 | LLM model | `LLM_MODEL` | `gpt-4o-mini` | Lista separata da virgola, in ordine di priorità (failover client-side: il primo è il primario, i successivi sono fallback). Il failover scatta SOLO su errore di trasporto/HTTP (`LLMError`), MAI su `null` (D3: per il Parser `null` è una risposta valida = pick ambiguo, e non deve cambiare modello) |
 | LLM timeout (ms) | `LLM_TIMEOUT_MS` | `15000` | Timeout di una singola richiesta LLM. Abbassarlo rende il failover più rapido ma scarta risposte lente (tier free); worst case latenza per messaggio: Σ modelli × tentativi × timeout ≈ 135 s con 3×3×15 s (i fallimenti reali 429/5xx sono però immediati) |
 | LLM retries | `LLM_RETRIES` | `3` | Tentativi TOTALI per modello (1 richiesta + N-1 ritentativi) su errori ritentabili (429, 5xx, timeout, rete, body malformato), con ~1 s di pausa tra i tentativi; `1` = nessun ritentativo. I 4xx deterministici (400/401/403/404) non vengono ritentati: failover diretto al modello successivo |
+| Generazione IA email | `AI_EMAIL_GENERATOR` | `false` | Interruttore email v3 (ADR-013): `true` = narrativa LLM con fallback deterministico su `LLMError`/narrativa degenerata; assente/`false` = generatore deterministico (`DeterministicGenerator`, MAI chiamate LLM per i testi email). NON tocca Parser/Classificatore (lato input), che restano sempre LLM. Lettura a ogni invocazione CLI (nessun daemon da riavviare) |
 | Database path | `DB_PATH` | `./data/survivor.db` | |
 | Database piattaforma path | `PLATFORM_DB_PATH` | `./data/platform.db` | DB **separato** per gli account piattaforma (ADR-009, RF-P7): MAI uguale a `DB_PATH`; `platform:migrate` lo migra; `channel:email:process`/`simulate:*` lo richiedono (errore esplicito se assente). `simulate:*` rifiuta/avvisa se coincide col valore di produzione |
 | Log level | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
@@ -559,7 +560,7 @@ interface LLMIntentClassifier {
 
 ### 6.3 LLM Generator
 
-> **Emendamento ADR-011 (email v2, stile unico "energetic").** L'LLM produce SOLO il testo NARRATIVO (2-4 frasi brevi, tono entusiasta); il corpo completo è composto DETERMINISTICAMENTE dal renderer di canale `src/llm/email-renderer.ts` attorno alla narrativa: header con coppia UMANA "Round N · Turno di campionato M" (mai sigle TT/TC nelle mail), box ASCII (esito ✅/❌, deadline+countdown, squadre bruciate, partite/risultati, stato aggregato), sezioni dati e CTA per tipo. Il countdown è calcolato DAL SISTEMA con `formatRemaining(now, deadline)` (src/game/round-time.ts, clock iniettato — mai dall'LLM né dal renderer, RNF1). Le mail di esito hanno soggetti NEUTRI ("riepilogo del round"/"esito del round"); mai elenchi nominativi di partecipanti (solo conteggi). Il vecchio prompt-set V1 è stato RIMOSSO (2026-08-23). Canale email = SOLO text/plain (opzione 2 approvata: NIENTE HTML).
+> **Emendamento ADR-011 (email v2) e ADR-013 (email v3, plain-text senza riquadri).** L'LLM produce SOLO il testo NARRATIVO (2-4 frasi brevi, tono entusiasta); il corpo completo è composto DETERMINISTICAMENTE dal renderer di canale `src/llm/email-renderer.ts` attorno alla narrativa: header con coppia UMANA "Round N · Turno di campionato M" (mai sigle TT/TC nelle mail), **sezioni a righe con titolo emoji + MAIUSCOLO** (esito ✅/❌, deadline+countdown, squadre già usate, partite/risultati, stato aggregato — NIENTE riquadri ASCII), messaggio chiave `keyMessage(ctx)` in MAIUSCOLO, sezioni dati e CTA per tipo. Il countdown è calcolato DAL SISTEMA con `formatRemaining(now, deadline)` (src/game/round-time.ts, clock iniettato — mai dall'LLM né dal renderer, RNF1). Le mail di esito hanno soggetti NEUTRI ("Esito Round"); mai elenchi nominativi di partecipanti (solo conteggi). La narrativa è prodotta da `DeterministicGenerator` (default) o dall'LLM con fallback (`AI_EMAIL_GENERATOR`, ADR-013). Il vecchio prompt-set V1 è stato RIMOSSO (2026-08-23). Canale email = SOLO text/plain (niente HTML né riquadri).
 
 ```typescript
 type EmailType = 
@@ -596,7 +597,7 @@ interface EmailContext {
   outcome?: string;
   reason?: string;
   availableTeams?: string[];
-  burnedTeams?: { team: string; round: number }[]; // squadre bruciate + round di utilizzo (box dedicato)
+  burnedTeams?: { team: string; round: number }[]; // squadre già usate + round di utilizzo (sezione dedicata)
   matches?: { home: string; away: string; date: Date; score?: { home: number; away: number }; postponed?: boolean }[];
   inGameCount?: number;        // conteggi AGGREGATI (mai elenchi nominativi)
   eliminatedWrong?: number;
@@ -612,7 +613,7 @@ interface LLMGenerator {
 
 > **Coppia umana (ADR-011):** `round`/`championshipRound` sono i numeri di torneo/campionato iniettati dal Game Engine (ADR-008). **Nessun numero di turno entra nel prompt** (ADR-004, D4): la coppia è scritta dal renderer in forma umana; le forme compatte TT2TC7 restano SOLO per log/CLI (src/game/turn.ts, invariato).
 >
-> **Soggetto (D1):** composto DETERMINISTICAMENTE dal chiamante con l'helper `subjectFor(ctx)` — forma UMANA "Survivor League — Round N · Turno di campionato M: etichetta" (coppia assente → senza prefisso); etichette NEUTRE per gli esiti ("riepilogo del round"/"esito del round", convenzione 4); mai dall'LLM, mai numeri inventati. `ctx.subject` permette a un chiamante di fornire un oggetto esplicito (priorità).
+> **Soggetto (D1, emendato ADR-013):** composto DETERMINISTICAMENTE dal chiamante con l'helper `subjectFor(ctx)` — forma `⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - {etichetta}` (TC assente → `⚽🏆SURVIVOR LEAGUE🏆⚽ - {etichetta}`); il soggetto porta il SOLO turno di campionato, la coppia "Round N · Turno di campionato M" resta nel corpo. Etichette iper-condensate e NEUTRE per gli esiti ("Esito Round", convenzione 4); mai dall'LLM, mai numeri inventati. `ctx.subject` permette a un chiamante di fornire un oggetto esplicito (priorità).
 >
 > **Formato date nei testi (D9/ADR-011):** le date sono istanti UTC; i testi email le mostrano con `formatItDate(date, timeZone)` nel FUSO DI SISTEMA (`TIMEZONE`, default Europe/Rome, validato al boot) — fuso esplicito = determinismo (RNF1). Il fuso conta SOLO nella comunicazione verso l'esterno (email e log): le decisioni di gioco restano su UTC.
 >
@@ -620,7 +621,7 @@ interface LLMGenerator {
 
 ### 6.4 ChannelAdapter
 
-> **Emendamento ADR-011 (principio "resa = canale, dati = canale-agnostici").** La RESA dei testi appartiene al CANALE: il renderer `src/llm/email-renderer.ts` è il renderer DEDICATO del canale email (header/box/CTA deterministici attorno alla narrativa LLM). Il Game Engine compone SOLO `EmailContext` (dati) e chiama `generator.generate` + `channel.sendMessage` (flusso invariato): un futuro WebAdapter riusa gli stessi dati con un renderer dedicato, senza toccare la logica di gioco. Il banner TEST MODE anteposto dall'EmailAdapter resta indipendente dal corpo e si preserva automaticamente.
+> **Emendamento ADR-011/ADR-013 (principio "resa = canale, dati = canale-agnostici").** La RESA dei testi appartiene al CANALE: il renderer `src/llm/email-renderer.ts` è il renderer DEDICATO del canale email (header/sezioni/CTA deterministici attorno alla narrativa). Il Game Engine compone SOLO `EmailContext` (dati) e chiama `generator.generate` + `channel.sendMessage` (flusso invariato): un futuro WebAdapter riusa gli stessi dati con un renderer dedicato, senza toccare la logica di gioco. Il banner TEST MODE anteposto dall'EmailAdapter resta indipendente dal corpo e si preserva automaticamente.
 
 ```typescript
 interface IncomingMessage {
@@ -806,11 +807,12 @@ npm run cli -- llm:parse --input <text>       # Estrae {team, outcome} da testo 
 npm run cli -- llm:classify --input <json>    # Classifica {intent, pick, name} da JSON {"intent": "...", "pick": {...}}
                                               # o testo: UNA chiamata LLM (ADR-009, RF-P1/P2); output JSON
                                               # {intent: subscribe|unsubscribe|pick|other, pick, name} (ADR-011)
-npm run cli -- llm:generate --type <email-type> [--player-name <name>] [--tt <n>] [--tc <n>] [--team <name>] [--outcome <outcome>] [--reason <text>] [--deadline <datetime>] [--available-teams <comma,sep>]
-                                              # Genera email da contesto strutturato. Output: SOGGETTO
-                                              # (subjectFor, forma UMANA "Round N · Turno di campionato M",
-                                              # ADR-011) + corpo renderizzato (header/box/CTA deterministici
-                                              # attorno alla narrativa LLM, date nel TIMEZONE di sistema)
+npm run cli -- llm:generate --type <email-type> [--player-name <name>] [--tt <n>] [--tc <n>] [--team <name>] [--outcome <outcome>] [--reason <text>] [--deadline <datetime>] [--available-teams <comma,sep>] [--mode <llm|deterministic>]
+                                               # Genera email da contesto strutturato. Output: SOGGETTO
+                                               # (subjectFor: "⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - {etichetta}",
+                                               # ADR-013) + corpo renderizzato (header/sezioni/CTA deterministici
+                                               # attorno alla narrativa, date nel TIMEZONE di sistema). --mode
+                                               # forza llm o deterministic (default = AI_EMAIL_GENERATOR)
 ```
 
 ### 7.9 Channel Adapter

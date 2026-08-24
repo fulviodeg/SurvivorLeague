@@ -439,7 +439,7 @@ Unico canale nella POC (PRD §6): ricezione via **IMAP** (`imapflow`), invio via
 
 ### 7.3 LLM API
 
-API OpenAI-compatibile per il parser e il generatore. Confinata al solo I/O (ADR-004). Gestione di mancata disponibilità/fallback (parser regex, template pre-generati, retry) è rimandata alla produzione (rischio R1, sezione 10).
+API OpenAI-compatibile per il parser e il generatore. Confinata al solo I/O (ADR-004). Gestione di mancata disponibilità/fallback (parser regex, generatore deterministico delle email — `AI_EMAIL_GENERATOR`, retry) è rimandata alla produzione (rischio R1, sezione 10).
 
 ---
 
@@ -502,7 +502,7 @@ Rischi rilevati dalla revisione architetturale indipendente (2026-08-11/12) e ri
 
 | # | Rischio | Prob. | Impatto | Mitigazione |
 |---|---------|-------|---------|-------------|
-| R1 | LLM API non disponibile durante la finestra pick in produzione | Media | Alto | Fallback parser regex per formati semplici + template email pre-generati + retry con backoff (review HIGH-04) |
+| R1 | LLM API non disponibile durante la finestra pick in produzione | Media | Alto | Fallback parser regex per formati semplici + generatore deterministico delle email (`DeterministicGenerator`, default — mitigato da ADR-013) + retry con backoff (review HIGH-04) |
 | R2 | Cron job non eseguito / fallisce in silenzio | Bassa | Critico | `health:check` con exit code per il monitoring, heartbeat, log strutturati (review HIGH-05) |
 | R3 | Dati API errati / corretti a posteriori → eliminazioni errate | Bassa | Critico | Riconciliazione con la fonte ufficiale + `round:rescore` con audit (review HIGH-06, MED-03) |
 | R4 | Rinvio partita non rilevato dalla fonte dati | Media | Alto | Distinzione "dato mancante" vs "rinviata": contabilizzazione incrementale (ADR-003) |

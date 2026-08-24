@@ -295,4 +295,29 @@
 
 ---
 
+## ADR-013: Email v3 — restyle plain-text senza riquadri e generatore deterministico
+
+- **Status:** Accepted
+- **Date:** 2026-08-24
+- **Riferimenti:** ADR-011 (emendata), ADR-004, ADR-008 · PRD RF-25, RF-P6 · LLD §6.2/§6.3/§6.4 · Piano `.kilo/plans/1787519052097-email-v3-restyle.md` · correzioni PO `email_restyle_plain_text_ascii`, `ai_email_generator_env_var`
+
+**Contesto.** Il PO ha rivisto il restyle delle email (correzione `email_restyle_plain_text_ascii`): niente HTML e niente riquadri ASCII, testo plain-text strutturato a righe con emoji ammesse e messaggio chiave in MAIUSCOLO. Contestualmente ha chiesto che la generazione dei testi sia **deterministica di default**, con l'LLM come opzione opt-in governata da una variabile d'ambiente (correzione `ai_email_generator_env_var`). Queste decisioni emendano ADR-011 (che prevedeva "box ASCII" e narrativa LLM come unico percorso).
+
+**Decisione.**
+
+1. **Soggetto (emenda ADR-011 §3, RF-25).** `subjectFor(ctx)` diventa `⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - {etichetta}` con TC noto, e `⚽🏆SURVIVOR LEAGUE🏆⚽ - {etichetta}` senza TC (soli flussi di piattaforma). Il soggetto porta il **solo turno di campionato** (TC): la coppia "Round N · Turno di campionato M" resta nel CORPO. `tournament_won`/`tournament_shared_win` includono il turno (la vittoria avviene alla chiusura del round finale, TC noto). Etichette iper-condensate ("Esito Round" resta neutro, non rivela l'eliminazione); `ctx.subject` esplicito continua a prevalere.
+2. **Corpo senza riquadri (emenda ADR-011 §1/§2).** Rimozione di `makeBox`: i box ASCII (esito, deadline, bruciate) diventano sezioni a righe con titolo **emoji + MAIUSCOLO**; nuovo `keyMessage(ctx)` deterministico per tipo in MAIUSCOLO (l'equivalente plain-text del "grassetto"). Gli esiti restano sui messaggi ✅/❌ del renderer; deadline con data+countdown sulla STESSA riga (`· Mancano circa …`); "SQUADRE GIÀ USATE" con formato "(Round N)"; titolo partite dinamico ("RISULTATI DEL ROUND" con punteggi, "PARTITE DEL ROUND" altrimenti). Ordine dei blocchi: header → saluto → esito → deadline → messaggio chiave → narrativa → partite/risultati → squadre già usate → stato → CTA → iscritti piattaforma → chiusura.
+3. **Separatore di brand (emenda ADR-011, piano reply-quote-stripping).** `SYSTEM_EMAIL_SEPARATOR` passa da `───` a `─── Survivor League ───` (costante UNICA condivisa tra invio `EmailAdapter.sendMessage` e taglio `reply-cleaner`, logica `startsWith(separator)` invariata).
+4. **Generatore deterministico con interruttore (emenda ADR-011).** Nuovo `src/llm/deterministic-generator.ts`: `DeterministicGenerator implements LLMGenerator` produce il corpo con la narrativa FISSA per tipo (`DETERMINISTIC_NARRATIVES`, rinominata da `FALLBACK_NARRATIVES`, testo vuoto per il riepilogo → blocco omesso) — ZERO chiamate di rete. Nuovo parametro `AI_EMAIL_GENERATOR` (boolean, default `false`): `false`/assente → generatore deterministico (mai chiamate LLM per i testi email); `true` → `OpenAIGenerator` avvolto da `FallbackGenerator`, che su `LLMError` ripiega sul corpo deterministico con warn pino `{reason, type}` (il giocatore riceve comunque l'email, il batch non si ferma). La narrativa degenerata è già coperta dalla guardia `deterministicNarrative`. Parser/Classificatore (lato input) restano sempre LLM. La CLI `llm:generate` guadagna `--mode llm|deterministic` per confrontare le due strade senza toccare la config.
+
+**Alternative considerate.**
+- *HTML/CSS inline* — scartata (correzione PO): plain-text, niente HTML.
+- *Riquadri ASCII (status quo ADR-011)* — scartata (correzione PO `email_restyle_plain_text_ascii`): sezioni a righe più semplici e robuste nei client.
+- *File di configurazione dedicato al design email* — scartata: niente configurazione, un solo stile (regole in `tasks/llm/regole-email-design.md`, non toccate).
+- *LLM come unico generatore (status quo)* — scartata: il default deterministico è la fonte di verità; l'LLM è opt-in.
+
+**Conseguenze.** L'output email è deterministico e riproducibile di default (zero dipendenza dall'LLM per l'invio, R1 mitigato); il subject porta il solo TC; il corpo è plain-text a righe senza riquadri; il separatore di brand unifica invio e taglio della citazione. `AI_EMAIL_GENERATOR` è un parametro di configurazione letto a ogni invocazione (nessun daemon da riavviare). I test del renderer asseriscono gli output esatti dei 16 template; `DeterministicGenerator`/`FallbackGenerator` sono coperti da test unitari dedicati.
+
+---
+
 *Fine del log ADR.*
