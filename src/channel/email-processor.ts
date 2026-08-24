@@ -234,7 +234,8 @@ async function processOne(
   const clazz: IntentClassification = await classifier.classify(routed.body, {
     teams: deps.teams,
     aliases: deps.aliases,
-    testMode: deps.testMode
+    testMode: deps.testMode,
+    subject: routed.subject
   });
 
   // Stato dell'account RIletto a ogni messaggio (HIGH-2: nessuno snapshot di

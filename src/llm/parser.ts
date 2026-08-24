@@ -49,6 +49,13 @@ export interface PickParseOptions {
    * produzione (Serie A). Iniettato dalla CLI, mai letto da config qui.
    */
   testMode?: boolean;
+  /**
+   * Oggetto dell'email (opzionale, email v3 Parte B): usato SOLO dal parser
+   * deterministico (`DeterministicIntentClassifier`) per riconoscere le
+   * formule `ISCRIZIONE [NOME]`/`DISISCRIZIONE`/`<TEAM> <ESITO>` nel subject;
+   * il classificatore LLM NON lo inietta nel prompt (comportamento invariato).
+   */
+  subject?: string;
 }
 
 /** Contratto del Parser (LLD §6.2): mai eccezioni per il contenuto, LLMError per il trasporto. */

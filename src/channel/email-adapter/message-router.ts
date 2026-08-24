@@ -15,11 +15,11 @@
  * precedente e limita a 5 righe non vuote (incidente UAT 2026-08-22: la
  * citazione confondeva l'LLM).
  *
- * Regola deterministica (D6/K):
- *   - corpo VUOTO o mittente vuoto → `{ kind: 'unknown' }` (non processabile,
- *     nessuna chiamata LLM, nessun taglio applicato);
- *   - altrimenti → `{ kind: 'classified' }` con identità normalizzata e corpo
- *     pulito dalla citazione.
+ * Regola deterministica (D6/K, email v3 Parte B):
+ *   - corpo E subject VUOTI o mittente vuoto → `{ kind: 'unknown' }` (non
+ *     processabile, nessuna chiamata di classificazione, nessun taglio);
+ *   - altrimenti → `{ kind: 'classified' }` con identità normalizzata, corpo
+ *     pulito dalla citazione e subject propagato (formule nel subject o corpo).
  *
  * Il router NON decide NULLA di gioco (LLD §1.3): subscribe/unsubscribe/pick/
  * silenzio/auto-join sono decisi dal wiring sui moduli di gioco e sul
@@ -42,13 +42,18 @@ import { extractPlayerReply } from './reply-cleaner.js';
  */
 export type MessageKind = 'classified' | 'unknown';
 
-/** Messaggio preparato: identità normalizzata + corpo. */
+/** Messaggio preparato: identità normalizzata + corpo + subject. */
 export interface RoutedMessage {
   kind: MessageKind;
   /** Identità normalizzata del mittente (channel + indirizzo minuscolo, K). */
   identity: ExternalIdentity;
   /** Corpo del messaggio (trim); vuoto solo per kind 'unknown'. */
   body: string;
+  /**
+   * Oggetto del messaggio (trim, opzionale): propagato al classificatore per
+   * il parser deterministico (email v3 Parte B, formule nel subject o corpo).
+   */
+  subject?: string;
 }
 
 /**
@@ -74,10 +79,19 @@ export function normalizeEmail(raw: string): string {
 export function classify(message: IncomingMessage): RoutedMessage {
   const identifier = normalizeEmail(message.from);
   const rawBody = message.body.trim();
+  const subject = message.subject?.trim() ?? '';
   const identity: ExternalIdentity = { channel: message.channel, identifier };
 
-  if (identifier === '' || rawBody === '') {
+  // email v3 Parte B: il messaggio è processabile se ha CORPO O SOGGETTO non
+  // vuoto (le formule del parser deterministico possono stare nel subject);
+  // solo "entrambi vuoti" resta `unknown` (nessuna chiamata di classificazione).
+  if (identifier === '' || (rawBody === '' && subject === '')) {
     return { kind: 'unknown', identity, body: rawBody };
   }
-  return { kind: 'classified', identity, body: extractPlayerReply(message.body) };
+  return {
+    kind: 'classified',
+    identity,
+    body: extractPlayerReply(message.body),
+    ...(subject !== '' ? { subject } : {})
+  };
 }

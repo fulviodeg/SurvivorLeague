@@ -20,6 +20,13 @@ export interface IncomingMessage {
   /** Corpo testuale del messaggio (da dare in pasto al Parser LLM). */
   body: string;
   /**
+   * Oggetto del messaggio (opzionale): per l'email è il Subject. Usato dal
+   * parser deterministico (email v3 Parte B) che riconosce le formule
+   * `ISCRIZIONE [NOME]`/`DISISCRIZIONE`/`<TEAM> <ESITO>` nel subject O nel
+   * corpo. Il classificatore LLM NON lo inietta nel prompt (invariato).
+   */
+  subject?: string;
+  /**
    * Istante di RICEZIONE sul server (ADR-001): per l'email è l'`internaldate`
    * IMAP, MAI l'header `Date` del mittente. Fa fede per la deadline (CS4).
    */

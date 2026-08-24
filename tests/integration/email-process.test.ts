@@ -623,6 +623,29 @@ describe('channel:email:process — other, unknown, gate round (ADR-009)', () =>
     expect(seen).toEqual(['1']);
   });
 
+  it('email v3 Parte B: subject non vuoto + corpo vuoto → classified e subject passato al classificatore', async () => {
+    const { ctx, deps } = makeHarness();
+    const classifier = useClassifier(ctx, new Map());
+
+    await processEmailBatch(
+      ctx,
+      [
+        {
+          from: 'mario@test.it',
+          channel: 'email',
+          body: '   ',
+          subject: 'ISCRIZIONE Mario',
+          receivedAt: T_PICK,
+          id: '1'
+        }
+      ],
+      deps()
+    );
+
+    expect(classifier.calls).toHaveLength(1);
+    expect(classifier.calls[0]?.subject).toBe('ISCRIZIONE Mario');
+  });
+
   it('pick da active senza round aperto → round_not_open (il ramo pick richiede un round)', async () => {
     const { db, ctx, platform, generator, deps } = makeHarness({ startTournament: false });
     const account = platform.register('a@test.it', null, T_OPEN);
