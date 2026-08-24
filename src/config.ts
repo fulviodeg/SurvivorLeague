@@ -157,7 +157,10 @@ const configSchema = z.object({
   SMTP_PORT: intParam().default(587),
   SMTP_USER: required(),
   SMTP_PASS: required(), // App Password Gmail
-  LLM_API_KEY: required(),
+  // Chiave API del provider LLM. OPZIONALE (default vuota) quando sia
+  // `AI_EMAIL_GENERATOR` sia `AI_EMAIL_PARSER` sono false (run senza IA):
+  // la superRefine qui sotto la rende OBBLIGATORIA se almeno un flag è true.
+  LLM_API_KEY: z.string().default(''),
   LLM_API_BASE_URL: z.url().default('https://api.openai.com/v1'),
   // Lista dei modelli LLM separata da virgola, in ordine di PRIORITÀ (il
   // primo è il primario): il client prova il primo e, esauriti i retry, passa
@@ -195,6 +198,13 @@ const configSchema = z.object({
   // .env ha effetto dal comando/tick successivo, nessun daemon da riavviare.
   // NON tocca Parser/Classificatore (lato input), che restano sempre LLM.
   AI_EMAIL_GENERATOR: boolParam('false'),
+  // Interruttore classificazione deterministica dell'INPUT email (email v3,
+  // Parte B): true = classificazione LLM con fallback per-messaggio sul parser
+  // deterministico; assente o false = parser deterministico (formule univoche
+  // `ISCRIZIONE [NOME]`/`DISISCRIZIONE`/`<TEAM> <ESITO>` nel subject o corpo),
+  // MAI chiamate LLM per la classificazione. Con entrambi i flag AI false la
+  // `LLM_API_KEY` non è più richiesta (run senza IA).
+  AI_EMAIL_PARSER: boolParam('false'),
   // Percorso del file SQLite; la directory viene creata da db/connection.ts se assente.
   DB_PATH: z.string().min(1).default('./data/survivor.db'),
   // Percorso del DB PIATTAFORMA (ADR-009, RF-P7): storage SEPARATO degli
@@ -244,6 +254,17 @@ const configSchema = z.object({
   // operazione (incluso DB_PATH). Usabile SOLO su DB con dati reali, MAI su
   // calendario sintetico. Parser tollerante: malformato → false senza errore.
   TEST_REFRESH_ALLOWED: testRefreshAllowedParam()
+}).superRefine((data, ctx) => {
+  // email v3 Parte B: `LLM_API_KEY` è obbligatoria SOLO se almeno un flag IA è
+  // attivo; con entrambi false il sistema è interamente deterministico e la
+  // chiave non serve (run senza IA). L'errore nomina `LLM_API_KEY`.
+  if ((data.AI_EMAIL_GENERATOR || data.AI_EMAIL_PARSER) && data.LLM_API_KEY.trim() === '') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['LLM_API_KEY'],
+      message: 'variabile richiesta quando AI_EMAIL_GENERATOR o AI_EMAIL_PARSER è true'
+    });
+  }
 });
 
 /** Tipo grezzo parsato da zod (solo campi dell'env — testMode è derivato). */
