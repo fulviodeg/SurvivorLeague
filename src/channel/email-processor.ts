@@ -55,6 +55,7 @@ import type { IncomingMessage } from './adapter.js';
 import type { GameContext } from '../game/context.js';
 import { autoJoinFromPick } from '../game/registration.js';
 import { registerPick } from '../game/pick-processor.js';
+import { formatRemaining } from '../game/round-time.js';
 import { getStartRound, turnFor } from '../game/turn.js';
 import { classify, type MessageKind } from './email-adapter/message-router.js';
 import { subjectFor, type EmailContext } from '../llm/generator.js';
@@ -131,6 +132,34 @@ export function currentOpenRound(db: GameContext['db']): number | null {
     .prepare("SELECT round FROM round_state WHERE status = 'open' ORDER BY round LIMIT 1")
     .get() as { round: number } | undefined;
   return row?.round ?? null;
+}
+
+/**
+ * Contesto di round per le risposte del wiring (ADR-011): coppia umana
+ * (round/championshipRound), deadline registrata e countdown verso la
+ * deadline calcolato col clock iniettato (`formatRemaining`, RNF1: mai
+ * `new Date()` qui). La deadline è presente solo a round APERTO con
+ * deadline registrata; senza round aperto il contesto è vuoto.
+ */
+function roundEmailContext(
+  ctx: GameContext,
+  round: number
+): Pick<EmailContext, 'round' | 'championshipRound' | 'deadline' | 'deadlineRemaining'> {
+  const { tt, tc } = turnFor(ctx.db, round);
+  const rs = ctx.db
+    .prepare('SELECT deadline FROM round_state WHERE round = ?')
+    .get(round) as { deadline: string | null } | undefined;
+  const deadline = rs?.deadline != null ? new Date(rs.deadline) : undefined;
+  // LOW-3: il countdown "Mancano circa…" ha senso SOLO prima della deadline;
+  // oltre la scadenza il renderer mostra la data nel box ma omette il
+  // countdown (fuorviante). `formatRemaining` resta puro e invariato.
+  return {
+    round: tt,
+    championshipRound: tc,
+    ...(deadline !== undefined
+      ? { deadline, ...(ctx.now < deadline ? { deadlineRemaining: formatRemaining(ctx.now, deadline) } : {}) }
+      : {})
+  };
 }
 
 /**
@@ -236,7 +265,12 @@ async function processOne(
   // di conferma di RF-P1/P2 (il filtro `active` vale per le notifiche di
   // torneo, non per queste conferme). ---
   if (clazz.intent === 'subscribe') {
-    const registered = account === null ? platform.register(identity.identifier, ctx.now) : account;
+    // ADR-011: il nome dedotto dalla mail di registrazione (classificatore)
+    // è salvato sull'account alla creazione; null → il sistema userà l'email.
+    const registered =
+      account === null
+        ? platform.register(identity.identifier, clazz.name, ctx.now)
+        : account;
     if (account !== null && account.status !== 'active') {
       platform.reactivate(identity.identifier, ctx.now);
     }
@@ -248,9 +282,13 @@ async function processOne(
       account !== null && account.status === 'active'
         ? {
             type: 'platform_already_registered',
+            playerName: account.name ?? account.email,
             reason: 'sei già iscritto alla piattaforma (email_already_registered)'
           }
-        : { type: 'platform_registered' };
+        : {
+            type: 'platform_registered',
+            playerName: registered.name ?? registered.email
+          };
     await sendReply(ctx, identity.identifier, reply);
     await deps.markSeen(message);
     deps.logger.info(
@@ -318,7 +356,9 @@ async function processOne(
       return { from: message.from, kind, action: 'round_not_open', seen: true };
     }
 
-    const { tt, tc } = turnFor(db, round);
+    // ADR-011: coppia umana + deadline + countdown nelle risposte di pick
+    // (box deadline del renderer quando il round è aperto).
+    const roundCtx = roundEmailContext(ctx, round);
 
     const profile = db
       .prepare(
@@ -332,8 +372,7 @@ async function processOne(
       if (clazz.pick === null) {
         await sendReply(ctx, identity.identifier, {
           type: 'pick_rejected',
-          tt,
-          tc,
+          ...roundCtx,
           reason:
             'non ho riconosciuto la tua scelta: per entrare nel torneo invia squadra + esito (win, draw, lose)'
         });
@@ -343,9 +382,8 @@ async function processOne(
       if (round !== getStartRound(db)) {
         await sendReply(ctx, identity.identifier, {
           type: 'pick_rejected',
-          tt,
-          tc,
-          reason: startedRejectionReason(tc)
+          ...roundCtx,
+          reason: startedRejectionReason(roundCtx.championshipRound)
         });
         await deps.markSeen(message);
         return { from: message.from, kind, action: 'rejected_tt2', seen: true };
@@ -355,8 +393,7 @@ async function processOne(
         // RF-P5/D5: risposta UNICA `pick_confirmed` (nessuna conferma separata).
         await sendReply(ctx, identity.identifier, {
           type: 'pick_confirmed',
-          tt,
-          tc,
+          ...roundCtx,
           team: clazz.pick.team,
           outcome: clazz.pick.outcome
         });
@@ -367,8 +404,7 @@ async function processOne(
         joined.reason === 'pick_rejected' ? (joined.pickReason ?? 'pick_rejected') : joined.reason;
       await sendReply(ctx, identity.identifier, {
         type: 'pick_rejected',
-        tt,
-        tc,
+        ...roundCtx,
         team: clazz.pick.team,
         outcome: clazz.pick.outcome,
         reason: detail
@@ -381,8 +417,7 @@ async function processOne(
     if (clazz.pick === null) {
       await sendReply(ctx, identity.identifier, {
         type: 'pick_rejected',
-        tt,
-        tc,
+        ...roundCtx,
         reason: 'formato non riconosciuto: invia squadra + esito (win, draw, lose)'
       });
       await deps.markSeen(message);
@@ -398,8 +433,7 @@ async function processOne(
     if (result.ok) {
       await sendReply(ctx, identity.identifier, {
         type: 'pick_confirmed',
-        tt,
-        tc,
+        ...roundCtx,
         team: clazz.pick.team,
         outcome: clazz.pick.outcome
       });
@@ -408,8 +442,7 @@ async function processOne(
     }
     await sendReply(ctx, identity.identifier, {
       type: 'pick_rejected',
-      tt,
-      tc,
+      ...roundCtx,
       team: clazz.pick.team,
       outcome: clazz.pick.outcome,
       reason: result.reason
@@ -441,10 +474,12 @@ async function processOne(
     await deps.markSeen(message);
     return { from: message.from, kind, action: 'silent_other', seen: true };
   }
-  const turn = round === null ? null : turnFor(db, round);
+  // ADR-011 (Task 7): il chiarimento usa il tipo DEDICATO `clarification`
+  // (soggetto "Non ho capito", CTA con le 3 opzioni + formula iscrizione col
+  // nome — convenzione 7); box deadline incluso se un round è aperto.
   await sendReply(ctx, identity.identifier, {
-    type: 'pick_rejected',
-    ...(turn ?? {}),
+    type: 'clarification',
+    ...(round === null ? {} : roundEmailContext(ctx, round)),
     reason:
       'non ho capito la tua richiesta: puoi iscriverti ("voglio iscrivermi"), disiscriverti ("voglio disiscrivermi") o inviare un pick (squadra + esito)'
   });

@@ -213,7 +213,7 @@ describe('simulateRound (Task 7.1/10, ADR-009)', () => {
 
   it('guardia DB piattaforma sporco (ADR-009/RNF1): account pre-esistenti → rifiuto pulito', async () => {
     const { platform, ctx } = makeCtx();
-    platform.register('estraneo@test.it', new Date('2026-09-01T10:00:00.000Z'));
+    platform.register('estraneo@test.it', null, new Date('2026-09-01T10:00:00.000Z'));
     await expect(simulateRound(ctx, 1)).rejects.toThrow(/pulito|pulita/);
   });
 });

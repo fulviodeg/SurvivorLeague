@@ -67,6 +67,7 @@ export const platformMigrateCommand: CommandModule<object, JsonArg> = {
 
 interface RegisterArgs extends JsonArg {
   email: string;
+  name?: string;
   reason?: string;
 }
 
@@ -81,6 +82,11 @@ export const platformRegisterCommand: CommandModule<object, RegisterArgs> = {
         demandOption: true,
         describe: 'Email dell\'account (univoca; normalizzata come il Message Router, K)'
       })
+      .option('name', {
+        type: 'string' as const,
+        describe:
+          'Nome del giocatore (ADR-011, RF-P1): salvato alla prima creazione; assente → il sistema usa l\'email al posto del nome'
+      })
       .option('reason', {
         type: 'string' as const,
         describe: 'Motivo auditato dell\'operazione (tracciabilità, US10)'
@@ -94,7 +100,7 @@ export const platformRegisterCommand: CommandModule<object, RegisterArgs> = {
       // Normalizzazione identità (K): stessa normalizzazione del Message Router
       // (trim, minuscolo, rimozione nome visualizzato) — identità coerente RNF2.
       const email = normalizeEmail(argv.email);
-      const account = registry.register(email, makeNow(config));
+      const account = registry.register(email, argv.name ?? null, makeNow(config));
       if (argv.json) {
         console.log(jsonWithTestMode(config, { account, reason: argv.reason }));
       } else {

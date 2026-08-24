@@ -18,6 +18,8 @@
 | [ADR-008](#adr-008-aggancio-asincrono-del-torneo-a-un-tc-arbitrario-e-forti-chiusure-garantite) | Aggancio asincrono del torneo a un TC arbitrario e chiusure garantite | Accepted (2026-08-14) |
 | [ADR-009](#adr-009-iscrizione-a-livello-di-piattaforma-con-storage-separato-e-auto-join-al-tt1) | Iscrizione a livello di piattaforma con storage separato e auto-join al TT1 | Accepted (2026-08-20) |
 | [ADR-010](#adr-010-chiarimenti-adr-009-post-revisione-2026-08-21) | Chiarimenti ADR-009 post-revisione 2026-08-21 | Accepted (2026-08-21) |
+| [ADR-011](#adr-011-email-v2-chiusura-automatica-del-torneo-nome-giocatore-e-timezone) | Email v2, chiusura automatica del torneo, nome giocatore e timezone | Accepted (2026-08-21) |
+| [ADR-012](#adr-012-emendamenti-adr-011-post-revisione-2026-08-21) | Emendamenti ADR-011 post-revisione 2026-08-21 | Accepted (2026-08-21) |
 
 ---
 
@@ -237,6 +239,59 @@
 - *Nuovo ADR separato per ogni correzione operativa* — scartato: sono correzioni puntuali emerse da un'unica revisione della stessa feature; un unico ADR di chiarimento le registra senza frammentare il log.
 
 **Conseguenze.** Il filtro `active` resta valido per tutte le notifiche di torneo e la comunicazione generica; il flusso di conferma iscrizione/disiscrizione funziona end-to-end anche verso account non `active` (carve-out documentato in PRD RF-P6). Il completamento della disiscrizione non dipende più dalla classificazione LLM (robusto su "confermo"→`other`); la matrice barriera/silenzio è coperta dai test (A1/A2/A6a/A6b). Le notifiche senza registry non partono più (fail-closed); la guardia di simulazione segue la fonte unica del default di produzione; il riepilogo di chiusura round non si perde più su errori di invio (guardia atomica con la transizione).
+
+---
+
+## ADR-011: Email v2, chiusura automatica del torneo, nome giocatore e timezone
+
+- **Status:** Accepted
+- **Date:** 2026-08-21
+- **Riferimenti:** ADR-004, ADR-008, ADR-009, ADR-010 · PRD v0.6.x (RF-P1, RF-P6, RF-18, RF-26) · LLD §6.2/§6.3/§6.4/§6.6/§7.7 · Piano `.kilo/plans/1787325393233-email-templates-v2.md` · Decisioni PO 2026-08-19/21 ("note personali", correzioni `email_*`, `tournament_auto_close_on_winner`, `winner_check_automatic_on_round_close`, `registered_user_name`)
+
+**Contesto.** Tre esigenze convergono: (1) le email del POC avevano uno stile "neutro" che il PO ha chiesto di rinnovare — stile unico più entusiasta, breve, focalizzato sugli eventi principali e sui prossimi passi, con riquadri di testo strutturato **plain-text** (opzione 2 approvata: NIENTE HTML), mai elenchi nominativi di partecipanti, soggetti neutri per le mail di esito; (2) il torneo terminava "a metà": `checkWinner` era invocato solo da CLI/status/simulazione e le mail `tournament_won`/`tournament_shared_win` non erano inviate da nessun punto (TODO utente del 2026-08-19, la spec già prevedeva l'hook "in Fasi successive" dal Round Manager); (3) i registrati senza profilo non avevano un nome da usare nelle mail e le date/timestamp erano ancorati a un fuso fisso non configurabile.
+
+**Decisione.**
+
+1. **Resa = canale, dati = canale-agnostici (architettura).** Nuovo `src/llm/email-renderer.ts`: renderer deterministico e PURO del canale email che compone header (coppia UMANA "Round N · Turno di campionato M", mai sigle TT/TC nelle mail), box ASCII (esito ✅/❌, deadline+countdown, squadre bruciate, partite/risultati, stato aggregato), sezioni dati e CTA per tipo. L'LLM produce SOLO il testo narrativo (2-4 frasi, ADR-004). Il Game Engine compone solo `EmailContext` (dati) e resta trasparente: un futuro WebAdapter riusa gli stessi dati con un renderer dedicato. `src/llm/templates.ts` è RISC RITTO (16 prompt, incluso `clarification`); il vecchio file resta come `templates.old.ts` morto (riferimento/retrocompatibilità, non importato). Niente parametro di selezione dello stile: un solo stile.
+2. **Stile unico "energetic" (convenzioni 1-11 approvate col PO).** Box deadline = elemento n.1 nelle mail che richiedono un pick, con countdown calcolato DAL SISTEMA (`formatRemaining(now, deadline)`, mai dall'LLM né dal renderer — clock iniettato, RNF1); box esito subito dopo l'header con testi esatti ✅/❌; mail di apertura torneo = SOLO annuncio ("il round 1 parte a breve: stai pronto!", niente invito al pick né date, riferimento "Iscritti alla piattaforma: N"); chiusura fissa dell'eliminato "Il torneo continua con N giocatori in gara. Grazie per essere stato con noi!" (mai "grazie per averci giocato", mai "seguire i prossimi round" per gli eliminati); soggetti NEUTRI per le mail di esito ("riepilogo del round"/"esito del round"); mai elenchi nominativi (solo conteggi aggregati). La matrice destinatari RF-P6 e la barriera unsubscribe restano INVARIATE (ADR-009/010): cambiano solo i testi.
+3. **Soggetti in forma umana.** `subjectFor` diventa "Survivor League — Round N · Turno di campionato M: etichetta" (coppia assente → senza prefisso); le forme compatte TT2TC7 restano SOLO per log/CLI (ADR-008).
+4. **Nome del giocatore end-to-end (RF-P1).** Il classificatore di intento restituisce `{intent, pick, name?}`: il nome è dedotto dalla mail di REGISTRAZIONE (formula di iscrizione ovunque: "dimmi il tuo nome e scrivi voglio iscrivermi"). `platform_account.name` (colonna additiva), `register(email, name, now)`, auto-join con `player.name = account.name ?? email` (un registrato senza nome usa l'email — correzione `registered_user_name`).
+5. **Chiusura AUTOMATICA e COMPLETA del torneo.** Nuovo hook `settleWinnerIfNeeded` del Round Manager, invocato dopo `closeRound` e dopo `scoreRound`: (a) `checkWinner` (invariato, sola lettura); (b) GUARDIA ATOMICA idempotente `tournament_state.winner_notified = 1` + `finished_at = <clock>` (migrazione additiva; ri-avvii/CL9 non duplicano); (c) notifica vincitori (`tournament_won`/`tournament_shared_win`, best-effort per destinatario con filtro account `active`); (d) EXPORT AUTOMATICO (riuso di `tournamentExport`, dump JSON in `TOURNAMENT_EXPORT_DIR` con filename dal clock iniettato) — l'archivio che rende sicuro il reset; (e) inibizione dello scheduler: `computeActions` ritorna `[]` a torneo chiuso; (f) `tournament:start` RIAMMISSIBILE su torneo chiuso: reset ATOMICO del solo DB di GIOCO (pick/profile/player/round_state) + reset di `tournament_state`; il DB piattaforma NON è toccato (ADR-009: account e nomi sopravvivono). `winner:check` resta comando di SOLA LETTURA (vista/audit), senza side-effect. La riga crontab fisica resta responsabilità operativa del commissioner (documentata nella guida test-mode).
+6. **Timezone di sistema.** Nuovo parametro `TIMEZONE` (stringa IANA, default `Europe/Rome`, VALIDATA al boot con prova `Intl.DateTimeFormat`): il sistema di gioco lavora su istanti UTC assoluti; il fuso conta SOLO per la comunicazione verso l'esterno — formattazione delle date nelle email e timestamp dei log pino (con offset esplicito, es. `2026-08-21T18:23:15+02:00`). Default del logger = comportamento attuale (UTC) per il path di emergenza ConfigError.
+
+**Alternative considerate.**
+- *Email in HTML/multipart* — scartata: opzione 2 approvata (plain-text strutturato con riquadri ASCII), canale più semplice e robusto.
+- *Parametro `.env` per selezionare lo stile email* — scartata (correzione PO `email_style_new_variant`): lo stile è proprio dell'email adapter; esiste un solo stile, il vecchio resta solo per retrocompatibilità come file morto.
+- *Chiusura del torneo via comando CLI separato* — scartata: l'automazione vive nel Round Manager (la spec già lo prevedeva); `winner:check` resta sola lettura per l'audit.
+- *Unificazione degli offset UAT* — fuori da questa ADR (gestita dal piano UAT).
+- *Check vincitore a ogni invocazione di `tournament:status`* — scartata: gli status restano sola lettura; l'hook è solo su close/score (idempotente), il check dello stato resta comunque consultabile via `winner:check`/status.
+
+**Conseguenze.** I testi email sono composti in modo deterministico attorno a una narrativa LLM breve (mitigazione del rischio "LLM ripete numeri/date": i prompt v2 lo vietano); il torneo si chiude da solo con notifica, export archivio e scheduler fermo, ed è riavviabile dallo stesso sistema senza perdere lo storico (che sta nell'export); i nomi dei giocatori viaggiano dalla mail di registrazione fino alle email e ai profili; date e log rispettano il fuso configurato senza toccare le decisioni di gioco (sempre UTC). `winner_notified`/`finished_at` e `platform_account.name` sono migrazioni additive idempotenti.
+
+---
+
+## ADR-012: Emendamenti ADR-011 post-revisione 2026-08-21
+
+- **Status:** Accepted
+- **Date:** 2026-08-21
+- **Riferimenti:** ADR-011 · ADR-004 · ADR-006 · Piano `.kilo/plans/1787340283469-review-findings-fix.md` (D1–D5, HIGH-1/HIGH-2, MEDIUM-1/2/3, LOW-1/3/4/5)
+
+**Contesto.** La revisione tecnica indipendente del 2026-08-21 sull'implementazione di ADR-011 (email v2, chiusura automatica) ha rilevato: (HIGH-1) l'export automatico scriveva direttamente con `node:fs` DENTRO il Game Engine (`round-manager.ts`), violando il confine architetturale ADR-004/§1.3 ("mai I/O nei moduli di gioco") e rendendo il riavvio insicuro — il reset del DB di gioco poteva distruggere l'unico storico se l'export non era stato scritto; (MEDIUM-1/2) a torneo chiuso i comandi `round:open`/`round:score` restavano invocabili, con `round:score` che inviava ancora email di esito dopo la chiusura; (LOW-3/4/5 e minori) countdown fuorviante oltre la deadline, campo morto `EmailMatchContext.date`, export scritto anche in simulazione dry-run, numeri di turno nel prompt, sonda timezone dipendente dal locale.
+
+**Decisione.**
+
+1. **Seam di archiviazione (§1.3).** L'export automatico della chiusura NON usa più `node:fs` nei moduli di gioco: il `GameContext` espone un seam opzionale `archiveTournament?: (dump, now) => string` iniettato dalla CLI tramite il nuovo `src/cli/archive-wiring.ts` (`archiveTournamentFile`, `makeArchiveTournament`, `attachArchiveToContext`). Il filename resta derivato dal clock iniettato (`exportFilename`, puro, determinismo RNF1) e il dedup `-N` su file esistente è deterministico (MEDIUM-3, nessun RNG/UUID).
+2. **`export_path` + gate di riavvio (HIGH-1).** Nuova colonna additiva `tournament_state.export_path TEXT` (NULL = export non archiviato), scritta SOLO dopo una `writeFileSync` riuscita (sincrona ⇒ non-null ⇒ file archiviato). `tournament:start` su torneo chiuso è RIAMMESSO solo se `export_path` è valorizzato; altrimenti rifiuta ("Torneo chiuso senza export archiviato: riavvio rifiutato"). Il reset del DB di gioco azzera anche `export_path = NULL`. Un torneo chiuso PRIMA di questo fix (winner_notified=1 ma export_path NULL) non è riavviabile: accettato, l'export non era mai stato garantito.
+3. **`round:open` rifiuta a torneo chiuso (MEDIUM-1).** Nuovo helper `isTournamentClosed(db)` (winner_notified=1): `openRound` lancia se il torneo è chiuso — l'unica prosecuzione è `tournament:start`.
+4. **`round:score` tace a torneo chiuso (MEDIUM-2).** A torneo chiuso una ricontabilizzazione aggiorna comunque lo stato DB (idempotenza RF-17) ma NON invia email di esito: `round_result_*`, `pick_postponed` e il riepilogo `round_closed_survived` sono saltati.
+5. **Export assente in simulazione (dry-run, LOW-5).** `simulate:*` NON inietta il seam: senza `archiveTournament` la chiusura logga un warn ("no archive dependency") e non scrive file né `export_path` — coerenza con R1 (nessun I/O) e niente più file spuri in `./data/exports/` dai test.
+
+**Alternative considerate.**
+- *Export con `node:fs` diretto nel Game Engine (status quo)* — scartato: viola ADR-004/§1.3 (I/O nei moduli di gioco) e rende il dry-run non sicuro.
+- *Riavvio ammesso anche senza export archiviato* — scartato: distruggerebbe l'unico storico del torneo precedente (nessun altro archivio).
+- *`round:score` che invia ancora le email a torneo chiuso (status quo)* — scartato: email di esito fuorvianti dopo la fine del torneo.
+
+**Conseguenze.** Il confine I/O/game è ripristinato (mai `node:fs` nei moduli di gioco); il riavvio è sicuro e ancorato alla presenza dell'archivio; `round:open`/`round:score` rispettano lo stato chiuso; la simulazione resta dry-run pura. `export_path` è una migrazione additiva idempotente; i test di integrazione e la simulazione non scrivono più in `./data/exports/`.
 
 ---
 

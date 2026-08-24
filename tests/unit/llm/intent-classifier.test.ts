@@ -57,7 +57,7 @@ describe('Intent Classifier — intento per classe di messaggi (ADR-009, RF-P1/P
       Promise.resolve(jsonText('{"intent": "subscribe", "pick": null}'))
     );
     const result = await classifier.classify('vorrei iscrivermi al torneo!', opts);
-    expect(result).toEqual({ intent: 'subscribe', pick: null });
+    expect(result).toEqual({ intent: 'subscribe', pick: null, name: null });
   });
 
   it('messaggio di disiscrizione → unsubscribe (pick null)', async () => {
@@ -65,7 +65,7 @@ describe('Intent Classifier — intento per classe di messaggi (ADR-009, RF-P1/P
       Promise.resolve(jsonText('{"intent": "unsubscribe", "pick": null}'))
     );
     const result = await classifier.classify('non voglio più giocare, disiscrivetemi', opts);
-    expect(result).toEqual({ intent: 'unsubscribe', pick: null });
+    expect(result).toEqual({ intent: 'unsubscribe', pick: null, name: null });
   });
 
   it('messaggio di pick → pick con estrazione canonica (UNA chiamata)', async () => {
@@ -77,7 +77,7 @@ describe('Intent Classifier — intento per classe di messaggi (ADR-009, RF-P1/P
     const { classifier, requests } = makeClassifier(fetchImpl);
     const result = await classifier.classify('Ciao, per questo turno scelgo la Juve vincente!', opts);
 
-    expect(result).toEqual({ intent: 'pick', pick: { team: 'Juventus FC', outcome: 'win' } });
+    expect(result).toEqual({ intent: 'pick', pick: { team: 'Juventus FC', outcome: 'win' }, name: null });
     // UNA SOLA chiamata LLM (intento + estrazione insieme, ADR-009).
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const body = JSON.parse(requests[0] ?? '{}') as {
@@ -99,7 +99,40 @@ describe('Intent Classifier — intento per classe di messaggi (ADR-009, RF-P1/P
     );
     expect(await classifier.classify('che bella giornata!', opts)).toEqual({
       intent: 'other',
-      pick: null
+      pick: null,
+      name: null
+    });
+  });
+
+  it('nome del giocatore dedotto SOLO dall\'iscrizione (ADR-011, RF-P1)', async () => {
+    // "mi chiamo Mario e voglio iscrivermi" → name: "Mario".
+    const withName = makeClassifier(() =>
+      Promise.resolve(jsonText('{"intent": "subscribe", "pick": null, "name": "Mario"}'))
+    );
+    expect(await withName.classifier.classify('mi chiamo Mario e voglio iscrivermi', opts)).toEqual({
+      intent: 'subscribe',
+      pick: null,
+      name: 'Mario'
+    });
+    // Iscrizione senza nome → name null (il sistema userà l'email).
+    const noName = makeClassifier(() =>
+      Promise.resolve(jsonText('{"intent": "subscribe", "pick": null, "name": null}'))
+    );
+    expect(await noName.classifier.classify('voglio iscrivermi', opts)).toEqual({
+      intent: 'subscribe',
+      pick: null,
+      name: null
+    });
+    // name su intento diverso da subscribe → forzato a null.
+    const pickWithName = makeClassifier(() =>
+      Promise.resolve(
+        jsonText('{"intent": "pick", "pick": {"team": "Juventus FC", "outcome": "win"}, "name": "Mario"}')
+      )
+    );
+    expect(await pickWithName.classifier.classify('juve vincente', opts)).toEqual({
+      intent: 'pick',
+      pick: { team: 'Juventus FC', outcome: 'win' },
+      name: null
     });
   });
 });
@@ -113,7 +146,8 @@ describe('Intent Classifier — barriera deterministica esatta (D2/C) e contenut
     );
     expect(await classifier.classify('scelgo Juve Inventata FC', opts)).toEqual({
       intent: 'pick',
-      pick: null
+      pick: null,
+      name: null
     });
   });
 
@@ -123,14 +157,14 @@ describe('Intent Classifier — barriera deterministica esatta (D2/C) e contenut
         jsonText('{"intent": "pick", "pick": {"team": "Juventus FC", "outcome": "vittoria"}}')
       )
     );
-    expect(await classifier.classify('juve vittoria', opts)).toEqual({ intent: 'other', pick: null });
+    expect(await classifier.classify('juve vittoria', opts)).toEqual({ intent: 'other', pick: null, name: null });
   });
 
   it('intento pick con pick null (ambiguo) → resta pick null', async () => {
     const { classifier } = makeClassifier(() =>
       Promise.resolve(jsonText('{"intent": "pick", "pick": null}'))
     );
-    expect(await classifier.classify('forse la roma', opts)).toEqual({ intent: 'pick', pick: null });
+    expect(await classifier.classify('forse la roma', opts)).toEqual({ intent: 'pick', pick: null, name: null });
   });
 
   it('intento non-pick con pick valorizzato → pick forzato a null', async () => {
@@ -141,20 +175,21 @@ describe('Intent Classifier — barriera deterministica esatta (D2/C) e contenut
     );
     expect(await classifier.classify('mi iscrivo', opts)).toEqual({
       intent: 'subscribe',
-      pick: null
+      pick: null,
+      name: null
     });
   });
 
   it('output non-JSON → other senza crash (CS7)', async () => {
     const { classifier } = makeClassifier(() => Promise.resolve(jsonText('Ciao! non sono JSON')));
-    expect(await classifier.classify('ciao', opts)).toEqual({ intent: 'other', pick: null });
+    expect(await classifier.classify('ciao', opts)).toEqual({ intent: 'other', pick: null, name: null });
   });
 
   it('output malformato (campi di tipo errato) → other senza crash (CS7)', async () => {
     const { classifier } = makeClassifier(() =>
       Promise.resolve(jsonText('{"intent": 42, "pick": "sbagliato"}'))
     );
-    expect(await classifier.classify('42', opts)).toEqual({ intent: 'other', pick: null });
+    expect(await classifier.classify('42', opts)).toEqual({ intent: 'other', pick: null, name: null });
   });
 
   it('lista vuota (DB senza dati) → intento COMUNQUE classificato, pick azzerato dal filtro esatto', async () => {
@@ -169,7 +204,8 @@ describe('Intent Classifier — barriera deterministica esatta (D2/C) e contenut
     const { classifier } = makeClassifier(fetchImpl);
     expect(await classifier.classify('mi iscrivo', { teams: [], aliases: ALIASES })).toEqual({
       intent: 'subscribe',
-      pick: null
+      pick: null,
+      name: null
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });

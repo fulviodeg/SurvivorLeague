@@ -310,6 +310,19 @@ ENV_FILE=.env.uat npm run cli -- round:close --round <N> --force --reason "chius
 ENV_FILE=.env.uat npm run cli -- round:score --round <N>
 ```
 
+> **Apertura a deadline scaduta (guardia, incidente UAT 2026-08-22).** Se si
+> tenta `round:open` quando la deadline del round è **già passata** (es.
+> `--first-kickoff-offset-min` troppo piccolo rispetto al tempo impiegato tra
+> seed e apertura), il comando **rifiuta** con l'errore `Deadline del round N
+> non futura (…): apertura rifiutata (nessun pick sarebbe accettabile)` — e NON
+> scrive nulla. È la protezione contro la trappola reale osservata in UAT:
+> un round aperto 24 secondi dopo la sua deadline produceva ZERO pick
+> registrati e ZERO profili creati (ogni pick veniva rifiutato dal gate RF-31
+> e l'auto-join faceva ROLLBACK), con i giocatori invitati a fare
+> l'impossibile. Se incontri l'errore: **non forzare** — rifai il seed con
+> margini ampi (`--first-kickoff-offset-min 60` e i valori di §1.3) e apri il
+> round SUBITO dopo il seed, prima della deadline.
+
 **Verifica e controllo per ogni giornata (sola lettura):**
 
 ```bash
@@ -457,6 +470,26 @@ crontab del sistema (ogni minuto):
   aprire/chiudere — le azioni `register_close_auto`/`register_close_safety`
   sono rimosse: l'iscrizione piattaforma è sempre aperta e la partecipazione
   è gated dalla deadline del TT1 (auto-join).
+
+> **Nota ADR-011 — torneo chiuso automaticamente (attività di chiusura del
+> commissioner).** Quando il sistema identifica il vincitore (dopo `round:close`
+> o `round:score`, in automatico anche in cron), il torneo si chiude da solo:
+> notifica ai vincitori, **export automatico** in `TOURNAMENT_EXPORT_DIR`
+> (archivio JSON del torneo) e **scheduler fermo** (`scheduler:status` mostra
+> "FINITO (chiuso automaticamente)", nessuna azione ulteriore: il sistema NON
+> apre più round né invia email di gioco). Resta quindi una sola attività
+> **operativa manuale** del commissioner a torneo chiuso: **rimuovere la riga
+> crontab di `scheduler:tick`** (la prima delle due righe), così il cron non
+> esegue più tick inutili; `channel:email:process` può restare attivo
+> (iscrizioni/disiscrizioni e chiarimenti continuano a funzionare). Lo
+> storico del torneo chiuso è consultabile nell'export automatico e con
+> `winner:check` (sola lettura). Per avviare un **nuovo torneo** dallo
+> stesso sistema: `tournament:start` è riammesso quando il torneo precedente
+> è chiuso (`winner_notified=1`): azzera il solo DB di gioco
+> (pick/profile/player/round_state) in una transazione atomica, lascia
+> INTATTO il DB piattaforma (account e nomi, ADR-009) e riparte con la
+> finestra richiesta; l'export della chiusura è l'archivio del torneo
+> precedente (verificarne la presenza PRIMA del riavvio).
 
 **Vincolo fondamentale (cron):** in modalità cron su calendario sintetico,
 `TEST_REFRESH_ALLOWED` deve restare `false` (il default). Così il refresh
@@ -862,6 +895,102 @@ ENV_FILE=.env.uat npm run cli -- simulate:full --start-round 3
 > subito a `scored`. In tal caso non si esercitano le finestre di pick reali
 > né l'invio email: si controlla solo che i comandi esistano e completino.
 
+### 5.5 Scenario: risultati che arrivano DOPO la creazione del calendario
+
+**Cosa dimostra.** Negli esempi §5.1–§5.4 i punteggi sono **pre-seedati**: il
+seed li scrive nella tabella `match` fin dall'inizio, quindi `round:score`
+trova subito i risultati e la giornata passa a `scored` senza attese. Questo
+scenario invece simula la situazione **reale di produzione**, dove i risultati
+delle partite **non sono noti al momento della creazione del calendario** e
+arrivano successivamente (in produzione: partite `SCHEDULED`/`TIMED`/
+`IN_PLAY` senza punteggio, poi `FINISHED` → i punteggi arrivano con
+`data:refresh`). Dimostra il ramo **incrementale della contabilizzazione**
+(ADR-003, CL7/RF-16):
+
+- con `round:score` e risultati assenti, i pick **restano `pending`** e il
+  round **non passa a `scored`** (resta `closed`, `scored_at` vuoto, nessun
+  riepilogo/email di esito inviato);
+- quando i risultati arrivano, basta **rilanciare `round:score`**: i pick
+  vengono valutati (`correct`/`wrong`), il round passa a `scored` e partono
+  le email di esito e il riepilogo `round_closed_survived`.
+
+È anche il ramo che in **modalità cron** lo scheduler ripete da solo a ogni
+tick finché non arrivano i punteggi (azione `round_score` su round `closed`
+non `scored`).
+
+**Come si fa (modalità commissioner, calendario compresso, email reali).**
+Si parte dal seed normale e poi si **azzerano i punteggi** nella tabella
+`match` con una **query diretta sul DB** (il test mode non ha un comando
+dedicato: i punteggi sintetici sono sempre generati, D5). Lo stesso
+aggiornamento manuale viene usato per "far arrivare" i risultati. Le query si
+eseguono con `sqlite3` sul DB del torneo (`DB_PATH` di `.env.uat`), oppure
+con un piccolo script Node che usa `better-sqlite3`.
+
+```bash
+# 1. Setup — DB migrati e seed compresso (esempio: 4 squadre, 2 giornate)
+ENV_FILE=.env.uat npm run cli -- db:migrate
+ENV_FILE=.env.uat npm run cli -- platform:migrate
+ENV_FILE=.env.uat npm run cli -- data:seed-synthetic --teams 4 --rounds 2 --spacing-min 10 --first-kickoff-offset-min 15 --seed 42
+
+# 2. Simula risultati NON ancora arrivati: azzera i punteggi del round 1
+#    (in produzione equivale a partite SCHEDULED/IN_PLAY, senza punteggio).
+#    Query diretta sul DB del torneo:
+sqlite3 data/uat-synthetic-pippo.db "UPDATE match SET home_score = NULL, away_score = NULL WHERE round = 1;"
+
+# 3. Avvio e iscrizioni come al solito (3 giocatori attivi già iscritti)
+ENV_FILE=.env.uat npm run cli -- tournament:start
+ENV_FILE=.env.uat npm run cli -- round:open --round 1
+#    (i giocatori inviano i pick via email entro la deadline del TT1)
+
+# 4. Acquisizione pick (auto-join al TT1, RF-P5)
+ENV_FILE=.env.uat npm run cli -- channel:email:process
+
+# 5. Chiusura + PRIMO score CON risultati assenti
+ENV_FILE=.env.uat npm run cli -- round:close --round 1 --force --reason "UAT risultati non noti"
+ENV_FILE=.env.uat npm run cli -- round:score --round 1
+#    Output atteso: "Round 1 (TT 1) → closed — valutati: 0, frozen: 0, eliminati: 0"
+#    Il round NON passa a scored: i pick restano pending, nessun riepilogo inviato.
+#    Verifica: round:status → "closed", round_state.scored_at = NULL, summary_sent = 0.
+
+# 6. Arrivano i risultati (in produzione: data:refresh con partite FINISHED).
+#    Query diretta sul DB del torneo — i punteggi VERI del round:
+sqlite3 data/uat-synthetic-pippo.db "UPDATE match SET home_score = 3, away_score = 2 WHERE round = 1 AND home_team = 'Brescia Calcio';"
+sqlite3 data/uat-synthetic-pippo.db "UPDATE match SET home_score = 2, away_score = 1 WHERE round = 1 AND home_team = 'US Cremonese';"
+
+# 7. SECONDO score → i pick vengono valutati e il round si contabilizza
+ENV_FILE=.env.uat npm run cli -- round:score --round 1
+#    Output atteso: "Round 1 (TT 1) → scored — valutati: 3, frozen: 0, eliminati: 0"
+#    (valutati = numero di pick; eliminati = pick WRONG del round)
+#    Ora partono le email di esito (round_result_correct/wrong) e il riepilogo
+#    round_closed_survived ai sopravvissuti.
+
+# 8. Ripeti per il round 2: azzera i punteggi del round 2 PRIMA di aprirlo,
+#    poi open → pick → close → score (resta "closed") → inietta i risultati →
+#    score (passa a "scored"). Se il round 2 è l'ultimo, alla contabilizzazione
+#    il torneo si chiude da solo (ADR-011): notifica vincitori + export automatico
+#    in TOURNAMENT_EXPORT_DIR e scheduler inibito ("Prossime azioni: nessuna").
+```
+
+> **Note operative dello scenario.**
+>
+> - **L'azzeramento va fatto prima di `round:open`** (o comunque prima dello
+>   score del round): azzerare dopo aver già contabilizzato non ha effetto
+>   (i pick sarebbero già `correct`/`wrong`).
+> - **Query solo sulla tabella `match`**: non toccare mai `pick`/
+>   `round_state`/`tournament_state` a mano — l'azzeramento dei punteggi
+>   simula esclusivamente lo stato "risultati non ancora arrivati" e il
+>   Round Manager lo gestisce da solo (pick `pending`, CL7).
+> - **Deadline reali**: con calendario compresso le deadline scadono in
+>   pochi minuti (es. offset 15' e `DEADLINE_ADVANCE_MIN=3` → deadline TT1 a
+>   12 minuti dal seed). Avvio e `round:open` vanno fatti entro quel lasso
+>   (gate RF-21 e guardia di `round:open`), come negli altri esempi.
+> - **Chi si ferma a metà** (round `closed` con `pending` senza risultati) non
+>   rompe nulla: lo stato è coerente e si può riprendere rilanciando
+>   `round:score` dopo l'iniezione dei risultati.
+> - I punteggi usati nell'esempio (3-2 e 2-1 al round 1) sono **arbitrari**:
+>   scegline di tuoi, purché coerenti con i pick dei giocatori se vuoi
+>   verificare esiti `correct`/`wrong` specifici.
+
 ---
 
 ## 6. Scope del test mode (cosa si può dimostrare e cosa no)
@@ -888,6 +1017,11 @@ ENV_FILE=.env.uat npm run cli -- simulate:full --start-round 3
 - **Vincitore** (ultimo profilo rimasto, o vittoria condivisa nei casi previsti).
 - **Banner e segnalazione ovunque:** `TEST MODE` in CLI, `testMode` nei JSON e
   nei log, banner nelle email inviate.
+- **Risultati che arrivano dopo la creazione del calendario** (scenario §5.5):
+  partite senza punteggio → pick `pending` e round che non passa a `scored`
+  (CL7/RF-16), poi arrivo dei risultati → secondo `round:score` che
+  contabilizza (ADR-003). È il ramo incrementale che in cron lo scheduler
+  riprova a ogni tick finché i punteggi non arrivano.
 
 ### 6.2 Cosa NON si può dimostrare nel flusso sintetico
 
@@ -903,7 +1037,9 @@ con punteggi pre-seedati:
 - **chiusura di sicurezza** (RF-30) e anomalie `warn_not_calculable`: si
   verificano quando la deadline manca o la chiusura del TC non è calcolabile;
 - **flusso dati reale** (refresh dall'API): in test mode è bloccato di default
-  proprio per proteggere il calendario sintetico.
+  proprio per proteggere il calendario sintetico. L'**effetto** del refresh
+  (punteggi che arrivano su partite prima senza) è però simulabile con le
+  query dirette sulla tabella `match` dello scenario §5.5.
 - il **confine di girone reale a TC 20** della Serie A (dimostrabile solo in
   replay, vedi §7);
 - l'**aggancio a un TC oltre il numero di giornate generate**: nel sintetico

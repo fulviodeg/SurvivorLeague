@@ -12,7 +12,9 @@
  *     pick ai profili attivi con le sole squadre disponibili (decisione 12).
  *     All'apertura del SOLO TT 1 notifica anche gli account piattaforma
  *     `active` senza profilo (amendment RF-P6, 2026-08-21). Errore se il
- *     round è già aperto o in stato non riapribile.
+ *     round è già aperto o in stato non riapribile. GUARDIA (fix UAT
+ *     2026-08-22): rifiuta l'apertura se la deadline calcolata è GIÀ scaduta
+ *     (`now >= deadline`) — vedi il corpo della funzione.
  *   - `round:close`  — CONSOLIDA: elimina i profili attivi senza pick
  *     (`missing_pick`), notifica, `closed_at`, status `closed`. Con `--force`
  *     richiede `--reason` (audit obbligatorio, RF-29): stessa identica
@@ -40,12 +42,15 @@
  */
 import type Database from 'better-sqlite3';
 
-import { subjectFor, type EmailContext } from '../llm/generator.js';
+import { subjectFor, type EmailBurnedTeam, type EmailContext, type EmailMatchContext } from '../llm/generator.js';
+import type { Match } from '../data/provider.js';
 import type { GameContext } from './context.js';
 import { eliminate } from './elimination.js';
-import { computeDeadline, computeTcClose } from './round-time.js';
-import { getAvailableTeams, pickOutcomeFor } from './rules.js';
-import { turnFor } from './turn.js';
+import { computeDeadline, computeTcClose, formatRemaining } from './round-time.js';
+import { checkHalf, getAvailableTeams, halfWindow, pickOutcomeFor } from './rules.js';
+import { getTournamentState, isTournamentClosed, tournamentExport } from './tournament.js';
+import { getStartRound, ttFor, turnFor } from './turn.js';
+import { checkWinner, type WinnerInfo } from './winner.js';
 
 /** Riga `round_state` letta dal DB. */
 interface RoundStateRow {
@@ -90,6 +95,19 @@ function isAccountActive(ctx: GameContext, email: string): boolean {
   if (ctx.platform === undefined) return false;
   const account = ctx.platform.find(email);
   return account !== null && account.status === 'active';
+}
+
+/**
+ * Conteggio dei profili ancora in gara (`eliminated = 0`): UNA query,
+ * riusata dai punti di notifica di chiusura/contabilizzazione per garantire
+ * lo STESSO valore a ogni destinatario della stessa run (fix review
+ * 2026-08-23 — prima veniva ricalcolato dentro i loop di eliminazione,
+ * producendo conteggi divergenti tra le email; convenzione 10).
+ */
+function countInGame(db: Database.Database): number {
+  return (
+    db.prepare('SELECT COUNT(*) AS n FROM profile WHERE eliminated = 0').get() as { n: number }
+  ).n;
 }
 
 /** Esito di `round:open`. */
@@ -201,7 +219,7 @@ function getActiveProfiles(db: Database.Database): ActiveProfile[] {
  * dei componenti manca (CLI di Fase 3) è un no-op: le email reali arrivano
  * nelle Fasi 5–6 (briefing §6.5). Restituisce true se l'email è stata
  * effettivamente inviata. Il soggetto è composto deterministicamente con
- * `subjectFor` (D1, RF-25).
+ * `subjectFor` (D1, forma umana ADR-011).
  */
 async function notify(ctx: GameContext, to: string, emailCtx: EmailContext): Promise<boolean> {
   if (ctx.channel === undefined || ctx.generator === undefined) return false;
@@ -209,6 +227,48 @@ async function notify(ctx: GameContext, to: string, emailCtx: EmailContext): Pro
   const body = await ctx.generator.generate(emailCtx);
   await ctx.channel.sendMessage(to, body, subjectFor(emailCtx));
   return true;
+}
+
+/** Converte i match del provider nel contesto email (nomi/date/punteggi, ADR-011). */
+function toEmailMatches(matches: Match[]): EmailMatchContext[] {
+  return matches.map((m) => ({
+    home: m.homeTeam,
+    away: m.awayTeam,
+    ...(m.homeScore !== undefined && m.awayScore !== undefined
+      ? { score: { home: m.homeScore, away: m.awayScore } }
+      : {}),
+    ...(m.postponed ? { postponed: true } : {})
+  }));
+}
+
+/**
+ * Squadre bruciate di un profilo per il box dedicato (convenzione 3): squadra
+ * + round del torneo (TT) di utilizzo. Derivate dalle PICK del profilo nel
+ * girone del round (stessa finestra di `getBurnedTeams` — unica fonte in
+ * src/game/rules.ts, qui riusata via `halfWindow`/`checkHalf` per ottenere
+ * anche il round di utilizzo: nessuna duplicazione della regola del girone).
+ * `startRound` è letto UNA volta dal chiamante (fix review 2026-08-23: prima
+ * ogni riga bruciata rilanciando `turnFor` rileggeva `tournament_state` —
+ * N query identiche per profilo): il TT deriva con `ttFor` puro.
+ */
+function getBurnedEmailTeams(
+  db: Database.Database,
+  profileId: number,
+  round: number,
+  totalRounds: number,
+  startRound: number
+): EmailBurnedTeam[] {
+  const { min, max } = halfWindow(checkHalf(round, totalRounds), totalRounds);
+  const rows = (max === null
+    ? db
+        .prepare('SELECT team, round AS r FROM pick WHERE profile_id = ? AND round >= ? ORDER BY r')
+        .all(profileId, min)
+    : db
+        .prepare(
+          'SELECT team, round AS r FROM pick WHERE profile_id = ? AND round BETWEEN ? AND ? ORDER BY r'
+        )
+        .all(profileId, min, max)) as Array<{ team: string; r: number }>;
+  return rows.map((row) => ({ team: row.team, round: ttFor(row.r, startRound) }));
 }
 
 /**
@@ -222,6 +282,13 @@ async function notify(ctx: GameContext, to: string, emailCtx: EmailContext): Pro
 export async function openRound(ctx: GameContext, round: number): Promise<RoundOpenResult> {
   const { db, dataProvider, config, now } = ctx;
 
+  // MEDIUM-1 (ADR-011 §5.5, emendamento post-revisione): a torneo CHIUSO
+  // (winner_notified=1) non si apre più alcun round — il torneo è finito e
+  // l'unica prosecuzione è il riavvio via `tournament:start`.
+  if (isTournamentClosed(db)) {
+    throw new Error('Torneo chiuso: non è possibile aprire un nuovo round (riavvia con tournament:start)');
+  }
+
   const existing = getRoundState(db, round);
   if (existing !== undefined && existing.status !== 'pending') {
     throw new Error(
@@ -232,6 +299,22 @@ export async function openRound(ctx: GameContext, round: number): Promise<RoundO
   // Deadline fissa: kickoff effettivo (MIN match_date dei non rinviati) − anticipo.
   const kickoff = await dataProvider.getFirstMatchDateTime(round);
   const deadline = computeDeadline(kickoff, config.DEADLINE_ADVANCE_MIN);
+  // GUARDIA UAT 2026-08-22: aprire un round con deadline GIÀ SCADUTA crea una
+  // trappola — ogni pick successivo verrebbe rifiutato dalla cascata RF-31
+  // (`after_acceptance`/`after_kickoff`) e l'auto-join farebbe ROLLBACK senza
+  // creare profili: è esattamente l'incidente UAT reale (round aperto 24s dopo
+  // la deadline, 0 pick registrati, 0 profili, giocatori invitati a fare
+  // l'impossibile). Stesso stile del gate RF-21 in `tournament:start`:
+  // rifiuto pulito PRIMA di qualunque scrittura (nessuno stato parziale).
+  // Nota: `deadline <= now` anche a parità esatta — una finestra pick di
+  // lunghezza zero non è una finestra. Lo scheduler apre i round appena il TC
+  // precedente è `scored`, sempre con kickoff futuri (deadline futura), quindi
+  // il flusso automatico non è impattato.
+  if (deadline <= now) {
+    throw new Error(
+      `Deadline del round ${round} non futura (${deadline.toISOString()}): apertura rifiutata (nessun pick sarebbe accettabile)`
+    );
+  }
   if (existing === undefined) {
     db.prepare(
       "INSERT INTO round_state (round, status, deadline, opened_at) VALUES (?, 'open', ?, ?)"
@@ -242,7 +325,15 @@ export async function openRound(ctx: GameContext, round: number): Promise<RoundO
     ).run(deadline.toISOString(), now.toISOString(), round);
   }
 
-  const { tt, tc } = turnFor(db, round);
+  // Coppia TT/TC derivata (RF-25): `startRound` è letto UNA volta qui e
+  // riusato da `getBurnedEmailTeams` per ogni profilo (fix review
+  // 2026-08-23: nessuna rilettura di tournament_state per riga bruciata).
+  const startRound = getStartRound(db);
+  const tt = ttFor(round, startRound);
+  const tc = round;
+  const matches = await dataProvider.getMatchesForRound(round);
+  const totalRounds = await dataProvider.getTotalRounds();
+  const emailMatches = toEmailMatches(matches);
 
   // Email pick ai profili attivi: solo squadre disponibili del profilo
   // (decisione 12). Le email dei profili attivi finiscono in un Set
@@ -257,10 +348,16 @@ export async function openRound(ctx: GameContext, round: number): Promise<RoundO
     const sent = await notify(ctx, profile.email, {
       type: 'pick_instructions',
       playerName: profile.playerName,
-      tt,
-      tc,
+      round: tt,
+      championshipRound: tc,
+      roundStart: kickoff,
+      deadline,
+      // Countdown calcolato DAL SISTEMA col clock iniettato (ADR-011, RNF1):
+      // mai dall'LLM e mai dal renderer.
+      deadlineRemaining: formatRemaining(now, deadline),
       availableTeams,
-      deadline
+      burnedTeams: getBurnedEmailTeams(db, profile.id, round, totalRounds, startRound),
+      matches: emailMatches
     });
     if (sent) notified += 1;
   }
@@ -274,28 +371,32 @@ export async function openRound(ctx: GameContext, round: number): Promise<RoundO
   // già profili e il loop qui sopra li copre. Le squadre in giornata sono
   // calcolate UNA volta per l'intero blocco (stessa fonte di
   // getAvailableTeams, ma senza profilo non esistono bruciate) e ordinate
-  // come getTeams() per output deterministico. `playerName` è omesso: un
-  // account piattaforma senza profilo non ha nome (il template omette i
-  // dati assenti). Il filtro sullo stato `active` resta dentro `notify`
-  // (isAccountActive, fail-closed); senza registry iniettato
-  // (ctx.platform undefined, es. simulazione o chiamante senza registry)
-  // il blocco è saltato: nessun crash, coerenza col test "senza registry
-  // → nessuna email". Senza channel/generator `notify` è no-op e il
-  // conteggio resta 0.
+  // come getTeams() per output deterministico. ADR-011 (RF-P1): il nome
+  // arriva dall'account piattaforma (`account.name ?? email` — un
+  // registrato senza nome usa l'email). Il filtro sullo stato `active`
+  // resta dentro `notify` (isAccountActive, fail-closed); senza registry
+  // iniettato (ctx.platform undefined, es. simulazione o chiamante senza
+  // registry) il blocco è saltato: nessun crash, coerenza col test "senza
+  // registry → nessuna email". Senza channel/generator `notify` è no-op e
+  // il conteggio resta 0.
   let registeredNotified = 0;
   if (tt === 1 && ctx.platform !== undefined) {
-    const matches = await dataProvider.getMatchesForRound(round);
     const inRound = new Set(matches.flatMap((m) => [m.homeTeam, m.awayTeam]));
     const inRoundTeams = (await dataProvider.getTeams()).filter((team) => inRound.has(team));
     for (const email of ctx.platform.activeEmails()) {
       // Dedup: l'account ha già ricevuto la mail del loop profili.
       if (notifiedEmails.has(email.toLowerCase())) continue;
+      const account = ctx.platform.find(email);
       const sent = await notify(ctx, email, {
         type: 'pick_instructions',
-        tt,
-        tc,
+        playerName: account?.name ?? email,
+        round: tt,
+        championshipRound: tc,
+        roundStart: kickoff,
+        deadline,
+        deadlineRemaining: formatRemaining(now, deadline),
         availableTeams: inRoundTeams,
-        deadline
+        matches: emailMatches
       });
       if (sent) registeredNotified += 1;
     }
@@ -348,12 +449,36 @@ export async function closeRound(
   for (const profile of missing) {
     eliminate(db, profile.id, 'missing_pick', now);
     eliminatedMissing.push(profile.id);
-    await notify(ctx, profile.email, {
-      type: 'pick_missing_elimination',
-      playerName: profile.playerName,
-      tt,
-      tc
-    });
+  }
+  // ADR-011: esito `missing` + conteggio aggregato dei superstiti
+  // ("Il torneo continua con N giocatori in gara", convenzione 10) — fix
+  // review 2026-08-23: il conteggio è calcolato UNA volta DOPO tutte le
+  // eliminazioni del round, così OGNI eliminato riceve lo STESSO valore
+  // (mai numeri divergenti tra destinatari della stessa chiusura).
+  const inGame = countInGame(db);
+  // LOW-1 (best-effort): un fallimento SMTP/LLM sulla notifica di
+  // eliminazione viene loggato (warn pino, inglese) e NON interrompe il
+  // loop: la chiusura e il successivo check vincitore (`settleWinnerIfNeeded`)
+  // devono girare comunque (stesso pattern di riepilogo e vincitori).
+  for (const profile of missing) {
+    try {
+      await notify(ctx, profile.email, {
+        type: 'pick_missing_elimination',
+        playerName: profile.playerName,
+        round: tt,
+        championshipRound: tc,
+        playerResult: 'missing',
+        inGameCount: inGame
+      });
+    } catch (error) {
+      ctx.logger?.warn(
+        {
+          email: profile.email,
+          error: error instanceof Error ? error.message : String(error)
+        },
+        'round:close: elimination notification not sent — continuing (best-effort)'
+      );
+    }
   }
 
   if (rs.status !== 'closed') {
@@ -361,6 +486,15 @@ export async function closeRound(
       now.toISOString(),
       round
     );
+  }
+
+  // ADR-011: alla chiusura di ogni round il sistema verifica AUTOMATICAMENTE
+  // se c'è un vincitore (es. tutti gli altri eliminati) e chiude il torneo
+  // (notifica + export + inibizione scheduler): hook del Round Manager, mai
+  // del comando CLI `winner:check` (sola lettura). Disattivato nella
+  // simulazione dry-run (`ctx.autoClose = false`, R1).
+  if (ctx.autoClose !== false) {
+    await settleWinnerIfNeeded(ctx);
   }
 
   return {
@@ -390,13 +524,33 @@ export async function closeRound(
 export async function scoreRound(ctx: GameContext, round: number): Promise<RoundScoreResult> {
   const { db, dataProvider, config, now } = ctx;
 
+  // MEDIUM-2 (emendamento post-revisione ADR-011): a torneo CHIUSO
+  // (winner_notified=1) una ricontabilizzazione aggiorna comunque lo stato DB
+  // (idempotenza RF-17), ma NON invia più email di esito: round_result_*,
+  // pick_postponed e il riepilogo round_closed_survived tacciono.
+  const closed = isTournamentClosed(db);
+
   const matches = await dataProvider.getMatchesForRound(round);
   const tcClose = computeTcClose(matches, config.MATCH_DURATION_MIN, config.TC_CLOSE_SKEW_MIN);
   const { tt, tc } = turnFor(db, round);
+  const emailMatches = toEmailMatches(matches);
 
   const evaluated: ScoredPick[] = [];
   const newlyFrozen: number[] = [];
   const newlyEliminated: number[] = [];
+  /**
+   * Esiti da notificare dopo la valutazione di TUTTI i pick (fix review
+   * 2026-08-23): la notifica è differita per calcolare il conteggio dei
+   * superstiti UNA sola volta — ogni destinatario della run riceve lo
+   * stesso `inGameCount`, coerente col riepilogo.
+   */
+  const resultEmails: Array<{
+    email: string;
+    playerName: string;
+    result: 'correct' | 'wrong';
+    team: string;
+    outcome: string;
+  }> = [];
 
   /** Valuta un pick contro il match della sua squadra (a punteggio noto). */
   const evaluatePick = async (pick: PickRow): Promise<void> => {
@@ -424,12 +578,17 @@ export async function scoreRound(ctx: GameContext, round: number): Promise<Round
       eliminate(db, pick.profile_id, 'wrong_pick', now);
       if (!wasEliminated) newlyEliminated.push(pick.profile_id);
     }
-    if (profile !== undefined) {
-      await notify(ctx, profile.email, {
-        type: result === 'correct' ? 'round_result_correct' : 'round_result_wrong',
+    if (profile !== undefined && !closed) {
+      // ADR-011: esito (playerResult) + risultati del round + conteggio
+      // aggregato dei superstiti (convenzioni 5/6/10). A torneo chiuso il
+      // ramo è saltato (MEDIUM-2: lo stato DB è già aggiornato sopra).
+      // Fix review 2026-08-23: qui si RACCOGLIE solo il payload — l'invio
+      // avviene dopo la valutazione di tutti i pick (vedi sotto), con il
+      // conteggio calcolato una sola volta.
+      resultEmails.push({
+        email: profile.email,
         playerName: profile.playerName,
-        tt,
-        tc,
+        result,
         team: pick.team,
         outcome: pick.outcome
       });
@@ -455,12 +614,12 @@ export async function scoreRound(ctx: GameContext, round: number): Promise<Round
            FROM profile p LEFT JOIN player pl ON pl.id = p.player_id WHERE p.id = ?`
         )
         .get(pick.profile_id) as { email: string; playerName: string } | undefined;
-      if (profile !== undefined) {
+      if (profile !== undefined && !closed) {
         await notify(ctx, profile.email, {
           type: 'pick_postponed',
           playerName: profile.playerName,
-          tt,
-          tc,
+          round: tt,
+          championshipRound: tc,
           team: pick.team
         });
       }
@@ -475,6 +634,25 @@ export async function scoreRound(ctx: GameContext, round: number): Promise<Round
     .all(round) as unknown as PickRow[];
   for (const pick of frozen) {
     await evaluatePick(pick);
+  }
+
+  // Fix review 2026-08-23: conteggio dei superstiti calcolato UNA volta
+  // DOPO tutte le eliminazioni della run (pending + frozen): ogni email di
+  // esito porta lo stesso valore, identico a quello del riepilogo
+  // round_closed_survived qui sotto (nessuna query per pick).
+  const inGame = countInGame(db);
+  for (const email of resultEmails) {
+    await notify(ctx, email.email, {
+      type: email.result === 'correct' ? 'round_result_correct' : 'round_result_wrong',
+      playerName: email.playerName,
+      round: tt,
+      championshipRound: tc,
+      team: email.team,
+      outcome: email.outcome,
+      playerResult: email.result,
+      inGameCount: inGame,
+      matches: emailMatches
+    });
   }
 
   // 3) Transizione a `scored` quando non restano pending (RF-16): solo da
@@ -511,33 +689,214 @@ export async function scoreRound(ctx: GameContext, round: number): Promise<Round
     // loop continua coi destinatari successivi; `scoreRound` risolve
     // normalmente anche con invii falliti. Il fallimento NON viene ritentato
     // (trade-off POC accettato, rischio §8 del piano): resta visibile nei log.
+    //
+    // ADR-011: il riepilogo porta risultati del round e stato AGGREGATO
+    // (solo conteggi, mai elenchi nominativi — convenzione 6). Nessuna
+    // deadline del prossimo round (fix review 2026-08-23: il box deadline
+    // del renderer vale SOLO per le mail che richiedono un pick,
+    // PICK_EMAIL_TYPES in email-renderer.ts — l'iniezione era dato morto
+    // senza la guardia LOW-3 `now < deadline`).
+    const rsRow = getRoundState(db, round);
+    const openedAt = rsRow?.opened_at != null ? new Date(rsRow.opened_at) : null;
+    // Fix review 2026-08-23: `inGame` è il conteggio UNICO calcolato sopra
+    // dopo tutte le eliminazioni — lo stesso valore delle email di esito.
+    const eliminatedWrong = (
+      db.prepare("SELECT COUNT(*) AS n FROM pick WHERE round = ? AND status = 'wrong'").get(round) as {
+        n: number;
+      }
+    ).n;
+    const eliminatedMissing =
+      openedAt === null
+        ? 0
+        : (
+            db
+              .prepare(
+                `SELECT COUNT(*) AS n FROM profile
+                 WHERE eliminated = 1 AND eliminated_reason = 'missing_pick' AND eliminated_at >= ?`
+              )
+              .get(openedAt.toISOString()) as { n: number }
+          ).n;
+
     const survivors = getActiveProfiles(db);
-    for (const survivor of survivors) {
-      try {
-        await notify(ctx, survivor.email, {
-          type: 'round_closed_survived',
-          playerName: survivor.playerName,
-          tt,
-          tc
-        });
-      } catch (error) {
-        ctx.logger?.warn(
-          {
-            email: survivor.email,
-            error: error instanceof Error ? error.message : String(error)
-          },
-          `round:score: summary not sent to ${survivor.email} — continuing (best-effort)`
-        );
+    // MEDIUM-2: a torneo chiuso il riepilogo round_closed_survived tace
+    // (la transizione closed→scored è già avvenuta prima della chiusura).
+    if (!closed) {
+      for (const survivor of survivors) {
+        try {
+          await notify(ctx, survivor.email, {
+            type: 'round_closed_survived',
+            playerName: survivor.playerName,
+            round: tt,
+            championshipRound: tc,
+            matches: emailMatches,
+            inGameCount: inGame,
+            eliminatedWrong,
+            eliminatedMissing
+          });
+        } catch (error) {
+          ctx.logger?.warn(
+            {
+              email: survivor.email,
+              error: error instanceof Error ? error.message : String(error)
+            },
+            `round:score: summary not sent to ${survivor.email} — continuing (best-effort)`
+          );
+        }
       }
     }
+  }
+
+  // ADR-011: alla contabilizzazione di ogni round il sistema verifica
+  // AUTOMATICAMENTE se c'è un vincitore (casi 1/2/3) e chiude il torneo
+  // (guardia atomica → notifica → export → inibizione scheduler). No-op se
+  // il torneo non è finito o è già stato chiuso da una chiamata precedente.
+  // Disattivato nella simulazione dry-run (`ctx.autoClose = false`, R1).
+  if (ctx.autoClose !== false) {
+    await settleWinnerIfNeeded(ctx);
   }
 
   return { round, tt, tc, status, evaluated, newlyFrozen, newlyEliminated };
 }
 
+/** Esito di `settleWinnerIfNeeded` (ADR-011, chiusura automatica). */
+export interface SettleWinnerResult {
+  /** true se QUESTA chiamata ha chiuso il torneo (la guardia atomica è passata). */
+  closed: boolean;
+  /** Vincitori identificati (vuoto se il torneo non è finito o era già chiuso). */
+  winners: WinnerInfo[];
+  /** Path del file di export scritto (presente solo se closed). */
+  exportPath?: string;
+}
+
+/**
+ * CHIUSURA AUTOMATICA E COMPLETA del torneo (ADR-011 §5): alla
+ * identificazione del/i vincitore/i — invocata dal Round Manager dopo
+ * `closeRound` e dopo `scoreRound` (e SOLO da qui: `winner:check` resta
+ * sola lettura, nessun side-effect) — esegue TUTTO in sequenza:
+ *
+ * 1. VERIFICA vincitore (`checkWinner`, sola lettura): nessun vincitore →
+ *    no-op.
+ * 2. GUARDIA ATOMICA idempotente: `tournament_state.winner_notified = 1` +
+ *    `finished_at = <clock>` in un'unica istruzione (UPSERT con WHERE
+ *    winner_notified = 0): ri-avvii di round/CL9 non duplicano nulla.
+ * 3. NOTIFICA VINCITORI: `tournament_won` (vincitore unico) /
+ *    `tournament_shared_win` (2+), best-effort per destinatario (filtro
+ *    account `active` in notify, warn pino in inglese via ctx.logger).
+ * 4. EXPORT AUTOMATICO: riuso di `tournamentExport` (dump JSON completo)
+ *    archiviato via il SEAM `ctx.archiveTournament` iniettato dal wiring
+ *    (ADR-011 §1.3: mai node:fs nei moduli di gioco) — il path di
+ *    destinazione (`TOURNAMENT_EXPORT_DIR`) e il filename dal clock iniettato
+ *    (deterministico, RNF1) vivono nel wiring; l'esito è loggato (pino info
+ *    in inglese) e `tournament_state.export_path` è scritto SOLO a
+ *    archiviazione riuscita. L'export è l'archivio che rende SICURO il reset
+ *    del DB di gioco al riavvio (`tournament:start` su torneo chiuso, §5.5):
+ *    un errore di scrittura è loggato (warn, inglese) senza far fallire la
+ *    chiusura (la guardia è già scritta e le notifiche sono partite), ma
+ *    `export_path` resta NULL e il riavvio viene rifiutato dal gate.
+ * 5. L'INIBIZIONE dello scheduler è implicita: `computeActions` ritorna []
+ *    quando `winner_notified = 1` (src/game/scheduler.ts).
+ */
+export async function settleWinnerIfNeeded(ctx: GameContext): Promise<SettleWinnerResult> {
+  const { db, now } = ctx;
+
+  // RECUPERO EXPORT (fix review 2026-08-23): torneo GIÀ chiuso ma export
+  // mancante (write fallita/crash alla prima chiusura) → al rientro
+  // successivo di round:close/score (idempotenti, CL9) ritenta SOLO
+  // l'archiviazione. I vincitori NON vengono mai rinotificati: questo ramo
+  // salta del tutto `checkWinner` e il blocco notifiche. Senza seam
+  // (simulazione dry-run) logga solo warn, nessun loop.
+  const existing = getTournamentState(db);
+  if (existing?.winner_notified === 1) {
+    if ((existing.export_path ?? null) !== null) {
+      return { closed: false, winners: [] };
+    }
+    ctx.logger?.warn('tournament closed: export missing (export_path NULL) — retrying archive');
+    const exportPath = await archiveTournamentExport(ctx, now);
+    return exportPath !== undefined
+      ? { closed: true, winners: [], exportPath }
+      : { closed: false, winners: [] };
+  }
+
+  const result = await checkWinner(ctx);
+  if (!result.finished) return { closed: false, winners: [] };
+
+  // Guardia atomica: chiusura eseguita UNA SOLA volta anche con ri-avvii di
+  // round:score/close (CL9, riavvii manuali). UPSERT: crea la riga se
+  // assente, aggiorna solo se winner_notified = 0.
+  const guarded = db
+    .prepare(
+      `INSERT INTO tournament_state (id, winner_notified, finished_at) VALUES (1, 1, ?)
+       ON CONFLICT(id) DO UPDATE SET winner_notified = 1, finished_at = excluded.finished_at
+       WHERE tournament_state.winner_notified = 0`
+    )
+    .run(now.toISOString());
+  if (guarded.changes === 0) return { closed: false, winners: [] };
+
+  // Notifica vincitori (best-effort per destinatario, filtro active in notify).
+  const type = result.winners.length === 1 ? 'tournament_won' : 'tournament_shared_win';
+  for (const winner of result.winners) {
+    const row = db
+      .prepare(
+        `SELECT COALESCE(pl.name, '') AS playerName
+         FROM profile p JOIN player pl ON pl.id = p.player_id WHERE p.id = ?`
+      )
+      .get(winner.profileId) as { playerName: string } | undefined;
+    try {
+      await notify(ctx, winner.email, {
+        type,
+        playerName: row?.playerName === '' ? winner.email : row?.playerName
+      });
+    } catch (error) {
+      ctx.logger?.warn(
+        {
+          email: winner.email,
+          error: error instanceof Error ? error.message : String(error)
+        },
+        `winner notification not sent to ${winner.email} — continuing (best-effort)`
+      );
+    }
+  }
+
+  // Export automatico (vedi `archiveTournamentExport`): il fallimento è
+  // loggato e NON blocca la chiusura; il recupero avviene al rientro.
+  const exportPath = await archiveTournamentExport(ctx, now);
+
+  return { closed: true, winners: result.winners, exportPath };
+}
+
+/**
+ * Archivia il dump JSON del torneo tramite il SEAM iniettato dal wiring
+ * (`ctx.archiveTournament`, ADR-011 §1.3: MAI node:fs nei moduli di gioco).
+ * `tournament_state.export_path` è scritto SOLO a writeFileSync riuscita
+ * (sincrona) → export_path non-null ⇒ file archiviato; il gate di riavvio in
+ * `tournament:start` legge SOLO il campo DB (mai fs.existsSync). Senza seam
+ * iniettato (es. simulazione dry-run, R1) l'export NON viene scritto e
+ * `export_path` resta NULL. Fallimento → warn pino (inglese) e `undefined`:
+ * il recupero avviene al rientro successivo di `settleWinnerIfNeeded`
+ * (fix review 2026-08-23: il fallimento viene SEMPRE loggato, mai silenzioso).
+ */
+async function archiveTournamentExport(ctx: GameContext, now: Date): Promise<string | undefined> {
+  if (ctx.archiveTournament === undefined) {
+    ctx.logger?.warn('tournament closed: no archive dependency — export not written');
+    return undefined;
+  }
+  try {
+    const dump = await tournamentExport(ctx);
+    const exportPath = ctx.archiveTournament(dump, now);
+    ctx.db.prepare('UPDATE tournament_state SET export_path = ? WHERE id = 1').run(exportPath);
+    ctx.logger?.info({ exportPath }, 'tournament closed: export written');
+    return exportPath;
+  } catch (error) {
+    ctx.logger?.warn(
+      { error: error instanceof Error ? error.message : String(error) },
+      'tournament closed: export write failed — history not archived'
+    );
+    return undefined;
+  }
+}
+
 /** Stato di un round (sola lettura) con coppia TT/TC e conteggi pick. */
-export function roundStatus(ctx: GameContext, round: number): RoundStatusResult {
-  const { db } = ctx;
+export function roundStatus(ctx: GameContext, round: number): RoundStatusResult {  const { db } = ctx;
   const rs = getRoundState(db, round);
   const { tt, tc } = turnFor(db, round);
   const counts = db

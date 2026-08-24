@@ -86,13 +86,20 @@ CREATE TABLE IF NOT EXISTS round_state (
 -- Gestisce l'avvio della stagione (US6) e l'aggancio del torneo a un TC
 -- arbitrario (ADR-008, RF-20). registration_open/registration_notified sono
 -- DEPRECATE (ADR-009): non esiste più una finestra di iscrizione.
+-- ADR-011: winner_notified/finished_at segnano la chiusura AUTOMATICA del
+-- torneo (guardia atomica idempotente della notifica vincitori/export).
 CREATE TABLE IF NOT EXISTS tournament_state (
   id                INTEGER PRIMARY KEY CHECK (id = 1),
   season_started    INTEGER NOT NULL DEFAULT 0,  -- stagione avviata (operazioni preliminari concluse, US6)
   registration_open INTEGER NOT NULL DEFAULT 0,  -- DEPRECATA (ADR-009): resta per compatibilità dello schema
   start_round       INTEGER,                     -- TC di aggancio del torneo (NULL = TC 1 legacy, ADR-008);
                                                  -- da esso si deriva TT = TC - start_round + 1 (RF-20, RF-25)
-  registration_notified INTEGER NOT NULL DEFAULT 0 -- DEPRECATA (ADR-009): non più letta/scritta
+  registration_notified INTEGER NOT NULL DEFAULT 0, -- DEPRECATA (ADR-009): non più letta/scritta
+  winner_notified   INTEGER NOT NULL DEFAULT 0,  -- ADR-011: 1 = torneo CHIUSO (vincitori notificati + export fatto);
+                                                 -- inibisce lo scheduler e consente il riavvio (reset atomico)
+  finished_at       TEXT,                        -- ADR-011: istante di chiusura del torneo (clock iniettato, ISO-8601)
+  export_path       TEXT                         -- ADR-011 (§1.3): path assoluto dell'export archiviato alla chiusura;
+                                                 -- NULL = export NON archiviato → riavvio rifiutato (gate HIGH-1)
 );
 `;
 
@@ -146,6 +153,23 @@ export function applyAdditiveMigrations(db: Database.Database): void {
   }>).map((c) => c.name);
   if (!roundColumns.includes('summary_sent')) {
     db.exec('ALTER TABLE round_state ADD COLUMN summary_sent INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // ADR-011 (chiusura automatica del torneo): winner_notified è la GUARDIA
+  // ATOMICA idempotente della chiusura (notifica vincitori + export + reset),
+  // finished_at l'istante di chiusura (clock iniettato). Colonne additive:
+  // un DB pre-esistente le guadagna con default 0/NULL (torneo non chiuso).
+  if (!stateColumns.includes('winner_notified')) {
+    db.exec('ALTER TABLE tournament_state ADD COLUMN winner_notified INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!stateColumns.includes('finished_at')) {
+    db.exec('ALTER TABLE tournament_state ADD COLUMN finished_at TEXT');
+  }
+  // ADR-011 (§1.3, emendamento post-revisione): path assoluto dell'export
+  // archiviato alla chiusura. Colonna additiva: un DB pre-esistente la guadagna
+  // con default NULL (export non archiviato → riavvio rifiutato dal gate).
+  if (!stateColumns.includes('export_path')) {
+    db.exec('ALTER TABLE tournament_state ADD COLUMN export_path TEXT');
   }
 }
 

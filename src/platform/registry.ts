@@ -38,6 +38,12 @@ export interface PlatformAccount {
   registerId: number;
   /** Email univoca (identità del canale, normalizzata a monte). */
   email: string;
+  /**
+   * Nome del giocatore (ADR-011, RF-P1): dedotto dalla mail di
+   * registrazione dal classificatore LLM; NULL/assente se non indicato —
+   * in tal caso i moduli usano l'indirizzo email al posto del nome.
+   */
+  name: string | null;
   status: PlatformAccountStatus;
   /** Istante di creazione (ISO-8601) dal clock iniettato (RF-P8). */
   createdAt: string;
@@ -47,8 +53,13 @@ export interface PlatformAccount {
 
 /** Interfaccia astratta dell'archivio account (LLD §6.6, ADR-009). */
 export interface PlatformRegistry {
-  /** Crea/riattiva l'account (stesso registerID); già active → invariato. */
-  register(email: string, now: Date): PlatformAccount;
+  /**
+   * Crea/riattiva l'account (stesso registerID); già active → invariato.
+   * `name` (ADR-011): nome del giocatore dalla mail di registrazione
+   * (null se ignoto); salvato SOLO alla prima creazione — le riattivazioni
+   * non sovrascrivono il nome esistente.
+   */
+  register(email: string, name: string | null, now: Date): PlatformAccount;
   /** Primo unsubscribe via email: active → pending_unsubscribe (RF-P2); null se non applicabile. */
   beginUnsubscribe(email: string, now: Date): PlatformAccount | null;
   /** Secondo unsubscribe: pending_unsubscribe → unsubscribed (soft-delete, RF-P2); null se non applicabile. */
@@ -69,6 +80,7 @@ export interface PlatformRegistry {
 interface AccountRow {
   register_id: number;
   email: string;
+  name: string | null;
   status: PlatformAccountStatus;
   created_at: string;
   unsubscribed_at: string | null;
@@ -79,6 +91,7 @@ function toAccount(row: AccountRow): PlatformAccount {
   return {
     registerId: row.register_id,
     email: row.email,
+    name: row.name,
     status: row.status,
     createdAt: row.created_at,
     unsubscribedAt: row.unsubscribed_at
@@ -101,25 +114,26 @@ export class DbPlatformRegistry implements PlatformRegistry {
   /** Legge l'account per email (normalizzata dal chiamante, K). */
   find(email: string): PlatformAccount | null {
     const row = this.db
-      .prepare('SELECT register_id, email, status, created_at, unsubscribed_at FROM platform_account WHERE email = ?')
+      .prepare('SELECT register_id, email, name, status, created_at, unsubscribed_at FROM platform_account WHERE email = ?')
       .get(email) as AccountRow | undefined;
     return row === undefined ? null : toAccount(row);
   }
 
   /**
-   * Crea l'account se mai iscritto (registerID nuovo) o lo RIATTIVA con lo
-   * stesso registerID se esiste in qualunque stato (RF-P1/P3). Già `active` →
-   * invariato. `created_at` scritto dal clock iniettato SOLO alla prima
-   * creazione (la data originale non cambia alle riattivazioni).
+   * Crea l'account se mai iscritto (registerID nuovo, con `name` dalla mail
+   * di registrazione — ADR-011) o lo RIATTIVA con lo stesso registerID se
+   * esiste in qualunque stato (RF-P1/P3). Già `active` → invariato.
+   * `created_at` e `name` scritti dal clock iniettato SOLO alla prima
+   * creazione (la data e il nome originali non cambiano alle riattivazioni).
    */
-  register(email: string, now: Date): PlatformAccount {
+  register(email: string, name: string | null, now: Date): PlatformAccount {
     const existing = this.find(email);
     if (existing === null) {
       this.db
         .prepare(
-          "INSERT INTO platform_account (email, status, created_at) VALUES (?, 'active', ?)"
+          'INSERT INTO platform_account (email, name, status, created_at) VALUES (?, ?, ?, ?)'
         )
-        .run(email, now.toISOString());
+        .run(email, name ?? null, 'active', now.toISOString());
       const created = this.find(email);
       if (created === null) {
         throw new Error('platform:register: inserimento account fallito (riga non trovata)');
@@ -217,7 +231,7 @@ export class DbPlatformRegistry implements PlatformRegistry {
   /** Tutti gli account in ordine di register_id (vista CLI `platform:list`). */
   list(): PlatformAccount[] {
     const rows = this.db
-      .prepare('SELECT register_id, email, status, created_at, unsubscribed_at FROM platform_account ORDER BY register_id')
+      .prepare('SELECT register_id, email, name, status, created_at, unsubscribed_at FROM platform_account ORDER BY register_id')
       .all() as unknown as AccountRow[];
     return rows.map(toAccount);
   }

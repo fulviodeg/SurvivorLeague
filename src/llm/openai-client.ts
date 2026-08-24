@@ -14,8 +14,12 @@
  * risposta è configurabile per chiamata:
  *   - `json_object` (Parser): response_format supportato dalla stragrande
  *     maggioranza degli endpoint OpenAI-compatibili; NIENTE json_schema (non
- *     ovunque supportato: la validazione zod del Parser basta);
- *   - `text` (Generator): le email sono testo libero, non JSON.
+ *     ovunque supportato: la validazione zod del Parser basta); nessun
+ *     `max_tokens` (il JSON non va troncato);
+ *   - `text` (Generator): le email sono testo libero, non JSON; `max_tokens`
+ *     è impostato a `TEXT_MAX_TOKENS` (300) come cap anti-dump dei modelli
+ *     `:free` (output degenerati tipo echo del prompt vengono fermati alla
+ *     fonte e la guardia del Generator ripiega sul fallback deterministico).
  *
  * Failover e retry (D2-D5): `models` è una lista in ordine di priorità (il
  * primo è il primario). Per ogni modello si tenta fino a `retries` volte
@@ -82,6 +86,20 @@ const DEFAULT_RETRIES = 3;
 
 /** Delay fisso (ms) tra i tentativi dello stesso modello (D4: costante interna, non env var). */
 const RETRY_DELAY_MS = 1_000;
+
+/**
+ * Token massimi per il formato di risposta `text` (Generator): cap duro ALLA
+ * FONTE per i dump degenerati dei modelli `:free` di OpenRouter (echo del
+ * prompt / "thinking loop", es. corpi da 239 KB osservati in UAT) — la
+ * risposta viene troncata lato API. VERIFICATO con la stagione reale 2025/26
+ * (tests/unit/llm/narrative-guard-real-season.test.ts): una narrativa
+ * legittima di 4 frasi richiede fino a ~200 token, quindi 300 danno margine
+ * senza troncare testo valido; con un dump, la troncatura a ~300 token
+ * (≈1000 caratteri) viene poi intercettata dalla guardia MAX_NARRATIVE_CHARS
+ * del Generator. NON si applica a `json_object` (Parser): il JSON di
+ * classificazione non va troncato.
+ */
+export const TEXT_MAX_TOKENS = 300;
 
 /** Chat completion: messaggio di sistema + messaggio utente. */
 export interface ChatCompletionMessages {
@@ -200,6 +218,10 @@ export class OpenAIClient {
           temperature: 0,
           response_format:
             responseFormat === 'json_object' ? { type: 'json_object' as const } : undefined,
+          // Cap anti-dump per la narrativa (formato text, Generator):
+          // `max_tokens` non è un vincolo ma un limite duro (se il modello
+          // "pensa a loop", la risposta si ferma a TEXT_MAX_TOKENS).
+          max_tokens: responseFormat === 'text' ? TEXT_MAX_TOKENS : undefined,
           messages: [
             { role: 'system', content: messages.system },
             { role: 'user', content: messages.user }

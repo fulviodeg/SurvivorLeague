@@ -12,10 +12,10 @@
  *     testo; output JSON `{intent, pick}` (piano Task 6; ogni componente
  *     espone un comando verificabile in modo indipendente, ADR-006);
  *   - `llm:generate --type <t> [--player-name] [--tt] [--tc] [--team]
- *     [--outcome] [--reason] [--deadline]` — genera l'email dal contesto:
- *     output = SOGGETTO (subjectFor, forma compatta TT2TC7, D1) + corpo
- *     (segnaposto {{TT_TC}} sostituito deterministicamente, D4); coppia
- *     assente → segnaposto sostituito con stringa vuota.
+ *     [--outcome] [--reason] [--deadline] [--available-teams]` — genera
+ *     l'email dal contesto: output = SOGGETTO (subjectFor, forma UMANA
+ *     "Round N · Turno di campionato M", ADR-011) + corpo RENDERIZZATO
+ *     (header/box/CTA deterministici attorno alla narrativa LLM).
  *
  * Pattern CLI consolidato: il comando costruisce config → DB → provider e
  * inietta i parametri; i moduli LLM non accedono mai a DB/config (ADR-004).
@@ -183,7 +183,7 @@ interface GenerateArgs extends JsonArg {
 export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
   command: 'llm:generate',
   describe:
-    'Genera l\'email dal contesto strutturato (output: soggetto subjectFor + corpo; coppia TT/TC iniettata deterministicamente, D1/D4)',
+    'Genera l\'email dal contesto strutturato (output: soggetto subjectFor in forma umana + corpo renderizzato, D1/ADR-011)',
   builder: (yargs: Argv<object>) =>
     yargs
       .option('json', {
@@ -195,10 +195,10 @@ export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
         type: 'string' as const,
         demandOption: true,
         choices: EMAIL_TYPES,
-        describe: 'Tipo di email da generare (LLD §6.3)'
+        describe: 'Tipo di email da generare'
       })
       .option('playerName', { type: 'string' as const, describe: 'Nome del giocatore' })
-      .option('tt', { type: 'number' as const, describe: 'Turno di torneo (iniettato, RF-25)' })
+      .option('tt', { type: 'number' as const, describe: 'Round del torneo (iniettato, RF-25)' })
       .option('tc', { type: 'number' as const, describe: 'Turno di campionato (iniettato, RF-25)' })
       .option('team', { type: 'string' as const, describe: 'Squadra del pick (nome canonico)' })
       .option('outcome', {
@@ -209,7 +209,7 @@ export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
       .option('reason', { type: 'string' as const, describe: 'Motivo di rifiuto/eliminazione' })
       .option('deadline', {
         type: 'string' as const,
-        describe: 'Scadenza in formato ISO-8601 (mostrata in it-IT, Europe/Rome — D9)'
+        describe: 'Scadenza in formato ISO-8601 (mostrata in it-IT nel TIMEZONE di sistema — ADR-011)'
       })
       .option('availableTeams', {
         type: 'string' as const,
@@ -220,8 +220,8 @@ export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
     const emailCtx: EmailContext = {
       type: argv.type as EmailContext['type'],
       playerName: argv.playerName,
-      tt: argv.tt,
-      tc: argv.tc,
+      round: argv.tt,
+      championshipRound: argv.tc,
       team: argv.team,
       outcome: argv.outcome,
       reason: argv.reason,
@@ -235,7 +235,8 @@ export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
         models: config.LLM_MODEL,
         timeoutMs: config.LLM_TIMEOUT_MS,
         retries: config.LLM_RETRIES
-      })
+      }),
+      config.TIMEZONE
     );
     const body = await generator.generate(emailCtx);
     const subject = subjectFor(emailCtx);

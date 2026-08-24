@@ -168,11 +168,11 @@ async function makeHarness(): Promise<Harness> {
 describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
   it('round:open → pick_instructions ai soli partecipanti attivi con account active', async () => {
     const { db, ctx, platform, generator } = await makeHarness();
-    const accountA = platform.register('a@test.it', NOW);
-    platform.register('b@test.it', NOW);
-    platform.register('c@test.it', NOW);
+    const accountA = platform.register('a@test.it', null, NOW);
+    platform.register('b@test.it', null, NOW);
+    platform.register('c@test.it', null, NOW);
     platform.beginUnsubscribe('c@test.it', NOW); // pending → escluso
-    platform.register('d@test.it', NOW);
+    platform.register('d@test.it', null, NOW);
     platform.beginUnsubscribe('d@test.it', NOW);
     platform.confirmUnsubscribe('d@test.it', NOW); // unsubscribed → escluso
     // e@test.it: profilo SENZA account piattaforma → escluso.
@@ -196,14 +196,14 @@ describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
   it('TT1: account active SENZA profilo ricevono pick_instructions con le squadre in giornata (amendment RF-P6, dedup sui profili)', async () => {
     const { db, platform, ctx, channel, generator } = await makeContext();
     // a: account active SENZA profilo → deve ricevere (amendment RF-P6).
-    platform.register('a@test.it', NOW);
+    platform.register('a@test.it', null, NOW);
     // b: account active CON profilo → UNA sola email (dedup col loop profili).
-    const b = platform.register('b@test.it', NOW);
+    const b = platform.register('b@test.it', null, NOW);
     insertProfile(db, 'b@test.it', b.registerId);
     // c (pending_unsubscribe) e d (unsubscribed): SENZA profilo ma esclusi.
-    platform.register('c@test.it', NOW);
+    platform.register('c@test.it', null, NOW);
     platform.beginUnsubscribe('c@test.it', NOW);
-    platform.register('d@test.it', NOW);
+    platform.register('d@test.it', null, NOW);
     platform.beginUnsubscribe('d@test.it', NOW);
     platform.confirmUnsubscribe('d@test.it', NOW);
 
@@ -213,14 +213,16 @@ describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
     const invites = generator.byType('pick_instructions');
     expect(invites).toHaveLength(2);
     // L'email del senza-profilo ha le squadre in giornata (stessa fonte di
-    // getAvailableTeams, ordinate come getTeams()) e NESSUN playerName:
-    // l'account piattaforma non ha nome e il template omette i dati assenti.
-    const noProfile = invites.find((c) => !('playerName' in c));
+    // getAvailableTeams, ordinate come getTeams()) e ADR-011: il nome
+    // arriva dall'account piattaforma — senza nome registrato vale l'email.
+    const noProfile = invites.find((c) => c.playerName === 'a@test.it');
     expect(noProfile).toMatchObject({
       type: 'pick_instructions',
-      tt: 1,
-      tc: 1,
-      availableTeams: [AC, MA, IM, JU]
+      round: 1,
+      championshipRound: 1,
+      availableTeams: [AC, MA, IM, JU],
+      deadline: new Date('2026-09-12T15:30:00.000Z'),
+      deadlineRemaining: expect.stringContaining('ore')
     });
     // Dedup: il profilo di b riceve UNA sola email (dal loop profili).
     expect(channel.sent.filter((s) => s.to === 'b@test.it')).toHaveLength(1);
@@ -230,8 +232,8 @@ describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
 
   it('TT2: account SENZA profilo NON ricevono nulla (amendment RF-P6 solo al TT 1)', async () => {
     const { db, platform, ctx, channel, generator } = await makeContext();
-    platform.register('a@test.it', NOW); // SENZA profilo
-    const b = platform.register('b@test.it', NOW);
+    platform.register('a@test.it', null, NOW); // SENZA profilo
+    const b = platform.register('b@test.it', null, NOW);
     insertProfile(db, 'b@test.it', b.registerId); // CON profilo
 
     // TT1: anche il senza-profilo a viene notificato (comportamento atteso).
@@ -249,10 +251,10 @@ describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
 
   it('round:close → pick_missing_elimination ai soli account active (pending/unsubscribed/senza account esclusi)', async () => {
     const { db, ctx, platform, generator } = await makeHarness();
-    const a = platform.register('a@test.it', NOW);
-    platform.register('b@test.it', NOW);
+    const a = platform.register('a@test.it', null, NOW);
+    platform.register('b@test.it', null, NOW);
     platform.beginUnsubscribe('b@test.it', NOW); // pending
-    platform.register('c@test.it', NOW);
+    platform.register('c@test.it', null, NOW);
     platform.beginUnsubscribe('c@test.it', NOW);
     platform.confirmUnsubscribe('c@test.it', NOW); // unsubscribed
     insertProfile(db, 'a@test.it', a.registerId);
@@ -270,8 +272,8 @@ describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
 
   it('round:score → round_result_* ai soli account active; riepilogo ai soli sopravvissuti (UNA volta)', async () => {
     const { db, ctx, platform, generator } = await makeHarness();
-    const a = platform.register('a@test.it', NOW);
-    platform.register('b@test.it', NOW);
+    const a = platform.register('a@test.it', null, NOW);
+    platform.register('b@test.it', null, NOW);
     platform.beginUnsubscribe('b@test.it', NOW); // pending → nessuna email
     insertProfile(db, 'a@test.it', a.registerId);
     insertProfile(db, 'b@test.it');
@@ -315,10 +317,72 @@ describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
     expect(generator.byType('round_result_correct')).toHaveLength(0);
   });
 
+  it('round:close con più mancanti → inGameCount IDENTICO su ogni pick_missing_elimination (fix review 2026-08-23)', async () => {
+    const { db, ctx, platform, generator } = await makeHarness();
+    const a = platform.register('a@test.it', null, NOW);
+    platform.register('b@test.it', null, NOW);
+    platform.register('c@test.it', null, NOW);
+    insertProfile(db, 'a@test.it', a.registerId);
+    insertProfile(db, 'b@test.it');
+    insertProfile(db, 'c@test.it');
+    // Solo a invia il pick → b e c mancanti alla chiusura.
+    ctx.now = T_PICK;
+    const profileA = db
+      .prepare('SELECT id FROM profile WHERE player_id = (SELECT id FROM player WHERE email = ?)')
+      .get('a@test.it') as { id: number };
+    await registerPick(ctx, { profileId: profileA.id, round: 1, team: IM, outcome: 'win', receivedAt: T_PICK });
+
+    ctx.now = T_CLOSE;
+    await closeRound(ctx, 1);
+
+    const eliminations = generator.byType('pick_missing_elimination');
+    expect(eliminations).toHaveLength(2);
+    // Dopo l'eliminazione dei 2 mancanti resta 1 giocatore in gara: OGNI
+    // email porta lo STESSO valore (mai numeri divergenti tra destinatari).
+    expect(eliminations.map((c) => c.inGameCount)).toEqual([1, 1]);
+  });
+
+  it('round:score con esiti misti → inGameCount IDENTICO su ogni round_result_* e coerente col riepilogo (fix review 2026-08-23)', async () => {
+    const { db, ctx, platform, generator } = await makeHarness();
+    const a = platform.register('a@test.it', null, NOW);
+    platform.register('b@test.it', null, NOW);
+    platform.register('c@test.it', null, NOW);
+    insertProfile(db, 'a@test.it', a.registerId);
+    insertProfile(db, 'b@test.it');
+    insertProfile(db, 'c@test.it');
+    // IM vince 2-0; JU perde 0-2: a (IM) corretto, b (JU) sbagliato.
+    db.prepare('UPDATE match SET home_score = 2, away_score = 0 WHERE round = 1 AND home_team = ?').run(IM);
+    db.prepare('UPDATE match SET home_score = 0, away_score = 2 WHERE round = 1 AND home_team = ?').run(JU);
+
+    ctx.now = T_PICK;
+    const pickFor = async (email: string, team: string) => {
+      const profile = db
+        .prepare('SELECT id FROM profile WHERE player_id = (SELECT id FROM player WHERE email = ?)')
+        .get(email) as { id: number };
+      await registerPick(ctx, { profileId: profile.id, round: 1, team, outcome: 'win', receivedAt: T_PICK });
+    };
+    await pickFor('a@test.it', IM);
+    await pickFor('b@test.it', JU);
+
+    ctx.now = T_CLOSE;
+    await closeRound(ctx, 1); // c mancante → eliminato alla chiusura
+    generator.contexts = [];
+    ctx.now = T_SCORE;
+    await scoreRound(ctx, 1);
+
+    const results = [...generator.byType('round_result_correct'), ...generator.byType('round_result_wrong')];
+    expect(results).toHaveLength(2); // a corretto + b sbagliato
+    // Conteggio UNICO dopo tutte le eliminazioni della run (1 superstite: a).
+    expect(results.map((c) => c.inGameCount)).toEqual([1, 1]);
+    const summary = generator.byType('round_closed_survived');
+    expect(summary).toHaveLength(1);
+    expect(summary[0]?.inGameCount).toBe(1);
+  });
+
   it('round:score con eliminati → gli eliminati ricevono SOLO round_result_wrong, MAI il riepilogo', async () => {
     const { db, ctx, platform, generator } = await makeHarness();
-    const a = platform.register('a@test.it', NOW);
-    platform.register('b@test.it', NOW);
+    const a = platform.register('a@test.it', null, NOW);
+    platform.register('b@test.it', null, NOW);
     insertProfile(db, 'a@test.it', a.registerId);
     insertProfile(db, 'b@test.it');
     // IM vince 2-0; JU perde 0-2: a (IM win) sopravvive, b (JU win) eliminato.
@@ -351,8 +415,8 @@ describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
 
   it('round:score con invio riepilogo che fallisce sul 2° destinatario → scored+summary_sent atomici, best-effort, idempotente (A3/B2)', async () => {
     const { db, ctx, platform, channel } = await makeHarness();
-    const a = platform.register('a@test.it', NOW);
-    platform.register('b@test.it', NOW);
+    const a = platform.register('a@test.it', null, NOW);
+    platform.register('b@test.it', null, NOW);
     insertProfile(db, 'a@test.it', a.registerId);
     insertProfile(db, 'b@test.it');
     // IM vince 2-0: entrambi i pick (IM win) corretti → 2 sopravvissuti.
@@ -466,10 +530,10 @@ describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
     const platform = new DbPlatformRegistry(platformDb);
     const channel = new FakeChannel();
     const generator = new FakeGenerator();
-    platform.register('a@test.it', NOW);
-    platform.register('b@test.it', NOW);
+    platform.register('a@test.it', null, NOW);
+    platform.register('b@test.it', null, NOW);
     platform.beginUnsubscribe('b@test.it', NOW);
-    platform.register('c@test.it', NOW);
+    platform.register('c@test.it', null, NOW);
     platform.beginUnsubscribe('c@test.it', NOW);
     platform.confirmUnsubscribe('c@test.it', NOW);
     const ctx: GameContext = {

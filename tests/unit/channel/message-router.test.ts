@@ -8,7 +8,9 @@
  * produce `{ kind: 'classified', identity, body }`; corpo/mittente vuoto →
  * `{ kind: 'unknown' }` (nessuna chiamata LLM). Verificano inoltre la
  * normalizzazione dell'identità (trim, minuscolo, rimozione del nome
- * visualizzato — K/RNF2) e il vincolo "il router NON decide nulla di gioco".
+ * visualizzato — K/RNF2), la pulizia del corpo dalla citazione
+ * (`extractPlayerReply`, piano email-reply-quote-stripping D1) e il vincolo
+ * "il router NON decide nulla di gioco".
  */
 import { describe, expect, it } from 'vitest';
 
@@ -63,6 +65,17 @@ describe('classify (ADR-009) — preparazione senza decisione di intento', () =>
   it('corpo trimmato per il classificatore', () => {
     const routed = classify(msg('a@test.it', '  Roma vince  '));
     expect(routed.body).toBe('Roma vince');
+  });
+
+  it('body con citazione della mail precedente → solo il testo del giocatore (piano email-reply-quote-stripping, D1)', () => {
+    const routed = classify(
+      msg(
+        'a@test.it',
+        'catanzaro\n\nIl giorno sab 22 ago 2026 alle ore 20:15 <survivorleague755@gmail.com> ha\nscritto:\n\n> [TEST MODE] This email was sent by a test instance of Survivor League.\n> Round 4 · Turno di campionato 6'
+      )
+    );
+    expect(routed.kind).toBe('classified');
+    expect(routed.body).toBe('catanzaro');
   });
 
   it('non decide nulla di gioco: esito = {kind, identity, body} (nessun altro campo)', () => {

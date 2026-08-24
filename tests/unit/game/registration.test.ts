@@ -29,7 +29,7 @@ import { checkEligibility } from '../../../src/game/eligibility.js';
 import { startTournament } from '../../../src/game/tournament.js';
 import { FIXTURE_TEAMS, loadBaseSeason } from '../../fixtures/season.js';
 
-const [IM] = FIXTURE_TEAMS;
+const [IM, AC] = FIXTURE_TEAMS;
 
 const NOW = new Date('2026-09-01T10:00:00.000Z'); // prima della deadline TT1 (15:30 del 12/09)
 const T_PICK = new Date('2026-09-12T15:00:00.000Z'); // entro la deadline del TT1
@@ -109,7 +109,7 @@ describe('auto-join RF-P5 (ADR-009) — eligibilità piattaforma + profilo+pick 
   it('iscritto active senza profilo + pick valido nel TT1 → profilo+pick atomici con register_id replicato (RF-P5/P7)', async () => {
     const { db, ctx, platform } = await makePlatformHarness();
     await openTT1({ db, ctx });
-    const account = platform.register('iscritto@test.it', NOW);
+    const account = platform.register('iscritto@test.it', null, NOW);
 
     const res = await autoJoinFromPick(
       ctx,
@@ -139,10 +139,43 @@ describe('auto-join RF-P5 (ADR-009) — eligibilità piattaforma + profilo+pick 
     }
   });
 
-  it('player legacy senza profile (register_id NULL) + pick valido nel TT1 → profilo sul player ESISTENTE con backfill register_id (A8/B7, decisione (g))', async () => {
+  it('auto-join: il nome del player nasce dall\'account piattaforma; assente → email (ADR-011, RF-P1)', async () => {
     const { db, ctx, platform } = await makePlatformHarness();
     await openTT1({ db, ctx });
-    const account = platform.register('legacy@test.it', NOW);
+    // Account CON nome (dedotto dalla mail di registrazione).
+    platform.register('mario@test.it', 'Mario Rossi', NOW);
+    // Account SENZA nome → il player usa l'email.
+    platform.register('anonimo@test.it', null, NOW);
+
+    const resMario = await autoJoinFromPick(
+      ctx,
+      { channel: 'email', identifier: 'mario@test.it' },
+      { team: IM, outcome: 'win' },
+      1,
+      T_PICK
+    );
+    const resAnonimo = await autoJoinFromPick(
+      ctx,
+      { channel: 'email', identifier: 'anonimo@test.it' },
+      { team: AC, outcome: 'win' },
+      1,
+      T_PICK
+    );
+
+    expect(resMario.ok).toBe(true);
+    expect(resAnonimo.ok).toBe(true);
+    const names = db
+      .prepare('SELECT email, name FROM player ORDER BY id')
+      .all() as Array<{ email: string; name: string | null }>;
+    expect(names).toEqual([
+      { email: 'mario@test.it', name: 'Mario Rossi' },
+      { email: 'anonimo@test.it', name: 'anonimo@test.it' }
+    ]);
+  });
+
+  it('player legacy senza profile (register_id NULL) + pick valido nel TT1 → profilo sul player ESISTENTE con backfill register_id (A8/B7, decisione (g))', async () => {    const { db, ctx, platform } = await makePlatformHarness();
+    await openTT1({ db, ctx });
+    const account = platform.register('legacy@test.it', null, NOW);
 
     // Dato legacy (decisione 2 "nessuna migrazione"): riga player preesistente
     // SENZA profile e con register_id NULL.
@@ -196,7 +229,7 @@ describe('auto-join RF-P5 (ADR-009) — eligibilità piattaforma + profilo+pick 
   it('pick invalido nel TT1 → ROLLBACK senza profilo orfano (RF-P5)', async () => {
     const { db, ctx, platform } = await makePlatformHarness();
     await openTT1({ db, ctx });
-    platform.register('rollback@test.it', NOW);
+    platform.register('rollback@test.it', null, NOW);
 
     const res = await autoJoinFromPick(
       ctx,
@@ -213,7 +246,7 @@ describe('auto-join RF-P5 (ADR-009) — eligibilità piattaforma + profilo+pick 
 
   it('post-TT1: iscritto senza profilo → not_tt1 (rifiuto con risposta nel wiring)', async () => {
     const { db, ctx, platform } = await makePlatformHarness();
-    platform.register('tardi@test.it', NOW);
+    platform.register('tardi@test.it', null, NOW);
 
     const res = await autoJoinFromPick(
       ctx,
@@ -229,7 +262,7 @@ describe('auto-join RF-P5 (ADR-009) — eligibilità piattaforma + profilo+pick 
 
   it('round non aperto nel TT1 → round_not_open (nessun profilo)', async () => {
     const { db, ctx, platform } = await makePlatformHarness();
-    platform.register('chiuso@test.it', NOW);
+    platform.register('chiuso@test.it', null, NOW);
     // Nessun round:open sul TC 1: round_state.status = 'pending'.
 
     const res = await autoJoinFromPick(
@@ -247,7 +280,7 @@ describe('auto-join RF-P5 (ADR-009) — eligibilità piattaforma + profilo+pick 
   it('account pending_unsubscribe → not_eligible (barriera a due passi, RF-P2/P6)', async () => {
     const { db, ctx, platform } = await makePlatformHarness();
     await openTT1({ db, ctx });
-    platform.register('pendente@test.it', NOW);
+    platform.register('pendente@test.it', null, NOW);
     platform.beginUnsubscribe('pendente@test.it', NOW);
 
     const res = await autoJoinFromPick(
@@ -264,7 +297,7 @@ describe('auto-join RF-P5 (ADR-009) — eligibilità piattaforma + profilo+pick 
   it('account unsubscribed o mai iscritto → not_eligible (nessun profilo)', async () => {
     const { db, ctx, platform } = await makePlatformHarness();
     await openTT1({ db, ctx });
-    platform.register('disiscritto@test.it', NOW);
+    platform.register('disiscritto@test.it', null, NOW);
     platform.beginUnsubscribe('disiscritto@test.it', NOW);
     platform.confirmUnsubscribe('disiscritto@test.it', NOW);
 
@@ -292,7 +325,7 @@ describe('auto-join RF-P5 (ADR-009) — eligibilità piattaforma + profilo+pick 
   it('re-iscrizione con stesso registerID: dopo unsubscribe il profilo mantiene il register_id originale (RF-P3)', async () => {
     const { db, ctx, platform } = await makePlatformHarness();
     await openTT1({ db, ctx });
-    const account = platform.register('riuso@test.it', NOW);
+    const account = platform.register('riuso@test.it', null, NOW);
 
     const first = await autoJoinFromPick(
       ctx,
@@ -310,7 +343,7 @@ describe('auto-join RF-P5 (ADR-009) — eligibilità piattaforma + profilo+pick 
     // Disiscrizione + re-iscrizione: registerID invariato (RF-P3).
     platform.beginUnsubscribe('riuso@test.it', NOW);
     platform.confirmUnsubscribe('riuso@test.it', NOW);
-    const reactivated = platform.register('riuso@test.it', NOW);
+    const reactivated = platform.register('riuso@test.it', null, NOW);
     expect(reactivated.registerId).toBe(account.registerId);
   });
 
@@ -343,7 +376,7 @@ describe('auto-join RF-P5 (ADR-009) — eligibilità piattaforma + profilo+pick 
       eligible: false,
       reason: 'account_not_active'
     });
-    platform.register('a@test.it', NOW);
+    platform.register('a@test.it', null, NOW);
     expect(checkEligibility(ctxWithPlatform, { channel: 'email', identifier: 'a@test.it' })).toEqual({
       eligible: true
     });

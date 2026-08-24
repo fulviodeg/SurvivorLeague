@@ -504,6 +504,8 @@ Autenticazione via header HTTP `X-Auth-Token`; il client deve rispettare gli hea
 
 ### 6.2 LLM Parser e Intent Classifier
 
+> **Emendamento ADR-011 (nome del giocatore, RF-P1).** L'output della classificazione diventa `{intent, pick, name?}`: `name` è il nome del giocatore dedotto dalla mail di REGISTRAZIONE (valorizzato SOLO per `subscribe`, null altrimenti). Il prompt del classificatore istruisce a dedurlo (es. "mi chiamo Mario e voglio iscrivermi" → `"name": "Mario"`); senza nome nel testo → `null` (il sistema usa l'email al posto del nome). Formula di iscrizione ovunque: "dimmi il tuo nome e scrivi voglio iscrivermi".
+
 ```typescript
 // Definito UNA volta in src/llm/parser.ts e riusato da game/registration.ts
 // (auto-join RF-P5; re-export come ParsedPickContent per compatibilità).
@@ -557,13 +559,15 @@ interface LLMIntentClassifier {
 
 ### 6.3 LLM Generator
 
+> **Emendamento ADR-011 (email v2, stile unico "energetic").** L'LLM produce SOLO il testo NARRATIVO (2-4 frasi brevi, tono entusiasta); il corpo completo è composto DETERMINISTICAMENTE dal renderer di canale `src/llm/email-renderer.ts` attorno alla narrativa: header con coppia UMANA "Round N · Turno di campionato M" (mai sigle TT/TC nelle mail), box ASCII (esito ✅/❌, deadline+countdown, squadre bruciate, partite/risultati, stato aggregato), sezioni dati e CTA per tipo. Il countdown è calcolato DAL SISTEMA con `formatRemaining(now, deadline)` (src/game/round-time.ts, clock iniettato — mai dall'LLM né dal renderer, RNF1). Le mail di esito hanno soggetti NEUTRI ("riepilogo del round"/"esito del round"); mai elenchi nominativi di partecipanti (solo conteggi). Il vecchio prompt-set V1 è stato RIMOSSO (2026-08-23). Canale email = SOLO text/plain (opzione 2 approvata: NIENTE HTML).
+
 ```typescript
 type EmailType = 
   | "platform_registered"          // conferma iscrizione piattaforma (RF-P1, ADR-009)
   | "platform_unsubscribe_confirm" // barriera due passi: primo unsubscribe → pending_unsubscribe (RF-P2)
   | "platform_unsubscribed"        // soft-delete confermata (secondo messaggio, RF-P2)
   | "platform_already_registered"  // re-iscrizione da account già active: "già iscritto" (RF-P1, ADR-010)
-  | "tournament_open"              // apertura torneo a tutti gli iscritti attivi (RF-P6, sostituisce l'invito)
+  | "tournament_open"              // apertura torneo: SOLO annuncio (ADR-011), iscritti attivi (RF-P6)
   | "pick_instructions"
   | "pick_confirmed"               // conferma pick; per l'auto-join è l'UNICO messaggio (RF-P5, D5)
   | "pick_rejected"
@@ -573,7 +577,8 @@ type EmailType =
   | "pick_postponed"
   | "round_closed_survived"        // riepilogo chiusura round ai SOLI sopravvissuti (RF-P6)
   | "tournament_won"
-  | "tournament_shared_win";
+  | "tournament_shared_win"
+  | "clarification";               // ADR-011 (Task 7): messaggio non interpretabile (soggetto "Non ho capito")
 
 // RIMOSSI rispetto a v0.4.0 (ADR-009): "welcome", "registration_open_invite",
 // "auto_registered", "round_closed_eliminated".
@@ -581,14 +586,23 @@ type EmailType =
 interface EmailContext {
   type: EmailType;
   playerName?: string;
-  tc?: number;          // TC assoluto, iniettato deterministicamente (ADR-008, RF-25)
-  tt?: number;          // TT derivato (TC - start_round + 1), iniettato deterministicamente (ADR-008, RF-25)
-  subject?: string;     // oggetto esplicito opzionale (D1): se assente lo compone subjectFor(ctx)
+  round?: number;              // round del TORNEO (ex tt), iniettato (ADR-008, RF-25); reso "Round N" dal renderer
+  championshipRound?: number;  // turno di CAMPIONATO (ex tc), iniettato; reso "Turno di campionato M"
+  roundStart?: Date;           // inizio del round (kickoff prima partita)
+  deadline?: Date;
+  deadlineRemaining?: string;  // countdown pre-calcolato dal Game Engine (formatRemaining, RNF1)
+  subject?: string;            // oggetto esplicito opzionale (D1): se assente lo compone subjectFor(ctx)
   team?: string;
   outcome?: string;
   reason?: string;
   availableTeams?: string[];
-  deadline?: Date;
+  burnedTeams?: { team: string; round: number }[]; // squadre bruciate + round di utilizzo (box dedicato)
+  matches?: { home: string; away: string; date: Date; score?: { home: number; away: number }; postponed?: boolean }[];
+  inGameCount?: number;        // conteggi AGGREGATI (mai elenchi nominativi)
+  eliminatedWrong?: number;
+  eliminatedMissing?: number;
+  platformCount?: number;      // iscritti alla piattaforma (annuncio apertura torneo)
+  playerResult?: "correct" | "wrong" | "missing";
 }
 
 interface LLMGenerator {
@@ -596,15 +610,17 @@ interface LLMGenerator {
 }
 ```
 
-> **Coppia TT/TC (ADR-008):** `tc` è il numero di campionato; `tt` è derivato dal Game Engine (`TT = TC − start_round + 1`, §3.2). Il Generator li usa solo come dati iniettati dal chiamante. **Nessun numero di turno entra nel prompt** (ADR-004, D4): i template usano il segnaposto `{{TT_TC}}` (corpo, forma estesa "TT 2, TC 7") e `{{TTTC}}` (forma compatta "TT2TC7"), sostituiti DOPO la generazione con `turnExtended(tt,tc)`/`turnCompact(tt,tc)` (src/game/turn.ts) dai dati di `ctx`; coppia assente → sostituiti con stringa vuota.
+> **Coppia umana (ADR-011):** `round`/`championshipRound` sono i numeri di torneo/campionato iniettati dal Game Engine (ADR-008). **Nessun numero di turno entra nel prompt** (ADR-004, D4): la coppia è scritta dal renderer in forma umana; le forme compatte TT2TC7 restano SOLO per log/CLI (src/game/turn.ts, invariato).
 >
-> **Soggetto (D1):** composto DETERMINISTICAMENTE dal chiamante con l'helper `subjectFor(ctx)` (src/llm/generator.ts) — etichetta per tipo + forma compatta `TT2TC7` (RF-25); mai dall'LLM, mai numeri inventati. `ctx.subject` permette a un chiamante di fornire un oggetto esplicito (subjectFor lo usa come priorità).
+> **Soggetto (D1):** composto DETERMINISTICAMENTE dal chiamante con l'helper `subjectFor(ctx)` — forma UMANA "Survivor League — Round N · Turno di campionato M: etichetta" (coppia assente → senza prefisso); etichette NEUTRE per gli esiti ("riepilogo del round"/"esito del round", convenzione 4); mai dall'LLM, mai numeri inventati. `ctx.subject` permette a un chiamante di fornire un oggetto esplicito (priorità).
 >
-> **Formato date nei testi (D9):** le date (`deadline`, esiti) sono UTC; i testi email le mostrano con `Intl.DateTimeFormat('it-IT', { timeZone: 'Europe/Rome', … })` — fuso fisso = determinismo (RNF1), parametri di formato documentati nel file `src/llm/templates.ts`.
+> **Formato date nei testi (D9/ADR-011):** le date sono istanti UTC; i testi email le mostrano con `formatItDate(date, timeZone)` nel FUSO DI SISTEMA (`TIMEZONE`, default Europe/Rome, validato al boot) — fuso esplicito = determinismo (RNF1). Il fuso conta SOLO nella comunicazione verso l'esterno (email e log): le decisioni di gioco restano su UTC.
 >
-> **Errori (D3):** problemi di trasporto/HTTP → `LLMError` rilanciata (mai silenziosa: il chiamante decide se notificare); nessuna eccezione su contenuto (il testo dell'LLM è sostituito/completato deterministicamente, mai validato in modo bloccante).
+> **Errori (D3):** problemi di trasporto/HTTP → `LLMError` rilanciata (mai silenziosa: il chiamante decide se notificare); nessuna eccezione su contenuto (la narrativa è incastonata deterministicamente nel corpo dal renderer, mai validata in modo bloccante).
 
 ### 6.4 ChannelAdapter
+
+> **Emendamento ADR-011 (principio "resa = canale, dati = canale-agnostici").** La RESA dei testi appartiene al CANALE: il renderer `src/llm/email-renderer.ts` è il renderer DEDICATO del canale email (header/box/CTA deterministici attorno alla narrativa LLM). Il Game Engine compone SOLO `EmailContext` (dati) e chiama `generator.generate` + `channel.sendMessage` (flusso invariato): un futuro WebAdapter riusa gli stessi dati con un renderer dedicato, senza toccare la logica di gioco. Il banner TEST MODE anteposto dall'EmailAdapter resta indipendente dal corpo e si preserva automaticamente.
 
 ```typescript
 interface IncomingMessage {
@@ -675,6 +691,7 @@ type PlatformAccountStatus = 'active' | 'pending_unsubscribe' | 'unsubscribed';
 interface PlatformAccount {
   registerId: number;       // registerID INTERNO STABILE (riusato alla re-iscrizione, RF-P3)
   email: string;
+  name: string | null;      // ADR-011 (RF-P1): nome dedotto dalla mail di registrazione; null → si usa l'email
   status: PlatformAccountStatus;
   createdAt: string;        // clock iniettato (RF-P8, RNF1)
   unsubscribedAt: string | null;
@@ -773,8 +790,10 @@ npm run cli -- elimination:list               # Lista profili eliminati con moti
 
 ### 7.7 Game Engine — Winner Engine
 
+> **Emendamento ADR-011 (chiusura automatica e completa).** `checkWinner` resta SOLA LETTURA e senza gate sullo stato; il Round Manager espone l'hook `settleWinnerIfNeeded` (invocato dopo `closeRound` e dopo `scoreRound`) che, alla identificazione del/i vincitore/i, esegue in sequenza: guardia atomica idempotente (`tournament_state.winner_notified = 1` + `finished_at` dal clock — migrazioni additive), notifica ai vincitori (`tournament_won`/`tournament_shared_win`, best-effort per destinatario con filtro account `active`), EXPORT AUTOMATICO (riuso di `tournamentExport` → file JSON in `TOURNAMENT_EXPORT_DIR`, filename dal clock iniettato — archivio per il reset) e inibizione dello scheduler (`computeActions` → `[]` a torneo chiuso). `tournament:start` è RIAMMISSIBILE su torneo chiuso: reset atomico del DB di GIOCO (pick/profile/player/round_state) + reset di `tournament_state`; il DB piattaforma non è toccato (ADR-009). `winner:check` resta invocabile in qualunque momento, anche a torneo ultimato (stesso risultato della chiusura, senza side-effect); dopo il reset, lo storico del torneo precedente è consultabile SOLO nell'export automatico. La rimozione della riga crontab fisica a torneo chiuso resta attività operativa del commissioner (guida test-mode).
+
 ```bash
-npm run cli -- winner:check                   # Verifica se il torneo è finito. Output: JSON {finished, winners, case}
+npm run cli -- winner:check                   # Verifica se il torneo è finito (SOLA LETTURA). Output: JSON {finished, winners, case}
 ```
 
 ### 7.8 LLM Adapter
@@ -784,14 +803,14 @@ npm run cli -- llm:parse --input <text>       # Estrae {team, outcome} da testo 
                                               # Lista canonica da getTeams() (DB reale) + contenuto di
                                               # team-aliases.md iniettati per chiamata; DB vuoto → lista
                                               # vuota → {team: null} con messaggio chiaro
-npm run cli -- llm:classify --input <json>    # Classifica {intent, pick} da JSON {"intent": "...", "pick": {...}}
+npm run cli -- llm:classify --input <json>    # Classifica {intent, pick, name} da JSON {"intent": "...", "pick": {...}}
                                               # o testo: UNA chiamata LLM (ADR-009, RF-P1/P2); output JSON
-                                              # {intent: subscribe|unsubscribe|pick|other, pick}
-npm run cli -- llm:generate --type <email-type> [--player-name <name>] [--tt <n>] [--tc <n>] [--team <name>] [--outcome <outcome>] [--reason <text>] [--deadline <datetime>]
+                                              # {intent: subscribe|unsubscribe|pick|other, pick, name} (ADR-011)
+npm run cli -- llm:generate --type <email-type> [--player-name <name>] [--tt <n>] [--tc <n>] [--team <name>] [--outcome <outcome>] [--reason <text>] [--deadline <datetime>] [--available-teams <comma,sep>]
                                               # Genera email da contesto strutturato. Output: SOGGETTO
-                                              # (subjectFor, forma compatta TT2TC7) + corpo (segnaposto
-                                              # {{TT_TC}} sostituito deterministicamente). Coppia TT/TC
-                                              # assente → segnaposto sostituito con stringa vuota
+                                              # (subjectFor, forma UMANA "Round N · Turno di campionato M",
+                                              # ADR-011) + corpo renderizzato (header/box/CTA deterministici
+                                              # attorno alla narrativa LLM, date nel TIMEZONE di sistema)
 ```
 
 ### 7.9 Channel Adapter

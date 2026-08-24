@@ -17,6 +17,7 @@
 import type { ChannelAdapter, IncomingMessage } from '../adapter.js';
 import { fetchUnseen, markSeen, type ImapConnection } from './imap-client.js';
 import { sendMail, type SmtpTransport } from './smtp-client.js';
+import { SYSTEM_EMAIL_SEPARATOR } from './reply-cleaner.js';
 
 /** Errore chiaro del canale email (connessione/invio): contratto CLI (RNF9). */
 export class EmailAdapterError extends Error {
@@ -97,13 +98,19 @@ export class EmailAdapter implements ChannelAdapter {
   }
 
   /**
-   * Invia un'email via SMTP (soggetto opzionale, D1). In test mode (D2) il
-   * banner "TEST MODE" è anteposto al corpo QUI — punto unico del canale di
-   * invio, mai nei template LLM. Errore di invio → EmailAdapterError con
-   * destinatario nel messaggio.
+   * Invia un'email via SMTP (soggetto opzionale, D1). QUI è il punto unico
+   * del canale di invio per le modifiche al corpo, mai nei template LLM:
+   * - il SEPARATORE di sistema `SYSTEM_EMAIL_SEPARATOR` (reply-cleaner,
+   *   piano email-reply-quote-stripping D2/D3) è anteposto a OGNI email:
+   *   quando citato nella reply, tutto ciò che segue viene tagliato in
+   *   ricezione;
+   * - in test mode (D2) il banner "TEST MODE" è anteposto al corpo SUBITO
+   *   DOPO il separatore (D3: il separatore viene sempre PRIMA del banner).
+   * Errore di invio → EmailAdapterError con destinatario nel messaggio.
    */
   async sendMessage(to: string, body: string, subject?: string): Promise<void> {
-    const finalBody = this.testMode ? TEST_MODE_EMAIL_BANNER + body : body;
+    const finalBody =
+      SYSTEM_EMAIL_SEPARATOR + '\n' + (this.testMode ? TEST_MODE_EMAIL_BANNER : '') + body;
     try {
       await sendMail(this.transport, { from: this.from, to, subject, text: finalBody });
     } catch (error) {

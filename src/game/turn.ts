@@ -37,7 +37,7 @@ export function turnFor(db: Database.Database, tc: number): { tt: number; tc: nu
   return { tt: ttFor(tc, getStartRound(db)), tc };
 }
 
-/** Forma compatta per oggetto email e output CLI: `TT2TC7` (RF-25). */
+/** Forma compatta per log/CLI: `TT2TC7` (RF-25). */
 export function turnCompact(tt: number, tc: number): string {
   return `TT${tt}TC${tc}`;
 }
@@ -45,4 +45,24 @@ export function turnCompact(tt: number, tc: number): string {
 /** Forma estesa per il corpo email: `TT 2, TC 7` (RF-25). */
 export function turnExtended(tt: number, tc: number): string {
   return `TT ${tt}, TC ${tc}`;
+}
+
+/**
+ * Forma UMANA del turno di torneo per il RENDERER email ("Round 2"): usata
+ * SOLO dal renderer (src/llm/email-renderer.ts, opzione 2 approvata) — MAI
+ * nel prompt LLM (ADR-004) e MAI nei log/CLI, che restano sulla forma
+ * compatta `TT2TC7` (RF-25).
+ */
+export function roundLabel(tt: number): string {
+  return `Round ${tt}`;
+}
+
+/**
+ * Forma UMANA del turno di campionato per il RENDERER email ("Turno di
+ * campionato 7"): stessa regola di `roundLabel` — solo renderer, mai prompt,
+ * mai log/CLI. La coppia "Round N · Turno di campionato M" è la forma
+ * approvata dal PO per le comunicazioni verso l'esterno (mai sigle TT/TC).
+ */
+export function championshipLabel(tc: number): string {
+  return `Turno di campionato ${tc}`;
 }

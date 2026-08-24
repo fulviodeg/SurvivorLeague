@@ -126,9 +126,12 @@ export async function autoJoinFromPick(
         db.prepare('UPDATE player SET register_id = ? WHERE id = ?').run(account.registerId, playerId);
       }
     } else {
+      // ADR-011 (RF-P1): il nome del player nasce dal nome dell'account
+      // piattaforma (dedotto dalla mail di registrazione); assente → email.
+      const playerName = account.name ?? identity.identifier;
       playerId = db
         .prepare('INSERT INTO player (email, name, register_id, created_at) VALUES (?, ?, ?, ?)')
-        .run(identity.identifier, null, account.registerId, now.toISOString())
+        .run(identity.identifier, playerName, account.registerId, now.toISOString())
         .lastInsertRowid as number;
     }
 

@@ -24,12 +24,13 @@
  */
 import type Database from 'better-sqlite3';
 
-/** DDL del DB piattaforma (ADR-009, LLD §3 — versione 0.5.0). */
+/** DDL del DB piattaforma (ADR-009, LLD §3 — versione 0.5.0; ADR-011 name). */
 export const PLATFORM_SCHEMA_DDL = `
 -- Account piattaforma (ADR-009, RF-P1/P2/P8): sorgente degli iscritti per le notifiche.
 CREATE TABLE IF NOT EXISTS platform_account (
   register_id     INTEGER PRIMARY KEY AUTOINCREMENT, -- registerID INTERNO STABILE, riusato alla re-iscrizione (RF-P3)
   email           TEXT NOT NULL UNIQUE,              -- univocità: il sistema ricorda l'email (RF-P3)
+  name            TEXT,                              -- nome del giocatore (ADR-011, RF-P1): dedotto dalla mail di registrazione; NULL se ignoto
   status          TEXT NOT NULL DEFAULT 'active'
                   CHECK (status IN ('active', 'pending_unsubscribe', 'unsubscribed')),
   created_at      TEXT NOT NULL,      -- SEMPRE dal clock iniettato (RF-P8, RNF1): mai default datetime('now')
@@ -38,11 +39,26 @@ CREATE TABLE IF NOT EXISTS platform_account (
 `;
 
 /**
+ * Migrazioni additive idempotenti (stesso pattern di src/db/schema.ts):
+ * `name` (ADR-011) è aggiunta con ALTER TABLE guardato da PRAGMA table_info,
+ * così i DB piattaforma pre-esistenti guadagnano la colonna senza perdere
+ * dati e rieseguire la migrazione resta un no-op.
+ */
+export function applyPlatformAdditiveMigrations(db: Database.Database): void {
+  const columns = (db.prepare('PRAGMA table_info(platform_account)').all() as Array<{
+    name: string;
+  }>).map((c) => c.name);
+  if (!columns.includes('name')) {
+    db.exec('ALTER TABLE platform_account ADD COLUMN name TEXT');
+  }
+}
+
+/**
  * Applica lo schema del DB piattaforma. Idempotente: può essere rieseguita
- * senza errori e senza perdere dati (CREATE TABLE IF NOT EXISTS; le colonne
- * future seguono il pattern di migrazione additiva guardata di
- * src/db/schema.ts).
+ * senza errori e senza perdere dati (CREATE TABLE IF NOT EXISTS + migrazione
+ * additiva guardata di `name`).
  */
 export function migratePlatform(db: Database.Database): void {
   db.exec(PLATFORM_SCHEMA_DDL);
+  applyPlatformAdditiveMigrations(db);
 }
