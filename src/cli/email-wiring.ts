@@ -25,10 +25,11 @@ import { migratePlatform } from '../db/platform-schema.js';
 import { DbPlatformRegistry } from '../platform/registry.js';
 import type { GameContext } from '../game/context.js';
 import { OpenAIClient } from '../llm/openai-client.js';
-import { OpenAIIntentClassifier } from '../llm/intent-classifier.js';
+import { OpenAIIntentClassifier, type LLMIntentClassifier } from '../llm/intent-classifier.js';
 import { OpenAIParser } from '../llm/parser.js';
 import { OpenAIGenerator, type LLMGenerator } from '../llm/generator.js';
 import { DeterministicGenerator, FallbackGenerator } from '../llm/deterministic-generator.js';
+import { DeterministicIntentClassifier, FallbackIntentClassifier } from '../llm/deterministic-parser.js';
 import { createLogger } from '../logger.js';
 
 /** Componenti I/O reali delle Fasi 5–6/8, pronti da iniettare. */
@@ -42,8 +43,11 @@ export interface EmailComponents {
   generator: LLMGenerator;
   /** Parser LLM delle email in ingresso (lista+alias iniettati per chiamata, D2). */
   parser: OpenAIParser;
-  /** Classificatore di intento LLM (ADR-009, piano Task 8: intento + pick). */
-  classifier: OpenAIIntentClassifier;
+  /**
+   * Classificatore di intento (ADR-009): deterministico (default) o LLM con
+   * fallback deterministico, selezionato da `AI_EMAIL_PARSER` (email v3 Parte B).
+   */
+  classifier: LLMIntentClassifier;
 }
 
 /**
@@ -107,7 +111,18 @@ export function buildEmailComponents(config: AppConfig): EmailComponents {
         )
       : new DeterministicGenerator(config.TIMEZONE),
     parser: new OpenAIParser(client),
-    classifier: new OpenAIIntentClassifier(client)
+    // Email v3 Parte B: il classificatore di intento è deterministico di
+    // default (AI_EMAIL_PARSER assente/false, MAI chiamate LLM per la
+    // classificazione); con AI_EMAIL_PARSER=true si usa l'LLM avvolto dal
+    // FallbackIntentClassifier, che su LLMError classifica col deterministico
+    // (warn pino {reason}) e il batch NON si ferma.
+    classifier: config.AI_EMAIL_PARSER
+      ? new FallbackIntentClassifier(
+          new OpenAIIntentClassifier(client),
+          new DeterministicIntentClassifier(),
+          logger
+        )
+      : new DeterministicIntentClassifier()
   };
 }
 

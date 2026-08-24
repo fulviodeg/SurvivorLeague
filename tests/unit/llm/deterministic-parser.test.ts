@@ -9,9 +9,11 @@
  * unsubscribe, pick con longest-match/alias/maiuscole/accenti/sinonimi esito,
  * i body reali UID 291/295, le formule libere NON riconosciute e l'ambiguità.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { DeterministicIntentClassifier } from '../../../src/llm/deterministic-parser.js';
+import { DeterministicIntentClassifier, FallbackIntentClassifier } from '../../../src/llm/deterministic-parser.js';
+import { LLMError } from '../../../src/llm/errors.js';
+import type { IntentClassification, LLMIntentClassifier } from '../../../src/llm/intent-classifier.js';
 
 /** Tabella alias SINTETICA (Serie B, test mode) per i body reali UID. */
 const SYNTH_TEAMS = ['US Cremonese', 'Brescia Calcio', 'SSC Bari', 'US Catanzaro'];
@@ -190,5 +192,58 @@ describe('DeterministicIntentClassifier — ambiguità e casi limite', () => {
 
   it('corpo vuoto e subject vuoto → other', async () => {
     expect(await classify('', { subject: '' })).toMatchObject({ intent: 'other' });
+  });
+});
+
+describe('FallbackIntentClassifier (modalità AI_EMAIL_PARSER=true)', () => {
+  function fakeLogger(): { warn: ReturnType<typeof vi.fn>; calls: Array<{ obj: object; msg: string }> } {
+    const calls: Array<{ obj: object; msg: string }> = [];
+    const warn = vi.fn((obj: object, msg: string) => {
+      calls.push({ obj, msg });
+    });
+    return { warn, calls };
+  }
+
+  const opts = { teams: PROD_TEAMS, aliases: PROD_ALIASES };
+
+  it('su LLMError → classifica col deterministico + warn {reason} (batch non si ferma)', async () => {
+    const llm: LLMIntentClassifier = {
+      classify: async () => {
+        throw new LLMError('API giù', 500);
+      }
+    };
+    const logger = fakeLogger();
+    const fallback = new FallbackIntentClassifier(llm, new DeterministicIntentClassifier(), logger);
+
+    const result = await fallback.classify('ISCRIZIONE Mario', opts);
+
+    expect(result).toMatchObject({ intent: 'subscribe', name: 'Mario' });
+    expect(logger.calls).toHaveLength(1);
+    expect(logger.calls[0]?.obj).toMatchObject({ reason: 'llm_error' });
+  });
+
+  it('su risposta valida → usa il risultato LLM senza fallback né warn', async () => {
+    const llmResult: IntentClassification = { intent: 'other', pick: null, name: null };
+    const llm: LLMIntentClassifier = { classify: async () => llmResult };
+    const logger = fakeLogger();
+    const fallback = new FallbackIntentClassifier(llm, new DeterministicIntentClassifier(), logger);
+
+    const result = await fallback.classify('qualunque testo', opts);
+
+    expect(result).toBe(llmResult);
+    expect(logger.calls).toHaveLength(0);
+  });
+
+  it('su errore NON-LLM → rilanciato (nessun fallback)', async () => {
+    const llm: LLMIntentClassifier = {
+      classify: async () => {
+        throw new Error('errore inatteso');
+      }
+    };
+    const logger = fakeLogger();
+    const fallback = new FallbackIntentClassifier(llm, new DeterministicIntentClassifier(), logger);
+
+    await expect(fallback.classify('x', opts)).rejects.toThrow('errore inatteso');
+    expect(logger.calls).toHaveLength(0);
   });
 });

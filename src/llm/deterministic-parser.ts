@@ -28,6 +28,8 @@
  */
 import type { IntentClassification, LLMIntentClassifier } from './intent-classifier.js';
 import type { PickExtraction, PickParseOptions } from './parser.js';
+import { LLMError } from './errors.js';
+import type { WarnLogger } from './deterministic-generator.js';
 
 /** Lunghezza massima del nome estratto dalla formula `ISCRIZIONE [NOME]`. */
 const MAX_NAME_CHARS = 40;
@@ -174,5 +176,40 @@ export class DeterministicIntentClassifier implements LLMIntentClassifier {
       if (result !== null) return result;
     }
     return { intent: 'other', pick: null, name: null };
+  }
+}
+
+/**
+ * Classificatore con fallback deterministico (modalità `AI_EMAIL_PARSER=true`,
+ * decisione 2): avvolge l'`OpenAIIntentClassifier`; su `LLMError` ripiega sul
+ * `DeterministicIntentClassifier` e logga un warn pino `{reason, type}` — il
+ * messaggio viene comunque classificato e il batch NON si ferma. Gli esiti di
+ * contenuto legittimi (`other`/`pick:null`) NON vengono rieseguiti (nessun
+ * doppio passaggio). Gli errori NON-LLM sono rilanciati.
+ */
+export class FallbackIntentClassifier implements LLMIntentClassifier {
+  private readonly llm: LLMIntentClassifier;
+  private readonly deterministic: LLMIntentClassifier;
+  private readonly logger: WarnLogger;
+
+  constructor(llm: LLMIntentClassifier, deterministic: LLMIntentClassifier, logger: WarnLogger) {
+    this.llm = llm;
+    this.deterministic = deterministic;
+    this.logger = logger;
+  }
+
+  async classify(body: string, opts: PickParseOptions): Promise<IntentClassification> {
+    try {
+      return await this.llm.classify(body, opts);
+    } catch (error) {
+      if (error instanceof LLMError) {
+        this.logger.warn(
+          { reason: 'llm_error' },
+          'LLM intent classification failed — falling back to deterministic classifier'
+        );
+        return await this.deterministic.classify(body, opts);
+      }
+      throw error;
+    }
   }
 }
