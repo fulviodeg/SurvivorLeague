@@ -24,7 +24,7 @@ import {
   type EmailContext,
   type EmailType
 } from '../../../src/llm/generator.js';
-import { EMAIL_TEMPLATES, FALLBACK_NARRATIVES } from '../../../src/llm/templates.js';
+import { EMAIL_TEMPLATES, DETERMINISTIC_NARRATIVES } from '../../../src/llm/templates.js';
 import { LLMError } from '../../../src/llm/errors.js';
 
 /** Generatore con fetch iniettato che registra i prompt (test ermetici). */
@@ -208,7 +208,7 @@ describe('LLM Generator — guardia anti-degenerazione dell\'output (narrativa)'
       playerName: 'Sara'
     });
     expect(body).not.toContain('We need to produce a short narrative text');
-    expect(body).toContain(FALLBACK_NARRATIVES.platform_already_registered);
+    expect(body).toContain(DETERMINISTIC_NARRATIVES.platform_already_registered);
     expect(body.length).toBeLessThan(5_000);
   });
 
@@ -216,14 +216,14 @@ describe('LLM Generator — guardia anti-degenerazione dell\'output (narrativa)'
     const { generator } = makeGenerator(() => Promise.resolve(chatOk('Narrativa valida e breve')));
     const body = await generator.generate({ type: 'pick_instructions', playerName: 'Aldo' });
     expect(body).toContain('Narrativa valida e breve');
-    expect(body).not.toContain(FALLBACK_NARRATIVES.pick_instructions);
+    expect(body).not.toContain(DETERMINISTIC_NARRATIVES.pick_instructions);
   });
 });
 
 describe('deterministicNarrative — guardia pura sull\'output LLM', () => {
   it('narrativa vuota o whitespace → fallback deterministico per tipo', () => {
     expect(deterministicNarrative({ type: 'tournament_open' }, '   ')).toBe(
-      FALLBACK_NARRATIVES.tournament_open
+      DETERMINISTIC_NARRATIVES.tournament_open
     );
   });
 
@@ -232,13 +232,13 @@ describe('deterministicNarrative — guardia pura sull\'output LLM', () => {
     const over = 'y'.repeat(MAX_NARRATIVE_CHARS + 1);
     expect(deterministicNarrative({ type: 'pick_confirmed' }, atLimit)).toBe(atLimit);
     expect(deterministicNarrative({ type: 'pick_confirmed' }, over)).toBe(
-      FALLBACK_NARRATIVES.pick_confirmed
+      DETERMINISTIC_NARRATIVES.pick_confirmed
     );
   });
 
-  it('fallback narrativo presente per OGNI EmailType (Record completo)', () => {
+  it('narrativa deterministica presente per OGNI EmailType (Record completo, anche vuota)', () => {
     for (const type of EMAIL_TYPES) {
-      expect(FALLBACK_NARRATIVES[type], `fallback per ${type}`).toBeTruthy();
+      expect(DETERMINISTIC_NARRATIVES[type], `narrativa per ${type}`).toBeDefined();
     }
   });
 });

@@ -46,6 +46,7 @@ describe('parseConfig', () => {
     expect(config.LLM_MODEL).toEqual(['gpt-4o-mini']);
     expect(config.LLM_TIMEOUT_MS).toBe(15000);
     expect(config.LLM_RETRIES).toBe(3);
+    expect(config.AI_EMAIL_GENERATOR).toBe(false);
     expect(config.DB_PATH).toBe('./data/survivor.db');
     expect(config.TIMEZONE).toBe('Europe/Rome');
     expect(config.TOURNAMENT_EXPORT_DIR).toBe('./data/exports/');
@@ -73,7 +74,8 @@ describe('parseConfig', () => {
       SCHEDULER_AUTO_SCORE: 'false',
       SIM_PLAYERS: '20',
       LLM_TIMEOUT_MS: '20000',
-      LLM_RETRIES: '5'
+      LLM_RETRIES: '5',
+      AI_EMAIL_GENERATOR: 'true'
     });
 
     expect(config.DEADLINE_ADVANCE_MIN).toBe(45);
@@ -84,6 +86,7 @@ describe('parseConfig', () => {
     expect(config.SIM_PLAYERS).toBe(20);
     expect(config.LLM_TIMEOUT_MS).toBe(20000);
     expect(config.LLM_RETRIES).toBe(5);
+    expect(config.AI_EMAIL_GENERATOR).toBe(true);
   });
 
   it('LLM_MODEL: lista separata da virgola → array (trim, scarto vuoti, dedup ordinato)', () => {

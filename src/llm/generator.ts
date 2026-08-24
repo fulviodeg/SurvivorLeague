@@ -21,8 +21,8 @@
  *     TT/TC (RF-25, convenzione 1/4 approvata: soggetti neutri per gli esiti);
  *   - la guardia anti-degenerazione `deterministicNarrative` (+ costante
  *     `MAX_NARRATIVE_CHARS`): l'output LLM è validato (lunghezza, non vuoto)
- *     e, se degenerato/vuoto, sostituito dal fallback fisso per tipo
- *     (`FALLBACK_NARRATIVES`, src/llm/templates.ts) — MAI spazzatura;
+ *     e, se degenerato/vuoto, sostituito dalla narrativa deterministica per
+ *     tipo (`DETERMINISTIC_NARRATIVES`, src/llm/templates.ts) — MAI spazzatura;
  *   - l'implementazione POC `OpenAIGenerator` (API OpenAI-compatibile):
  *     template di sistema (src/llm/templates.ts) + contesto serializzato →
  *     chiamata al client condiviso → guardia → composizione `renderEmailV2(ctx,
@@ -33,7 +33,7 @@
  * chiamante (CLI/wiring); errori di trasporto → `LLMError` rilanciata (D3,
  * mai silenziosa: il chiamante decide se notificare).
  */
-import { EMAIL_TEMPLATES, FALLBACK_NARRATIVES, serializeEmailContext } from './templates.js';
+import { DETERMINISTIC_NARRATIVES, EMAIL_TEMPLATES, serializeEmailContext } from './templates.js';
 import { renderEmailV2 } from './email-renderer.js';
 import { OpenAIClient } from './openai-client.js';
 
@@ -203,15 +203,15 @@ export const MAX_NARRATIVE_CHARS = 1000;
 /**
  * Guardia sull'output dell'LLM (pura): accetta SOLO narrativa non vuota e
  * entro `MAX_NARRATIVE_CHARS`; in ogni altro caso (vuoto, whitespace, dump
- * enormi o illeggibili) ripiega sul testo NARRATIVO FISSO per tipo
- * (`FALLBACK_NARRATIVES`): mai spedire spazzatura al giocatore. Il fallback
- * è DETERMINISTICO (nessuna chiamata LLM di ripiego, nessuna invenzione:
- * il renderer compone comunque box/CTA dai dati iniettati).
+ * enormi o illeggibili) ripiega sul testo NARRATIVO DETERMINISTICO per tipo
+ * (`DETERMINISTIC_NARRATIVES`): mai spedire spazzatura al giocatore. Il
+ * fallback è DETERMINISTICO (nessuna chiamata LLM di ripiego, nessuna
+ * invenzione: il renderer compone comunque sezioni/CTA dai dati iniettati).
  */
 export function deterministicNarrative(ctx: EmailContext, raw: string): string {
   const trimmed = raw.trim();
   if (trimmed === '' || trimmed.length > MAX_NARRATIVE_CHARS) {
-    return FALLBACK_NARRATIVES[ctx.type];
+    return DETERMINISTIC_NARRATIVES[ctx.type];
   }
   return trimmed;
 }

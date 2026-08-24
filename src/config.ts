@@ -188,6 +188,13 @@ const configSchema = z.object({
   // trasporto/HTTP ritentabile: 429, 5xx, timeout, rete, body malformato);
   // 1 = nessun ritentativo. I 4xx deterministici non vengono ritentati.
   LLM_RETRIES: intParam().default(3),
+  // Interruttore generazione IA delle email (email v3): true = narrativa LLM
+  // con fallback deterministico su LLMError/narrativa degenerata; assente o
+  // false = generatore deterministico (mai chiamate LLM per i testi email).
+  // La variabile è letta a OGNI invocazione CLI via getConfig()/zod: cambiare
+  // .env ha effetto dal comando/tick successivo, nessun daemon da riavviare.
+  // NON tocca Parser/Classificatore (lato input), che restano sempre LLM.
+  AI_EMAIL_GENERATOR: boolParam('false'),
   // Percorso del file SQLite; la directory viene creata da db/connection.ts se assente.
   DB_PATH: z.string().min(1).default('./data/survivor.db'),
   // Percorso del DB PIATTAFORMA (ADR-009, RF-P7): storage SEPARATO degli

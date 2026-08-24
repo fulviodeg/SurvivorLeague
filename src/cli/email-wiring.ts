@@ -27,15 +27,19 @@ import type { GameContext } from '../game/context.js';
 import { OpenAIClient } from '../llm/openai-client.js';
 import { OpenAIIntentClassifier } from '../llm/intent-classifier.js';
 import { OpenAIParser } from '../llm/parser.js';
-import { OpenAIGenerator } from '../llm/generator.js';
+import { OpenAIGenerator, type LLMGenerator } from '../llm/generator.js';
+import { DeterministicGenerator, FallbackGenerator } from '../llm/deterministic-generator.js';
 import { createLogger } from '../logger.js';
 
 /** Componenti I/O reali delle Fasi 5–6/8, pronti da iniettare. */
 export interface EmailComponents {
   /** Canale email concreto (IMAP fetch / SMTP send, flag \Seen via markSeen). */
   channel: EmailAdapter;
-  /** Generatore LLM dei testi email (template + segnaposto TT/TC, D4). */
-  generator: OpenAIGenerator;
+  /**
+   * Generatore dei testi email: deterministico (default) o LLM con fallback
+   * deterministico, selezionato da `AI_EMAIL_GENERATOR` (email v3).
+   */
+  generator: LLMGenerator;
   /** Parser LLM delle email in ingresso (lista+alias iniettati per chiamata, D2). */
   parser: OpenAIParser;
   /** Classificatore di intento LLM (ADR-009, piano Task 8: intento + pick). */
@@ -90,9 +94,18 @@ export function buildEmailComponents(config: AppConfig): EmailComponents {
   });
   return {
     channel,
-    // Fuso di sistema iniettato nel generatore (ADR-011): il renderer del
-    // canale formatta le date delle email nel TIMEZONE configurato.
-    generator: new OpenAIGenerator(client, config.TIMEZONE),
+    // Email v3: il generatore è deterministico di default (AI_EMAIL_GENERATOR
+    // assente/false, MAI chiamate LLM per i testi email); con
+    // AI_EMAIL_GENERATOR=true si usa l'LLM avvolto dal FallbackGenerator, che
+    // su LLMError ripiega sul corpo deterministico (warn pino {reason, type}).
+    // Il fuso di sistema è iniettato in entrambi i generatori (ADR-011).
+    generator: config.AI_EMAIL_GENERATOR
+      ? new FallbackGenerator(
+          new OpenAIGenerator(client, config.TIMEZONE),
+          new DeterministicGenerator(config.TIMEZONE),
+          logger
+        )
+      : new DeterministicGenerator(config.TIMEZONE),
     parser: new OpenAIParser(client),
     classifier: new OpenAIIntentClassifier(client)
   };

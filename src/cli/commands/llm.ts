@@ -27,6 +27,7 @@ import { DbSeasonDataProvider } from '../../data/db-provider.js';
 import { createConnection } from '../../db/connection.js';
 import { migrate } from '../../db/schema.js';
 import { EMAIL_TYPES, OpenAIGenerator, subjectFor, type EmailContext } from '../../llm/generator.js';
+import { DeterministicGenerator } from '../../llm/deterministic-generator.js';
 import { OpenAIIntentClassifier } from '../../llm/intent-classifier.js';
 import { OpenAIClient } from '../../llm/openai-client.js';
 import { loadTeamAliasesFor, OpenAIParser } from '../../llm/parser.js';
@@ -178,6 +179,7 @@ interface GenerateArgs extends JsonArg {
   reason?: string;
   deadline?: string;
   availableTeams?: string;
+  mode?: string;
 }
 
 export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
@@ -214,6 +216,12 @@ export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
       .option('availableTeams', {
         type: 'string' as const,
         describe: 'Squadre disponibili separate da virgola'
+      })
+      .option('mode', {
+        type: 'string' as const,
+        choices: ['llm', 'deterministic'],
+        describe:
+          'Modalità di generazione: llm (narrativa LLM) o deterministic (testi fissi); default = AI_EMAIL_GENERATOR della config'
       }),
   handler: async (argv) => {
     const config = getConfig();
@@ -228,16 +236,22 @@ export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
       deadline: argv.deadline !== undefined ? new Date(argv.deadline) : undefined,
       availableTeams: argv.availableTeams?.split(',').map((t) => t.trim()).filter((t) => t !== '')
     };
-    const generator = new OpenAIGenerator(
-      new OpenAIClient({
-        baseUrl: config.LLM_API_BASE_URL,
-        apiKey: config.LLM_API_KEY,
-        models: config.LLM_MODEL,
-        timeoutMs: config.LLM_TIMEOUT_MS,
-        retries: config.LLM_RETRIES
-      }),
-      config.TIMEZONE
-    );
+    // `--mode` esplicito prevale sulla config (confronto delle due strade sullo
+    // stesso input senza toccare AI_EMAIL_GENERATOR); senza --mode si segue la
+    // config (default deterministico, email v3).
+    const useLlm = argv.mode === 'llm' || (argv.mode === undefined && config.AI_EMAIL_GENERATOR);
+    const generator = useLlm
+      ? new OpenAIGenerator(
+          new OpenAIClient({
+            baseUrl: config.LLM_API_BASE_URL,
+            apiKey: config.LLM_API_KEY,
+            models: config.LLM_MODEL,
+            timeoutMs: config.LLM_TIMEOUT_MS,
+            retries: config.LLM_RETRIES
+          }),
+          config.TIMEZONE
+        )
+      : new DeterministicGenerator(config.TIMEZONE);
     const body = await generator.generate(emailCtx);
     const subject = subjectFor(emailCtx);
     if (argv.json) {

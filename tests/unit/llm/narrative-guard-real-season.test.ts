@@ -22,7 +22,7 @@ import {
   deterministicNarrative,
   type EmailContext
 } from '../../../src/llm/generator.js';
-import { FALLBACK_NARRATIVES, serializeEmailContext } from '../../../src/llm/templates.js';
+import { DETERMINISTIC_NARRATIVES, serializeEmailContext } from '../../../src/llm/templates.js';
 import { TEXT_MAX_TOKENS } from '../../../src/llm/openai-client.js';
 import {
   LONG_LEGITIMATE_NARRATIVE,
@@ -86,6 +86,6 @@ describe('guardia narrativa con la stagione reale 2025/26 (girone di andata)', (
     const echo =
       'We need to produce a short narrative text (2-4 short sentences) in Italian, enthusiastic and friendly... ';
     const degenerate = echo.repeat(200); // ≫ MAX_NARRATIVE_CHARS
-    expect(deterministicNarrative(ctx, degenerate)).toBe(FALLBACK_NARRATIVES.round_closed_survived);
+    expect(deterministicNarrative(ctx, degenerate)).toBe(DETERMINISTIC_NARRATIVES.round_closed_survived);
   });
 });

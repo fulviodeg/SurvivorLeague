@@ -144,49 +144,40 @@ iscrivermi".`
 };
 
 /**
- * Narrativa FALLBACK per ogni tipo di email (guardia anti-degenerazione del
- * Generator, src/llm/generator.ts): testo DETERMINISTICO, fisso e in italiano
- * (2-4 frasi brevi, tono entusiasta) usato quando l'output dell'LLM è
- * degenerato (dump enorme tipo "thinking loop", echo del prompt), vuoto o
- * oltre `MAX_NARRATIVE_CHARS`. È un testo di ripiego generico: NON ripete
- * dati dei box (potrebbero essere assenti) e rispetta i vincoli PO
- * (chiusura "grazie per essere stato con noi", mai elenchi nominativi, mai
- * inviti a seguire i round per gli eliminati). Mai spedire spazzatura:
- * il fallback è sempre meglio di un corpo illeggibile.
+ * Narrativa DETERMINISTICA per ogni tipo di email (email v3): testo FISSO,
+ * corto e in italiano. È la narrativa PRIMARIA del `DeterministicGenerator`
+ * (src/llm/deterministic-generator.ts) e il FALLBACK della guardia
+ * anti-degenerazione `deterministicNarrative` (src/llm/generator.ts) in
+ * modalità LLM. Un testo vuoto → il renderer omette il blocco narrativa.
+ *
+ * I testi derivano dai 16 template del piano email v3: dove il template
+ * mostra una narrativa con dati specifici (esiti round con squadra/punteggio,
+ * partita rinviata con nome squadra) il testo deterministico è la forma
+ * GENERICA equivalente (il dato specifico è prodotto dall'LLM in modalità
+ * llm). La parola di conferma disiscrizione è interpolata dalla costante
+ * UNICA `UNSUBSCRIBE_CONFIRM_WORDS` (mai copie letterali divergenti dalla
+ * barriera). Mai spedire spazzatura: il fallback deterministico è sempre
+ * meglio di un corpo illeggibile.
  */
-export const FALLBACK_NARRATIVES: Record<EmailType, string> = {
-  platform_registered:
-    'Benvenuto a bordo! La tua iscrizione alla piattaforma è andata a buon fine: il torneo è alle porte. Quando si aprirà il round, ti basterà scegliere una squadra e un esito per partecipare.',
-  platform_unsubscribe_confirm:
-    'Abbiamo ricevuto la tua richiesta di disiscrizione. Per completarla rispondi a questa email con "confermo" o "sì". Se cambi idea nel frattempo, puoi restare con noi: nessun problema.',
+export const DETERMINISTIC_NARRATIVES: Record<EmailType, string> = {
+  platform_registered: 'Quando si apre il round riceverai le istruzioni per il pick.',
+  platform_unsubscribe_confirm: `Rispondi a questa email con "${UNSUBSCRIBE_CONFIRM_WORDS[0]}" per completare la disiscrizione.\n\nSe cambi idea, non fare nulla: resterai iscritto.`,
   platform_unsubscribed:
-    'La tua disiscrizione è stata completata: non riceverai più comunicazioni. Lo storico del torneo resta intatto. Quando vorrai, potrai tornare rispondendo a questa email.',
-  platform_already_registered:
-    'Sei già iscritto alla piattaforma, non serve re-iscriverti! Quando arriverà la mail di apertura del primo round ti basterà inviare la tua prima scelta (squadra + esito). Resta pronto: il torneo sta per partire.',
-  tournament_open:
-    'Il torneo è ufficialmente aperto! Il round 1 parte a breve: stai pronto. Le istruzioni con la scadenza del pick arriveranno con una mail dedicata all\'apertura del round.',
-  pick_instructions:
-    'Il round è aperto e tocca a te! Scegli una squadra tra quelle disponibili e indica l\'esito previsto (vittoria, pareggio o sconfitta), poi invia il tuo pick prima della scadenza. In bocca al lupo!',
-  pick_confirmed:
-    'Pick registrato, mossa perfetta! Puoi correggere la scelta rispondendo con un nuovo pick finché il round è aperto. Resta concentrato: ogni round conta.',
-  pick_rejected:
-    'Il tuo pick non è stato registrato, ma nessun problema: riprova rispondendo a questa email con squadra ed esito ben riconoscibili (win, draw, lose). Siamo qui per aiutarti.',
-  pick_missing_elimination:
-    'Non è arrivato alcun pick entro la scadenza e per questa volta l\'avventura si ferma qui. Grazie per essere stato con noi: è stato un piacere averti in gara!',
-  round_result_correct:
-    'Pick corretto, sei ancora in gara! Ottima mossa. Le istruzioni per il prossimo round arriveranno all\'apertura: continua così.',
-  round_result_wrong:
-    'Questa volta la squadra scelta non ha prodotto l\'esito previsto e l\'avventura si ferma qui. Grazie per essere stato con noi: sei stato un avversario in gamba!',
-  pick_postponed:
-    'La partita della tua squadra è stata rinviata: niente panico! Il tuo pick resta in attesa e sarà valutato quando la partita verrà giocata. Ti terremo aggiornato.',
-  round_closed_survived:
-    'Round chiuso e sei ancora in gara: ottimo lavoro! Le istruzioni per il prossimo pick arriveranno all\'apertura del prossimo round.',
-  tournament_won:
-    'Hai vinto il torneo! Complimenti campione: sei rimasto l\'ultimo in gara e la vittoria è tutta tua. Festeggia, te la sei meritata!',
-  tournament_shared_win:
-    'Il torneo è finito e la vittoria è condivisa! Complimenti campioni: insieme ai tuoi compagni di vetta avete portato a casa il torneo. Festeggiate, ve lo siete meritato!',
+    'Non riceverai più comunicazioni. Per tornare, rispondi con "ISCRIZIONE [il tuo nome]" (nel subject o nel corpo).',
+  platform_already_registered: "All'apertura del round riceverai le istruzioni per il pick.",
+  tournament_open: 'Il round 1 parte a breve: stai pronto.',
+  pick_instructions: "Scegli una squadra e l'esito (win, draw, lose).",
+  pick_confirmed: 'Puoi correggere la scelta rispondendo con un nuovo pick finché il round è aperto.',
+  pick_rejected: 'Riprova rispondendo con squadra + esito (win, draw, lose).',
+  pick_missing_elimination: 'Non è arrivato alcun pick entro la deadline.',
+  round_result_correct: "Hai indovinato: la tua squadra ha centrato l'esito previsto.",
+  round_result_wrong: "Il tuo pick non si è avverato: l'avventura si ferma qui.",
+  pick_postponed: 'La partita della tua squadra è stata rinviata: il tuo pick resta in attesa.',
+  round_closed_survived: '',
+  tournament_won: "Sei rimasto l'ultimo in gara: la vittoria è tutta tua.",
+  tournament_shared_win: 'Insieme ai tuoi compagni di vetta avete portato a casa il torneo.',
   clarification:
-    'Non ho capito bene la tua richiesta: puoi ripeterla? Se vuoi, puoi iscriverti, disiscriverti o inviare un pick: ti guido io.'
+    'Puoi:\n1. Iscriverti: scrivi "ISCRIZIONE [il tuo nome]" (es. "ISCRIZIONE Mario") nel subject o nel corpo.\n2. Disiscriverti: scrivi "DISISCRIZIONE".\n3. Inviare un pick: scrivi squadra + esito (win, draw, lose).'
 };
 
 /**

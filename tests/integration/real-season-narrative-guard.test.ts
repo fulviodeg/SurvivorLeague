@@ -22,7 +22,7 @@ import {
   type EmailContext,
   type EmailMatchContext
 } from '../../src/llm/generator.js';
-import { FALLBACK_NARRATIVES, serializeEmailContext } from '../../src/llm/templates.js';
+import { DETERMINISTIC_NARRATIVES, serializeEmailContext } from '../../src/llm/templates.js';
 import { TEXT_MAX_TOKENS } from '../../src/llm/openai-client.js';
 import { LONG_LEGITIMATE_NARRATIVE, estimateTokens } from '../fixtures/real-season-2025.js';
 
@@ -88,7 +88,7 @@ describe.skipIf(TOKEN.trim() === '')('guardia narrativa con la stagione reale 20
         const echo =
           'We need to produce a short narrative text (2-4 short sentences) in Italian, enthusiastic and friendly... ';
         expect(deterministicNarrative(ctx, echo.repeat(200))).toBe(
-          FALLBACK_NARRATIVES.round_closed_survived
+          DETERMINISTIC_NARRATIVES.round_closed_survived
         );
       }
     },
