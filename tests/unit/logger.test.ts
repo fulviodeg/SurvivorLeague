@@ -5,6 +5,10 @@
  * timestamp nel FUSO di sistema quando `timeZone` è passata (ADR-011: il
  * default resta UTC, path di emergenza ConfigError).
  */
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+
 import { describe, expect, it } from 'vitest';
 
 import { createLogger, formatTimestampInZone } from '../../src/logger.js';
@@ -94,5 +98,45 @@ describe('createLogger — timestamp nel fuso di sistema (ADR-011)', () => {
 
     const entry = JSON.parse(lines[0]!) as { time: number };
     expect(typeof entry.time).toBe('number');
+  });
+});
+
+describe('createLogger — file di log (LOG_FILE)', () => {
+  it('scrive le righe JSON pino nel file indicato, creando la directory', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'survivor-log-'));
+    const file = join(dir, 'logs', 'uat.log');
+
+    const logger = createLogger('info', undefined, false, undefined, file);
+    logger.info('primo evento');
+    logger.warn('secondo evento');
+    logger.flush(); // il destination pino è bufferizzato: flush prima di leggere
+
+    // Il file è stato creato (directory creata) e contiene le righe append.
+    expect(statSync(file).isFile()).toBe(true);
+    const content = readFileSync(file, 'utf8');
+    const entries = content
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l) as { msg: string; level: number });
+    expect(entries).toHaveLength(2);
+    expect(entries[0]!.msg).toBe('primo evento');
+    expect(entries[1]!.msg).toBe('secondo evento');
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('con testMode=true anche le righe su file portano testMode: true', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'survivor-log-'));
+    const file = join(dir, 'uat.log');
+
+    const logger = createLogger('info', undefined, true, undefined, file);
+    logger.info('evento in test mode');
+    logger.flush(); // il destination pino è bufferizzato: flush prima di leggere
+
+    const entry = JSON.parse(readFileSync(file, 'utf8')) as { msg: string; testMode?: boolean };
+    expect(entry.msg).toBe('evento in test mode');
+    expect(entry.testMode).toBe(true);
+
+    rmSync(dir, { recursive: true, force: true });
   });
 });

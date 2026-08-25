@@ -217,6 +217,11 @@ const configSchema = z.object({
   PLATFORM_DB_PATH: z.string().min(1).default(PLATFORM_DB_PATH_DEFAULT),
   // Livello di log pino: debug | info | warn | error.
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  // Percorso del FILE di log pino (opzionale, default vuoto = solo stdout).
+  // Se valorizzato, i log vengono APPESI al file indicato (righe JSON pino,
+  // stesso formato dello stdout); la directory viene creata se assente.
+  // Utile per sessioni UAT/cron senza collector esterno (journald).
+  LOG_FILE: z.string().default(''),
   // Intervallo (millisecondi) tra due letture della casella IMAP.
   IMAP_POLL_MS: intParam().default(60000),
 

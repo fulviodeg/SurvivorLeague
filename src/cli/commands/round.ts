@@ -57,7 +57,7 @@ function makeGameContext(): {
   const db = createConnection(config.DB_PATH);
   migrate(db);
   const dataProvider = new DbSeasonDataProvider(db);
-  const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode, config.TIMEZONE);
+  const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode, config.TIMEZONE, config.LOG_FILE);
   const base: GameContext = { db, dataProvider, config, now: makeNow(config), logger };
   // Registry piattaforma iniettato (ADR-009, RF-P6): le notifiche di
   // round:open/close/score filtrano su account `active`. Seam di

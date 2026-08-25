@@ -20,7 +20,10 @@
  * configurazione non è ancora validata (ConfigError) e non rompe i test
  * esistenti che non passano il fuso.
  */
-import { pino, type Logger } from 'pino';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+
+import { pino, destination, type DestinationStream, type Logger } from 'pino';
 
 import type { AppConfig } from './config.js';
 
@@ -71,28 +74,51 @@ function timestampInZone(timeZone: string): () => string {
 /**
  * Crea un logger pino JSON al livello indicato (LOG_LEVEL della configurazione).
  * Il parametro stream esiste solo per i test, che catturano l'output in
- * memoria; in produzione si usa il default (stdout di processo).
- *
+ * memoria; in produzione si usa il default (stdout di processo) oppure, se
+ * `logFile` è valorizzato, un destination pino su file (append).
+
  * `testMode` (D3 del piano UAT): quando `true`, il logger è un CHILD con il
  * campo strutturato `testMode: true` legato a ogni riga emessa (binding). Il
  * default `false` NON aggiunge il campo: è il path di emergenza usato quando
  * la configurazione non è ancora validata (es. per loggare un ConfigError,
  * dove `testMode` è sconosciuto) — `createLogger(level)` resta valido senza
  * alcuna dipendenza da config.ts.
- *
+
  * `timeZone` (ADR-011): se presente, il timestamp di ogni riga è formattato
  * nel fuso indicato (con offset esplicito); assente → timestamp ISO UTC di
  * pino (comportamento storico, path di emergenza ConfigError).
+
+ * `logFile` (LOG_FILE): percorso del file su cui APPENDERE i log (righe JSON
+ * pino). La directory del file viene creata se assente. Vuoto/assente → si
+ * usa lo stream passato o stdout (comportamento storico).
  */
 export function createLogger(
   level: AppConfig['LOG_LEVEL'],
   stream?: LogStream,
   testMode = false,
-  timeZone?: string
+  timeZone?: string,
+  logFile?: string
 ): Logger {
   const options =
     timeZone === undefined ? { level } : { level, timestamp: timestampInZone(timeZone) };
-  const logger = stream === undefined ? pino(options) : pino(options, stream);
+
+  let destStream: DestinationStream | undefined;
+  if (logFile !== undefined && logFile !== '') {
+    mkdirSync(dirname(logFile), { recursive: true });
+    // sync: true → scrittura sincrona sul file (righe subito visibili, nessuna
+    // perdita su crash del processo CLI; in production si può rimuovere per
+    // puntare a un collector esterno come journald).
+    destStream = destination({ dest: logFile, append: true, sync: true });
+  }
+
+  let logger: Logger;
+  if (stream !== undefined) {
+    logger = pino(options, stream);
+  } else if (destStream !== undefined) {
+    logger = pino(options, destStream);
+  } else {
+    logger = pino(options);
+  }
   return testMode ? logger.child({ testMode: true }) : logger;
 }
 

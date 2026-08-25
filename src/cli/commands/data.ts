@@ -132,7 +132,7 @@ export async function importMatchesWithGuard(
 async function runImport(mode: 'import' | 'refresh', json: boolean): Promise<void> {
   const config = getConfig();
   const db = createConnection(config.DB_PATH);
-  const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode, config.TIMEZONE);
+  const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode, config.TIMEZONE, config.LOG_FILE);
   try {
     migrate(db);
     const client = new FootballDataClient({
@@ -413,7 +413,7 @@ export const dataSeedSyntheticCommand: CommandModule<object, SeedSyntheticArgs> 
     const db = createConnection(config.DB_PATH);
     try {
       migrate(db);
-      const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode, config.TIMEZONE);
+      const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode, config.TIMEZONE, config.LOG_FILE);
       const summary = seedSyntheticSeason(
         db,
         {
