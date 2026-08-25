@@ -15,5 +15,15 @@ export default tseslint.config(
         tsconfigRootDir: import.meta.dirname
       }
     }
+  },
+  {
+    files: ['**/*.mjs'],
+    languageOptions: {
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        setInterval: 'readonly'
+      }
+    }
   }
 );
