@@ -170,11 +170,11 @@ export const DETERMINISTIC_NARRATIVES: Record<EmailType, string> = {
   pick_confirmed: 'Puoi correggere la scelta rispondendo con un nuovo pick finché il round è aperto.',
   pick_rejected: 'Riprova rispondendo con squadra + esito (win, draw, lose).',
   pick_missing_elimination: 'Non è arrivato alcun pick entro la deadline.',
-  round_result_correct: "Hai indovinato: la tua squadra ha centrato l'esito previsto.",
+  round_result_correct: "Hai indovinato: hai centrato l'esito previsto.",
   round_result_wrong: "Il tuo pick non si è avverato: l'avventura si ferma qui.",
   pick_postponed: 'La partita della tua squadra è stata rinviata: il tuo pick resta in attesa.',
   round_closed_survived: '',
-  tournament_won: "Sei rimasto l'ultimo in gara: la vittoria è tutta tua.",
+  tournament_won: "Sei rimasto l'ultimo in gara: la vittoria è tutta tua!",
   tournament_shared_win: 'Insieme ai tuoi compagni di vetta avete portato a casa il torneo.',
   clarification:
     'Puoi:\n1. Iscriverti: scrivi "ISCRIZIONE [il tuo nome]" (es. "ISCRIZIONE Mario") nel subject o nel corpo.\n2. Disiscriverti: scrivi "DISISCRIZIONE".\n3. Inviare un pick: scrivi squadra + esito (win, draw, lose).'
