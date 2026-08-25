@@ -15,7 +15,7 @@ import { DeterministicIntentClassifier, FallbackIntentClassifier } from '../../.
 import { LLMError } from '../../../src/llm/errors.js';
 import type { IntentClassification, LLMIntentClassifier } from '../../../src/llm/intent-classifier.js';
 
-/** Tabella alias SINTETICA (Serie B, test mode) per i body reali UID. */
+/** Tabella alias SINTETICA (rosa test mode) per i body reali UID. */
 const SYNTH_TEAMS = ['US Cremonese', 'Brescia Calcio', 'SSC Bari', 'US Catanzaro'];
 const SYNTH_ALIASES = [
   '| Alias | Nome canonico |',
@@ -156,7 +156,7 @@ describe('DeterministicIntentClassifier — pick (<TEAM> <ESITO>)', () => {
   });
 });
 
-describe('DeterministicIntentClassifier — regressione body reali UID (Serie B sintetica)', () => {
+describe('DeterministicIntentClassifier — regressione body reali UID (rosa sintetica)', () => {
   const synth = { teams: SYNTH_TEAMS, aliases: SYNTH_ALIASES };
 
   it('UID 291 "cremonese pareggia" → US Cremonese draw', async () => {

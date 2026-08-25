@@ -123,7 +123,7 @@ describe('seed-synthetic — seed base (Task 2)', () => {
     });
     // D7: i nomi provengono da SYNTHETIC_TEAMS (coerenza alias garantita dal test di coincidenza).
     const teams = [...new Set(db.prepare('SELECT home_team AS t FROM match UNION SELECT away_team AS t FROM match').all().map((r) => (r as { t: string }).t))];
-    expect(teams.sort()).toEqual([...SYNTHETIC_TEAMS].sort());
+    expect(teams.sort()).toEqual([...SYNTHETIC_TEAMS.slice(0, 8)].sort());
     expect(matchCount(db)).toBe(28);
     db.close();
   });
@@ -204,7 +204,7 @@ describe('seed-synthetic — --force --clear (D6, Task 3)', () => {
     expect(matchCount(db)).toBe(28); // solo la stagione sintetica: zero righe residue Serie A
     expect(summary.matches).toBe(28);
     const teams = await new DbSeasonDataProvider(db).getTeams();
-    expect(teams.sort()).toEqual([...SYNTHETIC_TEAMS].sort());
+    expect(teams.sort()).toEqual([...SYNTHETIC_TEAMS.slice(0, 8)].sort());
     db.close();
   });
 

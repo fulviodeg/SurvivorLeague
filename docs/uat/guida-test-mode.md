@@ -42,8 +42,8 @@ email aperta e pronte a operare secondo le esigenze dei test. In particolare:
   (30–45 minuti negli esempi di questa guida);
 - all'occorrenza, sono pronte a **inviare il pick in ritardo** su richiesta
   dell'operatore (per dimostrare i controlli anti-frode, vedi §6);
-- usano squadre del **campionato sintetico di Serie B** elencate nel §1, non
-  squadre di Serie A.
+- usano squadre del **campionato sintetico** (rosa di Serie A 2025/26, calendario
+  fittizio di test) elencate nel §1, non la stagione reale importata.
 
 Questa assunzione è ripetuta nei singoli esempi (§5) perché tutto il tempo
 stimato delle timeline è pensato per **persone umane** che leggono l'email,
@@ -65,8 +65,8 @@ comandi a schermo, i log di sistema e i dati in formato `--json`.
 A cosa serve:
 
 - permettere una **UAT end-to-end con giocatori veri** su un calendario
-  **sintetico** (inventato ma coerente) di Serie B, con giornate comprimibili
-  in 1–2 ore invece che in una settimana reale;
+  **sintetico** (inventato ma coerente, rosa di Serie A 2025/26) con giornate
+  comprimibili in 1–2 ore invece che in una settimana reale;
 - lasciare l'orologio e i timestamp delle email **reali**, così il controllo
   anti-frode (che si basa sull'orario vero di arrivo delle email) viene
   esercitato su evidenza autentica;
@@ -116,24 +116,36 @@ i seguenti componenti cambiano comportamento rispetto alla produzione:
 | **CLI — output testuale** | Output normale | Ogni comando stampa una riga `TEST MODE` in cima all'output |
 | **CLI — output `--json`** | JSON tal quale | Ogni output `--json` include il campo `"testMode": true` |
 | **Log (pino)** | Righe JSON normali | Ogni riga di log include il campo `"testMode": true` |
-| **Parser LLM** | Usa la risorsa `team-aliases.md` (Serie A 2025/26) | Usa la risorsa sintetica `team-aliases-synthetic.md` (Serie B) e riceve nel prompt il contesto "campionato sintetico di Serie B" (per non confondere l'LLM reale) |
+| **Parser LLM** | Usa la risorsa `team-aliases.md` (Serie A 2025/26) | Usa la risorsa sintetica `team-aliases-synthetic.md` (rosa di Serie A 2025/26, calendario sintetico) e riceve nel prompt il contesto "campionato sintetico" (per non confondere l'LLM reale) |
 | **Orologio (clock)** | Ora reale | Spostato indietro di `TEST_OFFSET_DAYS` giorni **solo se** il valore è > 0 (per il replay 2025); con 0 resta reale |
 | **Timestamp di ricezione email** | `receivedAt` reale (internaldate IMAP) | Spostato indietro dello **stesso** `TEST_OFFSET_DAYS` **solo se** > 0 (replay); con 0 resta reale |
 | **Scheduler — refresh dati** | Aggiorna i risultati dall'API a ogni tick | Con `TEST_REFRESH_ALLOWED=false` (default) **salta** il refresh e lo segnala a log; con `=true` esegue ma emette un WARN di consenso a ogni operazione |
 
 **Nota email v3 Parte B (parser deterministico, ADR-014).** Con `AI_EMAIL_PARSER=false` (default) l'intento NON è classificato dall'LLM ma da un parser deterministico che riconosce SOLO formule univoche nel subject o nel corpo: `ISCRIZIONE [NOME]` (iscrizione, nome dopo la keyword), `DISISCRIZIONE` (disiscrizione) e `<TEAM> <ESITO>` (pick: squadra — nome canonico o alias — + esito `win`/`draw`/`lose` o sinonimi italiani). Qualunque altra cosa → chiarimento (`other`). Le formule libere ("voglio iscrivermi", "mi iscrivo") NON sono riconosciute. Con `AI_EMAIL_PARSER=true` si usa l'LLM con fallback per-messaggio sul deterministico. Con `AI_EMAIL_GENERATOR=false` e `AI_EMAIL_PARSER=false` la `LLM_API_KEY` non è richiesta (run senza IA).
 
-Le **squadre del calendario sintetico** (dalla risorsa alias sintetica, Serie B
-2025/26) sono otto:
+Le **squadre del calendario sintetico** (dalla risorsa alias sintetica, rosa di
+Serie A 2025/26) sono venti:
 
-1. US Cremonese — alias: `cremonese`, `grigiorossi`
-2. Brescia Calcio — alias: `brescia`, `rondinelle`, `biancazzurri`
-3. SSC Bari — alias: `bari`, `galletti`, `biancorossi`
-4. US Catanzaro — alias: `catanzaro`, `giallorossi calabresi`, `aquile`
-5. SSC Palermo — alias: `palermo`, `rosanero`, `aquile siciliane`
-6. Spezia Calcio — alias: `spezia`, `aquiligialle`
-7. UC Sampdoria — alias: `sampdoria`, `blucerchiati`, `samp`, `doria`
-8. Pisa Sporting Club — alias: `pisa`, `nerazzurri toscani`
+1. AC Milan — alias: `milan`, `rossoneri`, `diavolo`
+2. AC Pisa 1909 — alias: `pisa`, `nerazzurri toscani`
+3. ACF Fiorentina — alias: `fiorentina`, `viola`, `gigliati`
+4. AS Roma — alias: `roma`, `giallorossi`, `capitolini`
+5. Atalanta BC — alias: `atalanta`, `la dea`, `orobici`
+6. Bologna FC 1909 — alias: `bologna`, `rossoblu`, `bfc`
+7. Cagliari Calcio — alias: `cagliari`, `isolani`, `rossoblu sardi`
+8. Como 1907 — alias: `como`, `lariani`
+9. FC Internazionale Milano — alias: `inter`, `l'inter`, `nerazzurri`, `milano`
+10. Genoa CFC — alias: `genoa`, `grifone`, `rossoblu di genova`
+11. Hellas Verona FC — alias: `hellas`, `verona`, `gialloblu`, `hellas verona`
+12. Juventus FC — alias: `juve`, `juventus`, `vecchia signora`, `bianconeri`
+13. Parma Calcio 1913 — alias: `parma`, `crociati`, `ducali`
+14. SS Lazio — alias: `lazio`, `biancocelesti`
+15. SSC Napoli — alias: `napoli`, `partenopei`, `azzurri`
+16. Torino FC — alias: `torino`, `granata`, `il toro`
+17. US Cremonese — alias: `cremonese`, `grigiorossi`
+18. US Lecce — alias: `lecce`, `salentini`, `giallorossi di lecce`
+19. US Sassuolo Calcio — alias: `sassuolo`, `neroverdi`
+20. Udinese Calcio — alias: `udinese`, `friulani`, `zebrette`
 
 I giocatori possono scrivere nella email il nome canonico oppure un alias:
 l'LLM lo riconduce al nome esatto della lista.
@@ -187,7 +199,7 @@ ENV_FILE=.env.uat npm run cli -- data:calendar --json
 Cosa devi vedere se il test mode è attivo:
 
 - nell'output **testuale**, la **prima riga** è `TEST MODE`, seguita dal
-  calendario sintetico (squadre di Serie B, date future);
+  calendario sintetico (rosa di Serie A 2025/26, date future);
 - nell'output **`--json`**, il campo `"testMode": true` (es.
   `{"testMode":true,"result":[...]}`);
 - nei **log** (su stdout, una riga JSON per evento) il campo `"testMode": true`
@@ -519,7 +531,8 @@ ENV_FILE=.env.uat npm run cli -- tournament:status
 ## 4. Il seed del calendario sintetico in linguaggio semplice
 
 Il comando `data:seed-synthetic` **genera** un calendario inventato ma
-coerente (campionato di Serie B) e **lo carica** nella tabella `match` del DB.
+coerente (rosa di Serie A 2025/26, stagione sintetica) e **lo carica** nella
+tabella `match` del DB.
 In questa guida i **punteggi sono già presenti** (pre-seedati) fin dall'inizio:
 questo è strutturale per la cadenza compressa, perché permette alla
 contabilizzazione (`round:score`) di completare subito dopo la chiusura della
@@ -537,7 +550,7 @@ giornata, così la successiva si apre senza attese.
 
 | Opzione | Default | Significato |
 |---|---|---|
-| `--teams <n>` | 8 | Numero di squadre (da 2 a 8; prese dalla rosa sintetica di Serie B). |
+| `--teams <n>` | 8 | Numero di squadre (da 2 a 20; prese dalla rosa sintetica di Serie A, `SYNTHETIC_TEAMS.slice(0, n)`). |
 | `--rounds <n>` | 7 | Numero di giornate. Con 8 squadre il girone completo è 7; valori maggiori **ripetono gli accoppiamenti** (wrap, vedi §5.3). |
 | `--spacing-min <n>` | 90 | Minuti tra due giornate consecutive (distanzia solo le giornate, non le partite di una stessa giornata, che hanno tutte lo stesso orario). |
 | `--first-kickoff-offset-min <n>` | 120 | Minuti da adesso al fischio della **prima** giornata (orologio reale). |
@@ -560,9 +573,9 @@ giornata, così la successiva si apre senza attese.
    nulla) con un messaggio che invita a usare `--force` o `--force --clear`.
 2. **`--force` senza `--clear` su tabella piena:** il seed procede ma **non
    cancella** le righe esistenti (l'upsert non fa DELETE) → si può formare un
-   **calendario MISTO** (Serie A + Serie B sintetica). Il sistema emette un
+   **calendario MISTO** (stagione reale + stagione sintetica). Il sistema emette un
    **WARN** (in inglese) e lo ripete nell'output:
-   `--force without --clear on a non-empty match table: existing rows are kept (upsert never deletes); the calendar may become mixed (Serie A + synthetic Serie B) and getTeams()/getTotalRounds() become inconsistent with the synthetic alias resource. Use --force --clear to wipe the match table first`.
+   `--force without --clear on a non-empty match table: existing rows are kept (upsert never deletes); the calendar may become mixed (Serie A + synthetic) and getTeams()/getTotalRounds() become inconsistent with the synthetic alias resource. Use --force --clear to wipe the match table first`.
    Il WARN avverte anche che la rosa delle squadre e il numero di giornate
    diventano incoerenti con la risorsa alias sintetica. **Quando usare
    `--force --clear`:** quando vuoi ripartire da un calendario pulito su un DB
@@ -1157,7 +1170,7 @@ Quindi, in casella, individua i messaggi inviati dal sistema (inviti,
 conferme/rifiuti dei pick, comunicazioni di chiusura giornata) che iniziano
 con `[TEST MODE]`. Le email **ricevute** dai giocatori (i loro pick) non
 portano il banner (il sistema non può modificare le email in ingresso), ma si
-riconoscono dal contenuto (squadre di Serie B, riferimenti alle giornate di
+riconoscono dal contenuto (squadre del calendario sintetico, riferimenti alle giornate di
 test) e dal fatto che sono state inviate durante la sessione di test.
 
 **Procedura di cleanup:**
@@ -1189,7 +1202,7 @@ test) e dal fatto che sono state inviate durante la sessione di test.
 | **Deadline** | L'istante ultimo entro cui un pick è accettato. È posta un po' prima del fischio d'inizio della prima partita del round (`DEADLINE_ADVANCE_MIN` minuti prima). |
 | **Kickoff (fischio d'inizio)** | L'orario di inizio effettivo della prima partita del round. È il riferimento per la guard anti-frode `after_kickoff`. |
 | **Pick (pronostico)** | La scelta di un giocatore: una squadra + un esito (vince/pareggia/perde). Si invia via email. |
-| **Seed** | L'operazione di "semina" del calendario: il comando `data:seed-synthetic` genera e carica le partite inventate (di Serie B) nel DB. |
+| **Seed** | L'operazione di "semina" del calendario: il comando `data:seed-synthetic` genera e carica le partite inventate (rosa di Serie A 2025/26) nel DB. |
 | **Commissioner** | L'operatore che conduce a mano le fasi del torneo con i comandi CLI (modalità manuale). Da qui "modalità commissioner". |
 | **Cron / Scheduler** | L'orchestrazione automatica: un job di sistema (cron) lancia `scheduler:tick` ogni minuto e il sistema apre/chiude/contabilizza le giornate da solo in base al calendario. |
 | **Test mode** | Lo stato del sistema quando è attivo `TEST_MODE=true` (via `ENV_FILE=.env.uat`): segna ogni output con `TEST MODE` e abilita i parametri test-only. |

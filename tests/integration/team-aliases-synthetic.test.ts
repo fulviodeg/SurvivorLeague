@@ -2,12 +2,13 @@
  * Test della risorsa prompt `src/llm/team-aliases-synthetic.md` (piano UAT
  * Task 0.4, D7).
  *
- * Verificano la coerenza della risorsa alias SINTETICA (Serie B, test-only):
- * niente logica nel file (solo Markdown editoriale), lista canonica di 8 club
- * cadetti senza duplicati, ogni alias mappa su un nome canonico della lista e
- * ogni nome canonico ha almeno un alias (speculare a `team-aliases.test.ts`).
- * La COINCIDENZA con la costante `SYNTHETIC_TEAMS` del generatore (Task 1) è
- * verificata in fondo da un test dedicato (Checkpoint B).
+ * Verificano la coerenza della risorsa alias SINTETICA (Serie A 2025/26,
+ * test-only): niente logica nel file (solo Markdown editoriale), lista
+ * canonica di 20 club senza duplicati, ogni alias mappa su un nome canonico
+ * della lista e ogni nome canonico ha almeno un alias (speculare a
+ * `team-aliases.test.ts`). La COINCIDENZA con la costante `SYNTHETIC_TEAMS`
+ * del generatore (Task 1) è verificata in fondo da un test dedicato
+ * (Checkpoint B).
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -49,10 +50,10 @@ function aliasRows(content: string): Array<[string, string]> {
 }
 
 describe('team-aliases-synthetic.md — coerenza della risorsa (Task 0.4, D7)', () => {
-  it('la lista canonica copre gli 8 club di Serie B, senza duplicati', () => {
+  it('la lista canonica copre i 20 club di Serie A, senza duplicati', () => {
     const canonical = canonicalList(readAliases());
-    expect(canonical).toHaveLength(8);
-    expect(new Set(canonical).size).toBe(8);
+    expect(canonical).toHaveLength(20);
+    expect(new Set(canonical).size).toBe(20);
   });
 
   it('ogni alias mappa su un nome canonico della lista', () => {
@@ -76,10 +77,10 @@ describe('team-aliases-synthetic.md — coerenza della risorsa (Task 0.4, D7)', 
     expect(md).not.toMatch(/function\s*\(|=>|require\(|import\s/);
   });
 
-  it('è marcata come NON legata all\'API (Serie B sintetica, non Serie A)', () => {
+  it('è marcata come NON legata all\'API (Serie A sintetica, test-only)', () => {
     const md = readAliases();
     expect(md).toContain('NON legata all\'API');
-    expect(md).toContain('Serie B');
+    expect(md).toContain('Serie A');
   });
 });
 

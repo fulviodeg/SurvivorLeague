@@ -186,7 +186,7 @@ export const WARN_SEED_OUTSIDE_TEST_MODE =
  * calendario MISTO perché l'upsert non cancella mai. Messaggio IN INGLESE.
  */
 export const WARN_FORCE_WITHOUT_CLEAR =
-  '--force without --clear on a non-empty match table: existing rows are kept (upsert never deletes); the calendar may become mixed (Serie A + synthetic Serie B) and getTeams()/getTotalRounds() become inconsistent with the synthetic alias resource. Use --force --clear to wipe the match table first';
+  '--force without --clear on a non-empty match table: existing rows are kept (upsert never deletes); the calendar may become mixed (Serie A + synthetic) and getTeams()/getTotalRounds() become inconsistent with the synthetic alias resource. Use --force --clear to wipe the match table first';
 
 /**
  * Opzioni del comando `data:seed-synthetic`.
@@ -364,13 +364,13 @@ interface SeedSyntheticArgs extends DataArgs {
 export const dataSeedSyntheticCommand: CommandModule<object, SeedSyntheticArgs> = {
   command: 'data:seed-synthetic',
   describe:
-    'Genera il calendario sintetico UAT (Serie B, test mode) e lo carica nella tabella match (upsert idempotente)',
+    'Genera il calendario sintetico UAT (rosa Serie A, test mode) e lo carica nella tabella match (upsert idempotente)',
   builder: (yargs) =>
     jsonOption(yargs)
       .option('teams', {
         type: 'number',
         default: 8,
-        describe: `Numero club Serie B (2..${SYNTHETIC_TEAMS.length}): nomi da SYNTHETIC_TEAMS.slice(0, n) — default = 8 (stagione completa)`
+        describe: `Numero club Serie A (2..${SYNTHETIC_TEAMS.length}): nomi da SYNTHETIC_TEAMS.slice(0, n) — default = 8`
       })
       .option('rounds', {
         type: 'number',

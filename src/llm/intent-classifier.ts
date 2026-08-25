@@ -80,10 +80,11 @@ const classificationSchema = z.object({
 export function buildClassifySystemPrompt(opts: PickParseOptions): string {
   const list = opts.teams.map((t, i) => `${i + 1}. ${t}`).join('\n');
   // Contesto lega (D7): in test mode la lista canonica è il calendario
-  // sintetico di Serie B, NON la Serie A — va dichiarato per non confondere
-  // l'LLM e preservare la robustezza CS7 (mai mischiare i due campionati).
+  // sintetico (rosa di Serie A, stagione sintetica) — NON la stagione reale
+  // importata — va dichiarato per non confondere l'LLM e preservare la
+  // robustezza CS7 (mai mischiare i due domini).
   const league = opts.testMode
-    ? 'un torneo privato di pronostici basato su un campionato sintetico di Serie B (nomi di club cadetti, NON di Serie A).'
+    ? 'un torneo privato di pronostici basato su un campionato sintetico (rosa di Serie A 2025/26, stagione fittizia di test, NON la stagione reale).'
     : 'un torneo privato di pronostici sulla Serie A.';
   return [
     `Sei il classificatore di Survivor League, ${league}`,
