@@ -143,17 +143,13 @@ describe('renderEmailV2 (email v3) — output esatto per i 16 template', () => {
       eliminatedWrong: 2,
       eliminatedMissing: 1
     };
-    const body = renderEmailV2(ctx, "Scegli una squadra e l'esito (win, draw, lose).", ROME);
+    const body = renderEmailV2(ctx, "Scegli una squadra e l'esito (vittoria, pareggio, sconfitta).", ROME);
     expect(body).toBe(
       [
         HEADER,
         'Ciao Mario!',
-        '',
-        '⏰ DEADLINE PICK',
-        DEADLINE_LINE,
-        '',
         'ROUND APERTO: INVIA IL TUO PICK!',
-        "Scegli una squadra e l'esito (win, draw, lose).",
+        "Scegli una squadra e l'esito (vittoria, pareggio, sconfitta).",
         '',
         '⚽ PARTITE DEL ROUND',
         'Cagliari - Genoa',
@@ -168,7 +164,10 @@ describe('renderEmailV2 (email v3) — output esatto per i 16 template', () => {
         'In gara: 14 · Eliminati: 3 (2 pick sbagliati · 1 senza pick)',
         '',
         '➡️ COSA FARE ORA',
-        'Rispondi a questa email con squadra + esito prima della scadenza.'
+        'Rispondi a questa email con squadra + esito prima della scadenza.',
+        '',
+        '⏰ DEADLINE PICK',
+        DEADLINE_LINE
       ].join('\n')
     );
   });
@@ -193,12 +192,11 @@ describe('renderEmailV2 (email v3) — output esatto per i 16 template', () => {
       [
         HEADER,
         'Ciao Mario!',
+        'PICK REGISTRATO → ROMA → VITTORIA',
+        'Puoi correggere la scelta rispondendo con un nuovo pick finché il round è aperto.',
         '',
         '⏰ DEADLINE PICK',
-        DEADLINE_LINE,
-        '',
-        'PICK REGISTRATO → ROMA → VITTORIA',
-        'Puoi correggere la scelta rispondendo con un nuovo pick finché il round è aperto.'
+        DEADLINE_LINE
       ].join('\n')
     );
   });
@@ -218,12 +216,11 @@ describe('renderEmailV2 (email v3) — output esatto per i 16 template', () => {
       [
         HEADER,
         'Ciao Mario!',
+        'PICK NON REGISTRATO: squadra già usata',
+        'Riprova rispondendo con squadra + esito (win, draw, lose).',
         '',
         '⏰ DEADLINE PICK',
-        DEADLINE_LINE,
-        '',
-        'PICK NON REGISTRATO: squadra già usata',
-        'Riprova rispondendo con squadra + esito (win, draw, lose).'
+        DEADLINE_LINE
       ].join('\n')
     );
   });
@@ -430,15 +427,14 @@ describe('renderEmailV2 (email v3) — output esatto per i 16 template', () => {
       [
         HEADER,
         'Ciao Mario!',
-        '',
-        '⏰ DEADLINE PICK',
-        DEADLINE_LINE,
-        '',
         'NON HO CAPITO LA TUA RICHIESTA',
         'Puoi:',
         '1. Iscriverti: scrivi "ISCRIZIONE [il tuo nome]" (es. "ISCRIZIONE Mario") nel subject o nel corpo.',
         '2. Disiscriverti: scrivi "DISISCRIZIONE".',
-        '3. Inviare un pick: scrivi squadra + esito (win, draw, lose).'
+        '3. Inviare un pick: scrivi squadra + esito (win, draw, lose).',
+        '',
+        '⏰ DEADLINE PICK',
+        DEADLINE_LINE
       ].join('\n')
     );
   });

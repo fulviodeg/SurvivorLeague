@@ -17,10 +17,11 @@
  * Vincoli implementati (email v3):
  *   - NESSUN carattere di riquadro (`╔ ═ ╗ ║ ╚ ─`): ogni "box" è diventato
  *     una sezione a righe con titolo emoji + MAIUSCOLO;
- *   - deadline = elemento n.1 nelle mail che richiedono un pick, con countdown
- *     calcolato DAL SISTEMA (`formatRemaining` nel Game Engine, mai dall'LLM
- *     e mai dal clock qui: il renderer è PURO, RNF1); data e countdown sulla
- *     STESSA riga, separati da " · ";
+ *   - deadline = ULTIMO elemento nelle mail che richiedono un pick (richiesta
+ *     PO: "quanto manca alla deadline" scritto per ultimo, non per primo), con
+ *     countdown calcolato DAL SISTEMA (`formatRemaining` nel Game Engine, mai
+ *     dall'LLM e mai dal clock qui: il renderer è PURO, RNF1); data e countdown
+ *     sulla STESSA riga, separati da " · ";
  *   - esito (✅/❌) subito dopo il saluto nelle mail di esito;
  *   - `keyMessage(ctx)` deterministico per tipo, in MAIUSCOLO;
  *   - MAI elenchi nominativi di partecipanti: solo conteggi aggregati;
@@ -30,11 +31,11 @@
  *     ometti la frase"); chiusura fissa dell'eliminato ("Grazie per essere
  *     stato con noi!", mai riferimenti a canali inesistenti).
  *
- * Ordine dei blocchi (coerente con i 16 template del piano email v3):
- * header → saluto → esito → deadline → messaggio chiave → narrativa →
+ * Ordine dei blocchi (email v3; deadline in CODA per richiesta PO):
+ * header → saluto → esito → messaggio chiave → narrativa →
  * partite/risultati → squadre già usate → stato → CTA → iscritti piattaforma
- * → chiusura eliminato. Blocchi con dati assenti OMESSI; narrativa vuota →
- * blocco omesso (mai testo inventato).
+ * → chiusura eliminato → deadline (ultima, solo mail con pick). Blocchi con
+ * dati assenti OMESSI; narrativa vuota → blocco omesso (mai testo inventato).
  */
 import { formatItDate } from './templates.js';
 import { championshipLabel, roundLabel } from '../game/turn.js';
@@ -280,12 +281,8 @@ export function renderEmailV2(ctx: EmailContext, narrative: string, timeZone: st
   const result = resultLine(ctx);
   if (result !== null) segments.push({ text: result, blankBefore: true });
 
-  // Deadline (mail con pick): sezione, riga vuota prima.
-  const deadline = deadlineSection(ctx, timeZone);
-  if (deadline !== null) segments.push({ text: deadline, blankBefore: true });
-
-  // Messaggio chiave + narrativa (righe consecutive; riga vuota prima quando
-  // segue la sezione deadline o per i tipi di notifica autonoma).
+  // Messaggio chiave + narrativa (righe consecutive; riga vuota prima SOLO per
+  // i tipi di notifica autonoma — la deadline è in coda, non più qui).
   const message: string[] = [];
   const key = keyMessage(ctx);
   if (key !== null) message.push(key);
@@ -294,7 +291,7 @@ export function renderEmailV2(ctx: EmailContext, narrative: string, timeZone: st
   if (message.length > 0) {
     segments.push({
       text: message.join('\n'),
-      blankBefore: deadline !== null || MESSAGE_BLANK_BEFORE_TYPES.includes(ctx.type)
+      blankBefore: MESSAGE_BLANK_BEFORE_TYPES.includes(ctx.type)
     });
   }
 
@@ -310,6 +307,10 @@ export function renderEmailV2(ctx: EmailContext, narrative: string, timeZone: st
   if (count !== null) segments.push({ text: count, blankBefore: true });
   const closing = eliminatedClosing(ctx);
   if (closing !== null) segments.push({ text: closing, blankBefore: true });
+
+  // Deadline (mail con pick): ULTIMO blocco (richiesta PO).
+  const deadline = deadlineSection(ctx, timeZone);
+  if (deadline !== null) segments.push({ text: deadline, blankBefore: true });
 
   const out: string[] = [];
   for (const segment of segments) {

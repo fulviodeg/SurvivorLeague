@@ -166,7 +166,7 @@ export const DETERMINISTIC_NARRATIVES: Record<EmailType, string> = {
     'Non riceverai più comunicazioni. Per tornare, rispondi con "ISCRIZIONE [il tuo nome]" (nel subject o nel corpo).',
   platform_already_registered: "All'apertura del round riceverai le istruzioni per il pick.",
   tournament_open: 'Il round 1 parte a breve: stai pronto.',
-  pick_instructions: "Scegli una squadra e l'esito (win, draw, lose).",
+  pick_instructions: "Scegli una squadra e l'esito (vittoria, pareggio, sconfitta).",
   pick_confirmed: 'Puoi correggere la scelta rispondendo con un nuovo pick finché il round è aperto.',
   pick_rejected: 'Riprova rispondendo con squadra + esito (win, draw, lose).',
   pick_missing_elimination: 'Non è arrivato alcun pick entro la deadline.',
