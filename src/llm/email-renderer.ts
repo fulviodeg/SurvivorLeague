@@ -1,34 +1,54 @@
 /**
- * Renderer deterministico del CANALE EMAIL (ADR-011 "Email v2", opzione 2
- * approvata: testo strutturato plain-text con riquadri ASCII, NIENTE HTML).
+ * Renderer deterministico del CANALE EMAIL (email v3: testo strutturato
+ * plain-text, NIENTE riquadri ASCII e NIENTE HTML).
  *
  * Principio architetturale (ADR-011, LLD §6.4): la RESA appartiene al
  * CANALE, i DATI di notifica (`EmailContext`) sono canale-agnostici. Il Game
  * Engine compone SOLO dati e chiama `generator.generate`: questo renderer
- * impagina deterministically — header (coppia umana "Round N · Turno di
- * campionato M"), box ASCII (esito, deadline+countdown, bruciate,
- * partite/risultati, stato aggregato), sezioni dati e CTA per tipo — attorno
- * alla narrativa prodotta dall'LLM (ADR-004: l'LLM è confinato all'I/O e
- * produce SOLO il testo narrativo). Un futuro WebAdapter riusa gli stessi
- * dati con un renderer dedicato, senza toccare il Game Engine.
+ * impagina deterministicamente — header (coppia umana "Round N · Turno di
+ * campionato M"), messaggio chiave `keyMessage(ctx)` in MAIUSCOLO (l'equivalente
+ * plain-text del "grassetto"), sezioni a righe con titolo emoji + MAIUSCOLO
+ * (esito ✅/❌, deadline+countdown, partite/risultati, squadre già usate,
+ * stato aggregato), CTA per tipo e chiusura — attorno alla narrativa prodotta
+ * dall'LLM o dal generatore deterministico (ADR-004: l'LLM è confinato
+ * all'I/O e produce SOLO il testo narrativo). Un futuro WebAdapter riusa gli
+ * stessi dati con un renderer dedicato, senza toccare il Game Engine.
  *
- * Vincoli implementati (convenzioni 1-11 approvate):
- *   - box deadline = elemento n.1 nelle mail che richiedono un pick, con
- *     countdown calcolato DAL SISTEMA (`formatRemaining` nel Game Engine,
- *     mai dall'LLM e mai dal clock qui: il renderer è PURO, RNF1);
- *   - box esito subito dopo l'header nelle mail di esito (✅/❌);
- *   - MAI elenchi nominativi di partecipanti: solo conteggi aggregati;
+ * Vincoli implementati (email v3):
+ *   - NESSUN carattere di riquadro (`╔ ═ ╗ ║ ╚ ─`): ogni "box" è diventato
+ *     una sezione a righe con titolo emoji + MAIUSCOLO;
+ *   - deadline = ULTIMO elemento nelle mail che richiedono un pick (richiesta
+ *     PO: "quanto manca alla deadline" scritto per ultimo, non per primo), con
+ *     countdown calcolato DAL SISTEMA (`formatRemaining` nel Game Engine, mai
+ *     dall'LLM e mai dal clock qui: il renderer è PURO, RNF1); data e countdown
+ *     sulla STESSA riga, separati da " · ";
+ *   - esito (✅/❌) subito dopo il saluto nelle mail di esito;
+ *   - `keyMessage(ctx)` deterministico per tipo, in MAIUSCOLO;
+ *   - MAI elenchi nominativi di partecipanti: solo conteggi aggregati — ad
+ *     eccezione dei due tipi retrospettivi `round_closed_survived` e
+ *     `tournament_closed` (ADR-015 email v4, carve-out esplicito: elenco
+ *     nominativo opt-in via il campo `players`, mai nelle mail di istruzione,
+ *     pick o esito);
  *   - date in `it-IT` nel fuso iniettato (TIMEZONE): il sistema di gioco
  *     lavora su istanti UTC assoluti, il fuso conta solo qui (e nei log);
  *   - dati assenti → blocco OMESSO ("se un dato è assente, non inventarlo:
  *     ometti la frase"); chiusura fissa dell'eliminato ("Grazie per essere
  *     stato con noi!", mai riferimenti a canali inesistenti).
+ *
+ * Ordine dei blocchi (email v3 + v4; deadline in CODA per richiesta PO):
+ * header → saluto → esito → messaggio chiave → narrativa →
+ * partite/risultati → elenco giocatori (solo `round_closed_survived`/
+ * `tournament_closed`) → squadre già usate → stato → storico torneo (solo
+ * `tournament_closed`) → co-vincitori (solo `tournament_shared_win`) → CTA →
+ * iscritti piattaforma → chiusura eliminato → deadline (ultima, solo mail con
+ * pick). Blocchi con dati assenti OMESSI; narrativa vuota → blocco omesso
+ * (mai testo inventato).
  */
-import { UNSUBSCRIBE_CONFIRM_WORDS, formatItDate } from './templates.js';
-import { championshipLabel, roundLabel } from '../game/turn.js';
-import type { EmailContext, EmailType } from './generator.js';
+import { formatItDate } from './templates.js';
+import { championshipHeaderLabel, roundHeaderLabel, roundLabel } from '../game/turn.js';
+import type { EmailContext, EmailPlayerResult, EmailType } from './generator.js';
 
-/** Esito pick in italiano per i box di esito (dati iniettati, mai generati). */
+/** Esito pick in italiano (dati iniettati, mai generati). */
 function outcomeItalian(outcome: string | undefined): string | null {
   if (outcome === 'win') return 'vittoria';
   if (outcome === 'draw') return 'pareggio';
@@ -36,73 +56,89 @@ function outcomeItalian(outcome: string | undefined): string | null {
   return null;
 }
 
-/**
- * Riquadro ASCII (═══ bordo, ║ lati, ─── separatore sotto il titolo in
- * MAIUSCOLO): larghezza calcolata dal contenuto (deterministico). Il testo
- * è plain-text: nessun HTML (opzione 2 approvata).
- */
-function makeBox(title: string, lines: string[]): string {
-  const innerWidth = Math.max(title.length, ...lines.map((l) => l.length), 12);
-  const bar = '═'.repeat(innerWidth + 2);
-  const sep = `║ ${'─'.repeat(innerWidth)} ║`;
-  const pad = (s: string): string => (s.length >= innerWidth ? s : s + ' '.repeat(innerWidth - s.length));
-  return [
-    `╔${bar}╗`,
-    `║ ${pad(title)} ║`,
-    sep,
-    ...lines.map((l) => `║ ${pad(l)} ║`),
-    `╚${bar}╝`
-  ].join('\n');
-}
-
-/** Sezione con titolo (emoji + maiuscolo) e righe di contenuto. */
+/** Sezione con titolo (emoji + MAIUSCOLO) e righe di contenuto. */
 function section(title: string, lines: string[]): string {
   return [title, ...lines].join('\n');
 }
 
-/** Header della mail: coppia umana se presente (convenzione 1), altrimenti il brand. */
-function header(ctx: EmailContext): string {
+/** Header della mail: coppia umana se presente; altrimenti null (il brand è nel separatore di sistema). */
+function header(ctx: EmailContext): string | null {
   if (ctx.round !== undefined && ctx.championshipRound !== undefined) {
-    return `${roundLabel(ctx.round)} · ${championshipLabel(ctx.championshipRound)}`;
+    return `${roundHeaderLabel(ctx.round)} · ${championshipHeaderLabel(ctx.championshipRound)}`;
   }
-  return 'Survivor League';
+  return null;
 }
 
 /**
- * Box esito centrale (convenzione 5): subito dopo l'header nelle mail di
- * esito. Testi esatti approvati:
- *   - corretto → "✅ SEI ANCORA IN GARA — Hai indovinato! {squadra} → {esito}"
- *   - sbagliato → "❌ SEI STATO ELIMINATO — Il tuo pick ({squadra} → {esito})
- *     non si è avverato"
- *   - mancante → "❌ SEI STATO ELIMINATO — Non è arrivato alcun pick entro
- *     la deadline"
- * Dati assenti (squadra/esito) → forma generica senza inventare nulla.
+ * Esito (✅/❌) per le mail di esito round, come riga singola senza riquadro
+ * (email v3: il vecchio `resultBox` diventa una sezione). Testi esatti:
+ *   - corretto → "✅ SEI ANCORA IN GARA!"
+ *   - sbagliato → "❌ SEI STATO ELIMINATO!"
+ *   - mancante → "❌ SEI STATO ELIMINATO!"
+ * I dettagli (squadra/esito/punteggio) restano alla narrativa, non qui.
  */
-function resultBox(ctx: EmailContext): string | null {
-  let text: string;
-  if (ctx.type === 'round_result_correct') {
-    const team = ctx.team;
-    const esito = outcomeItalian(ctx.outcome);
-    text =
-      team !== undefined && esito !== null
-        ? `✅ SEI ANCORA IN GARA — Hai indovinato! ${team} → ${esito}`
-        : '✅ SEI ANCORA IN GARA — Hai indovinato!';
-  } else if (ctx.type === 'round_result_wrong') {
-    const team = ctx.team;
-    const esito = outcomeItalian(ctx.outcome);
-    text =
-      team !== undefined && esito !== null
-        ? `❌ SEI STATO ELIMINATO — Il tuo pick (${team} → ${esito}) non si è avverato`
-        : '❌ SEI STATO ELIMINATO — Il tuo pick non si è avverato';
-  } else if (ctx.type === 'pick_missing_elimination') {
-    text = '❌ SEI STATO ELIMINATO — Non è arrivato alcun pick entro la deadline';
-  } else {
-    return null;
-  }
-  return makeBox('ESITO DEL ROUND', [text]);
+function resultLine(ctx: EmailContext): string | null {
+  if (ctx.type === 'round_result_correct') return '✅ SEI ANCORA IN GARA!';
+  if (ctx.type === 'round_result_wrong') return '❌ SEI STATO ELIMINATO!';
+  if (ctx.type === 'pick_missing_elimination') return '❌ SEI STATO ELIMINATO!';
+  return null;
 }
 
-/** Tipi di email che richiedono un pick: il box deadline è l'elemento n.1. */
+/**
+ * Messaggio chiave deterministico per le mail di CONFERMA pick (email v3):
+ * "PICK REGISTRATO → {TEAM} → {ESITO}" con squadra ed esito in MAIUSCOLO;
+ * dati assenti → forma generica "PICK REGISTRATO" (mai inventare nulla).
+ */
+function pickConfirmedKey(ctx: EmailContext): string {
+  const team = ctx.team;
+  const esito = outcomeItalian(ctx.outcome);
+  if (team !== undefined && team !== '' && esito !== null) {
+    return `PICK REGISTRATO → ${team.toUpperCase()} → ${esito.toUpperCase()}`;
+  }
+  return 'PICK REGISTRATO';
+}
+
+/**
+ * Messaggio chiave deterministico per tipo, in MAIUSCOLO (email v3):
+ * l'equivalente plain-text del "grassetto +20%". Le mail di ESITO round
+ * NON hanno `keyMessage`: usano l'esito ✅/❌ di `resultLine` (separato).
+ */
+function keyMessage(ctx: EmailContext): string | null {
+  switch (ctx.type) {
+    case 'platform_registered':
+      return 'ISCRIZIONE CONFERMATA: SEI IN PIATTAFORMA!';
+    case 'platform_unsubscribe_confirm':
+      return 'CONFERMA LA DISISCRIZIONE?';
+    case 'platform_unsubscribed':
+      return 'DISISCRIZIONE COMPLETATA';
+    case 'platform_already_registered':
+      return 'SEI GIÀ ISCRITTO: NON SERVE RE-ISCRIVERTI.';
+    case 'tournament_open':
+      return '🏆 TORNEO APERTO!';
+    case 'pick_instructions':
+      return 'ROUND APERTO: INVIA IL TUO PICK!';
+    case 'pick_confirmed':
+      return pickConfirmedKey(ctx);
+    case 'pick_rejected':
+      return `PICK NON REGISTRATO: ${ctx.reason ?? ''}`;
+    case 'pick_postponed':
+      return '⏸ PARTITA RINVIATA';
+    case 'round_closed_survived':
+      return 'ROUND CHIUSO: SEI ANCORA IN GARA!';
+    case 'tournament_closed':
+      return '🏆 TORNEO CONCLUSO!';
+    case 'tournament_won':
+      return '🏆 HAI VINTO IL TORNEO!';
+    case 'tournament_shared_win':
+      return '🏆 VITTORIA CONDIVISA!';
+    case 'clarification':
+      return 'NON HO CAPITO LA TUA RICHIESTA';
+    default:
+      return null;
+  }
+}
+
+/** Tipi di email che richiedono un pick: la deadline è l'elemento n.1. */
 const PICK_EMAIL_TYPES: readonly EmailType[] = [
   'pick_instructions',
   'pick_confirmed',
@@ -111,41 +147,110 @@ const PICK_EMAIL_TYPES: readonly EmailType[] = [
 ];
 
 /**
- * Box deadline (convenzione 2): in cima nelle mail che richiedono un pick.
- * Data nel fuso iniettato + countdown pre-calcolato dal Game Engine
- * (`deadlineRemaining`, mai dal clock né dall'LLM): "Mancano circa …".
+ * Tipi il cui messaggio chiave è separato dal saluto da una riga vuota (email
+ * di notifica "autonoma" sul round, con sezioni dati a seguire). Le email di
+ * piattaforma e di vittoria, invece, fanno fluire il messaggio chiave subito
+ * dopo il saluto (output dei 17 template del piano email v3/v4).
  */
-function deadlineBox(ctx: EmailContext, timeZone: string): string | null {
+const MESSAGE_BLANK_BEFORE_TYPES: readonly EmailType[] = [
+  'pick_postponed',
+  'round_closed_survived',
+  'tournament_closed'
+];
+
+/**
+ * Sezione deadline (email v3): data nel fuso iniettato + countdown
+ * pre-calcolato dal Game Engine (`deadlineRemaining`, mai dal clock né
+ * dall'LLM) sulla STESSA riga, separati da " · " ("Mancano circa …").
+ */
+function deadlineSection(ctx: EmailContext, timeZone: string): string | null {
   if (!PICK_EMAIL_TYPES.includes(ctx.type) || ctx.deadline === undefined) return null;
-  const lines = [formatItDate(ctx.deadline, timeZone)];
+  let line = formatItDate(ctx.deadline, timeZone);
   if (ctx.deadlineRemaining !== undefined && ctx.deadlineRemaining !== '') {
-    lines.push(`Mancano circa ${ctx.deadlineRemaining}`);
+    line += ` · Mancano circa ${ctx.deadlineRemaining}`;
   }
-  return makeBox('⏰ DEADLINE PICK', lines);
+  return `⏰ DEADLINE PICK\n${line}`;
 }
 
-/** Box squadre bruciate (convenzione 3): squadra + round di utilizzo. */
-function burnedBox(ctx: EmailContext): string | null {
+/** Sezione squadre già usate (email v3): squadra + round di utilizzo "(Round N)". */
+function burnedSection(ctx: EmailContext): string | null {
   if (ctx.type !== 'pick_instructions' || ctx.burnedTeams === undefined || ctx.burnedTeams.length === 0) {
     return null;
   }
-  return makeBox(
-    '🔒 SQUADRE BRUCIATE',
-    ctx.burnedTeams.map((b) => `${b.team} — ${roundLabel(b.round)}`)
-  );
+  return `🔒 SQUADRE GIÀ USATE\n${ctx.burnedTeams
+    .map((b) => `${b.team} (${roundLabel(b.round)})`)
+    .join('\n')}`;
 }
 
-/** Sezione partite/risultati del round (dati iniettati; mai inventati). */
+/**
+ * Sezione partite/risultati del round (dati iniettati; mai inventati).
+ * Titolo dipendente dal contenuto: "⚽ RISULTATI DEL ROUND" quando ci sono
+ * punteggi, altrimenti "⚽ PARTITE DEL ROUND" (partite in programma).
+ */
 function matchesSection(ctx: EmailContext): string | null {
   if (ctx.matches === undefined || ctx.matches.length === 0) return null;
-  return section(
-    '⚽ PARTITE DEL ROUND',
-    ctx.matches.map((m) => {
-      if (m.score !== undefined) return `${m.home} - ${m.away}: ${m.score.home}-${m.score.away}`;
-      if (m.postponed === true) return `${m.home} - ${m.away} (rinviata)`;
-      return `${m.home} - ${m.away}`;
-    })
+  const hasScore = ctx.matches.some((m) => m.score !== undefined);
+  const title = hasScore ? '⚽ RISULTATI DEL ROUND' : '⚽ PARTITE DEL ROUND';
+  const lines = ctx.matches.map((m) => {
+    if (m.score !== undefined) return `${m.home} - ${m.away}: ${m.score.home}-${m.score.away}`;
+    if (m.postponed === true) return `${m.home} - ${m.away} (rinviata)`;
+    return `${m.home} - ${m.away}`;
+  });
+  return section(title, lines);
+}
+
+/**
+ * Riga di un giocatore in un elenco nominativo (ADR-015 email v4, carve-out
+ * della convenzione 6 per i SOLI tipi retrospettivi `round_closed_survived` e
+ * `tournament_closed`): con pick "{nome} — {squadra} · {esito} — {esito}",
+ * senza pick "{nome} — nessun pick — ❌ eliminato". Esito/eliminazione dai
+ * DATI iniettati (mai inventati); l'esito è in italiano via `outcomeItalian`.
+ */
+function playerResultRow(p: EmailPlayerResult): string {
+  const outcome = outcomeItalian(p.outcome);
+  if (p.team !== undefined && p.team !== '' && outcome !== null) {
+    return `${p.name} — ${p.team} · ${outcome} — ${p.eliminated ? '❌ eliminato' : '✅ ancora in gara'}`;
+  }
+  return `${p.name} — nessun pick — ❌ eliminato`;
+}
+
+/**
+ * Sezione elenco giocatori del round (ADR-015 email v4): resa SOLO se
+ * `ctx.players` è presente (opt-in del Game Engine per `round_closed_survived`
+ * e — riusata — per lo storico di `tournament_closed`). Le altre mail restano
+ * sui soli conteggi aggregati di `stateSection` (convenzione 6).
+ */
+function playersSection(ctx: EmailContext): string | null {
+  if (ctx.players === undefined || ctx.players.length === 0) return null;
+  return section('👥 GIOCATORI DEL ROUND', ctx.players.map(playerResultRow));
+}
+
+/**
+ * Sezione co-vincitori (ADR-015 email v4): resa SOLO se `ctx.coWinners` è
+ * presente (nomi degli ALTRI vincitori, escluso il destinatario), per
+ * `tournament_shared_win` — `tournament_won` (vittoria unica) non la riceve.
+ */
+function coWinnersSection(ctx: EmailContext): string | null {
+  if (ctx.coWinners === undefined || ctx.coWinners.length === 0) return null;
+  return section('🤝 HAI CONDIVISO LA VITTORIA CON', ctx.coWinners);
+}
+
+/**
+ * Sezione storico del torneo (ADR-015 email v4): per ogni round della finestra
+ * giocata, la riga "Round del torneo N · Turno di Campionato M" seguita dalle
+ * righe giocatore (stesso formato di `playerResultRow`). Resa SOLO se
+ * `ctx.tournamentHistory` è presente (`tournament_closed`).
+ */
+function historySection(ctx: EmailContext): string | null {
+  if (ctx.tournamentHistory === undefined || ctx.tournamentHistory.length === 0) return null;
+  const blocks = ctx.tournamentHistory.map(
+    (r) =>
+      [
+        `${roundHeaderLabel(r.round)} · ${championshipHeaderLabel(r.championshipRound)}`,
+        ...r.players.map(playerResultRow)
+      ].join('\n')
   );
+  return `📜 STORICO DEL TORNEO\n\n${blocks.join('\n\n')}`;
 }
 
 /**
@@ -177,8 +282,7 @@ function platformCountLine(ctx: EmailContext): string | null {
 /**
  * Chiusura fissa dell'eliminato (convenzione 10): "Il torneo continua con N
  * giocatori in gara. Grazie per essere stato con noi!" — MAI "grazie per
- * averci giocato" (vincolo PO) né riferimenti a canali inesistenti
- * ("seguire i round" VIETATO: gli eliminati non possono seguirli).
+ * averci giocato" (vincolo PO) né riferimenti a canali inesistenti.
  */
 function eliminatedClosing(ctx: EmailContext): string | null {
   if (ctx.type !== 'round_result_wrong' && ctx.type !== 'pick_missing_elimination') return null;
@@ -186,21 +290,14 @@ function eliminatedClosing(ctx: EmailContext): string | null {
   return `Il torneo continua con ${ctx.inGameCount} giocatori in gara. Grazie per essere stato con noi!`;
 }
 
-/** CTA per tipo (deterministica): focus su eventi + prossimi passi. */
+/** CTA per tipo (deterministica, email v3): focus su eventi + prossimi passi. */
 function ctaFor(ctx: EmailContext): string | null {
   switch (ctx.type) {
     case 'pick_instructions':
       return section('➡️ COSA FARE ORA', [
-        'Rispondi a questa email indicando squadra ed esito (win, draw, lose) prima della scadenza.'
+        'Rispondi a questa email con squadra + esito prima della scadenza.'
       ]);
-    case 'pick_confirmed':
-      return section('➡️ COSA FARE ORA', [
-        'Puoi correggere la scelta rispondendo con un nuovo pick finché il round è aperto.'
-      ]);
-    case 'pick_rejected':
-      return section('➡️ COSA FARE ORA', [
-        'Riprova rispondendo a questa email con squadra ed esito (win, draw, lose).'
-      ]);
+    case 'round_result_correct':
     case 'round_closed_survived':
       return section('📌 PROSSIMO PASSO', [
         'Le istruzioni per il prossimo pick arriveranno all\'apertura del prossimo round.'
@@ -210,75 +307,90 @@ function ctaFor(ctx: EmailContext): string | null {
     case 'tournament_open':
       // Convenzione 8/correzione PO: SOLO annuncio, niente invito al pick né
       // date (non note all'invio: decide commissioner/scheduler).
-      return section('⏳ COSA SUCCEDE ORA', ['Il round 1 parte a breve: stai pronto!']);
+      return section('⏳ COSA SUCCEDE ORA', [
+        'Le istruzioni con la scadenza del pick arriveranno con una mail dedicata.'
+      ]);
     case 'platform_registered':
       return section('➡️ COSA FARE ORA', [
-        'Non serve altro: riceverai le istruzioni per il primo pick all\'apertura del round.'
-      ]);
-    case 'platform_unsubscribe_confirm':
-      // Le parole di conferma derivano dalla costante UNICA
-      // `UNSUBSCRIBE_CONFIRM_WORDS` (templates.ts) — mai copie letterali che
-      // possono divergere dalla barriera `isUnsubscribeConfirmation`
-      // (email-processor.ts:166-172, fix review 2026-08-23).
-      return section('➡️ COSA FARE ORA', [
-        `Rispondi con "${UNSUBSCRIBE_CONFIRM_WORDS[0]}" o "${UNSUBSCRIBE_CONFIRM_WORDS[1]}" per completare la disiscrizione.`
-      ]);
-    case 'platform_unsubscribed':
-      return section('➡️ COSA FARE ORA', [
-        'Puoi re-iscriverti in qualunque momento rispondendo a questa email.'
-      ]);
-    case 'platform_already_registered':
-      return section('➡️ COSA FARE ORA', [
-        'Non serve re-iscriversi: riceverai le istruzioni per il primo pick all\'apertura del round.'
+        'Non serve altro: aspetta la mail di apertura del round.'
       ]);
     case 'tournament_won':
-      return '🏆 Complimenti campione!';
+      return '🎉 Festeggia, te la sei meritata!';
     case 'tournament_shared_win':
-      return '🏆 Complimenti campioni!';
-    case 'clarification':
-      // Convenzione 7 (vincolo PO): ovunque ci sia un invito all'iscrizione,
-      // la formula fondamentale è "dimmi il tuo nome e scrivi voglio iscrivermi".
-      return section('🤔 COSA PUOI FARE', [
-        '1. Iscriverti: dimmi il tuo nome e scrivi "voglio iscrivermi".',
-        '2. Disiscriverti: scrivi "voglio disiscrivermi".',
-        '3. Inviare un pick: scrivi squadra + esito (win, draw, lose).'
-      ]);
+      return '🎉 Festeggiate, ve lo siete meritato!';
     default:
       return null;
   }
 }
 
 /**
- * Compone il corpo completo dell'email (deterministico): header → saluto
- * (nome se noto) → box esito (mail di esito, subito dopo l'header) → box
- * deadline (mail con pick, elemento n.1) → narrativa LLM → box bruciate →
- * sezioni partite/stato → CTA → chiusura eliminato. Blocchi con dati
- * assenti OMESSI. `narrative` è il testo dell'LLM (2-4 frasi): se vuota
+ * Compone il corpo completo dell'email (deterministico, email v3 + v4). Ordine:
+ * header → saluto (nome se noto) → esito (mail di esito, subito dopo il
+ * saluto) → messaggio chiave → narrativa → partite/risultati → elenco
+ * giocatori (solo se `players`) → squadre già usate → stato → storico torneo
+ * (solo se `tournamentHistory`) → co-vincitori (solo se `coWinners`) → CTA →
+ * iscritti piattaforma → chiusura eliminato → deadline (ultima, solo mail con
+ * pick). Blocchi con dati assenti OMESSI.
+ * `narrative` è il testo dell'LLM/del generatore deterministico: se vuota
  * dopo il trim, il blocco è omesso (mai testo inventato).
  */
 export function renderEmailV2(ctx: EmailContext, narrative: string, timeZone: string): string {
-  const blocks: string[] = [];
-  blocks.push(header(ctx));
+  const segments: Array<{ text: string; blankBefore: boolean }> = [];
+
+  // Saluto + header (righe consecutive, nessuna riga vuota interna).
+  const greeting: string[] = [];
+  const head = header(ctx);
+  if (head !== null) greeting.push(head);
   if (ctx.playerName !== undefined && ctx.playerName !== '') {
-    blocks.push(`Ciao ${ctx.playerName}!`);
+    greeting.push(`Ciao ${ctx.playerName}!`);
   }
-  const outcome = resultBox(ctx);
-  if (outcome !== null) blocks.push(outcome);
-  const deadline = deadlineBox(ctx, timeZone);
-  if (deadline !== null) blocks.push(deadline);
+  if (greeting.length > 0) segments.push({ text: greeting.join('\n'), blankBefore: false });
+
+  // Esito (mail di esito): riga vuota prima, poi l'esito.
+  const result = resultLine(ctx);
+  if (result !== null) segments.push({ text: result, blankBefore: true });
+
+  // Messaggio chiave + narrativa (righe consecutive; riga vuota prima SOLO per
+  // i tipi di notifica autonoma — la deadline è in coda, non più qui).
+  const message: string[] = [];
+  const key = keyMessage(ctx);
+  if (key !== null) message.push(key);
   const trimmedNarrative = narrative.trim();
-  if (trimmedNarrative !== '') blocks.push(trimmedNarrative);
-  const burned = burnedBox(ctx);
-  if (burned !== null) blocks.push(burned);
+  if (trimmedNarrative !== '') message.push(trimmedNarrative);
+  if (message.length > 0) {
+    segments.push({
+      text: message.join('\n'),
+      blankBefore: MESSAGE_BLANK_BEFORE_TYPES.includes(ctx.type)
+    });
+  }
+
   const matches = matchesSection(ctx);
-  if (matches !== null) blocks.push(matches);
+  if (matches !== null) segments.push({ text: matches, blankBefore: true });
+  const players = playersSection(ctx);
+  if (players !== null) segments.push({ text: players, blankBefore: true });
+  const burned = burnedSection(ctx);
+  if (burned !== null) segments.push({ text: burned, blankBefore: true });
   const state = stateSection(ctx);
-  if (state !== null) blocks.push(state);
-  const count = platformCountLine(ctx);
-  if (count !== null) blocks.push(count);
+  if (state !== null) segments.push({ text: state, blankBefore: true });
+  const history = historySection(ctx);
+  if (history !== null) segments.push({ text: history, blankBefore: true });
+  const coWinners = coWinnersSection(ctx);
+  if (coWinners !== null) segments.push({ text: coWinners, blankBefore: true });
   const cta = ctaFor(ctx);
-  if (cta !== null) blocks.push(cta);
+  if (cta !== null) segments.push({ text: cta, blankBefore: true });
+  const count = platformCountLine(ctx);
+  if (count !== null) segments.push({ text: count, blankBefore: true });
   const closing = eliminatedClosing(ctx);
-  if (closing !== null) blocks.push(closing);
-  return blocks.join('\n\n');
+  if (closing !== null) segments.push({ text: closing, blankBefore: true });
+
+  // Deadline (mail con pick): ULTIMO blocco (richiesta PO).
+  const deadline = deadlineSection(ctx, timeZone);
+  if (deadline !== null) segments.push({ text: deadline, blankBefore: true });
+
+  const out: string[] = [];
+  for (const segment of segments) {
+    if (segment.blankBefore && out.length > 0) out.push('');
+    out.push(segment.text);
+  }
+  return out.join('\n');
 }

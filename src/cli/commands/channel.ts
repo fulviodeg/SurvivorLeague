@@ -48,7 +48,7 @@ export const channelEmailFetchCommand: CommandModule<object, JsonArg> = {
     }),
   handler: async (argv) => {
     const config = getConfig();
-    const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode, config.TIMEZONE);
+    const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode, config.TIMEZONE, config.LOG_FILE);
     const { channel } = buildEmailComponents(config);
     const messages = await channel.fetchMessages();
     if (argv.json) {
@@ -115,7 +115,7 @@ export const channelEmailProcessCommand: CommandModule<object, JsonArg> = {
     }),
   handler: async (argv) => {
     const config = getConfig();
-    const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode, config.TIMEZONE);
+    const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode, config.TIMEZONE, config.LOG_FILE);
 
     // Lock anti-concorrenza (src/cli/email-process-lock.ts): il cron può
     // lanciare un secondo run mentre il primo è ancora in elaborazione (batch

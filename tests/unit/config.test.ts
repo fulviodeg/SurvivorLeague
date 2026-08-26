@@ -46,6 +46,8 @@ describe('parseConfig', () => {
     expect(config.LLM_MODEL).toEqual(['gpt-4o-mini']);
     expect(config.LLM_TIMEOUT_MS).toBe(15000);
     expect(config.LLM_RETRIES).toBe(3);
+    expect(config.AI_EMAIL_GENERATOR).toBe(false);
+    expect(config.AI_EMAIL_PARSER).toBe(false);
     expect(config.DB_PATH).toBe('./data/survivor.db');
     expect(config.TIMEZONE).toBe('Europe/Rome');
     expect(config.TOURNAMENT_EXPORT_DIR).toBe('./data/exports/');
@@ -73,7 +75,8 @@ describe('parseConfig', () => {
       SCHEDULER_AUTO_SCORE: 'false',
       SIM_PLAYERS: '20',
       LLM_TIMEOUT_MS: '20000',
-      LLM_RETRIES: '5'
+      LLM_RETRIES: '5',
+      AI_EMAIL_GENERATOR: 'true'
     });
 
     expect(config.DEADLINE_ADVANCE_MIN).toBe(45);
@@ -84,6 +87,7 @@ describe('parseConfig', () => {
     expect(config.SIM_PLAYERS).toBe(20);
     expect(config.LLM_TIMEOUT_MS).toBe(20000);
     expect(config.LLM_RETRIES).toBe(5);
+    expect(config.AI_EMAIL_GENERATOR).toBe(true);
   });
 
   it('LLM_MODEL: lista separata da virgola → array (trim, scarto vuoti, dedup ordinato)', () => {
@@ -107,7 +111,7 @@ describe('parseConfig', () => {
 
   it('nomina nel messaggio tutte le variabili richieste mancanti', () => {
     expect(() => parseConfig({})).toThrowError(
-      /IMAP_USER[\s\S]*IMAP_PASS[\s\S]*SMTP_USER[\s\S]*SMTP_PASS[\s\S]*LLM_API_KEY[\s\S]*FOOTBALL_DATA_TOKEN/
+      /IMAP_USER[\s\S]*IMAP_PASS[\s\S]*SMTP_USER[\s\S]*SMTP_PASS[\s\S]*FOOTBALL_DATA_TOKEN/
     );
   });
 
@@ -121,6 +125,40 @@ describe('parseConfig', () => {
 
   it('rifiuta un LOG_LEVEL fuori enum, nominandolo', () => {
     expect(() => parseConfig({ ...requiredEnv, LOG_LEVEL: 'verbose' })).toThrowError(/LOG_LEVEL/);
+  });
+
+  describe('LLM_API_KEY condizionale + AI_EMAIL_PARSER (email v3 Parte B)', () => {
+    const noAi = {
+      IMAP_USER: 'u',
+      IMAP_PASS: 'p',
+      SMTP_USER: 'u',
+      SMTP_PASS: 'p',
+      FOOTBALL_DATA_TOKEN: 't'
+    };
+
+    it('con entrambi i flag AI false la config è valida SENZA LLM_API_KEY', () => {
+      const config = parseConfig(noAi);
+      expect(config.AI_EMAIL_GENERATOR).toBe(false);
+      expect(config.AI_EMAIL_PARSER).toBe(false);
+      expect(config.LLM_API_KEY).toBe('');
+    });
+
+    it('con AI_EMAIL_GENERATOR=true e LLM_API_KEY assente → ConfigError che nomina LLM_API_KEY', () => {
+      expect(() => parseConfig({ ...noAi, AI_EMAIL_GENERATOR: 'true' })).toThrowError(/LLM_API_KEY/);
+    });
+
+    it('con AI_EMAIL_PARSER=true e LLM_API_KEY assente → ConfigError che nomina LLM_API_KEY', () => {
+      expect(() => parseConfig({ ...noAi, AI_EMAIL_PARSER: 'true' })).toThrowError(/LLM_API_KEY/);
+    });
+
+    it('con AI_EMAIL_GENERATOR=true e LLM_API_KEY valorizzata → valida', () => {
+      expect(parseConfig({ ...noAi, AI_EMAIL_GENERATOR: 'true', LLM_API_KEY: 'k' }).LLM_API_KEY).toBe('k');
+    });
+
+    it('AI_EMAIL_PARSER: default false e conversione booleana', () => {
+      expect(parseConfig(noAi).AI_EMAIL_PARSER).toBe(false);
+      expect(parseConfig({ ...noAi, AI_EMAIL_PARSER: 'true', LLM_API_KEY: 'k' }).AI_EMAIL_PARSER).toBe(true);
+    });
   });
 
   describe('TIMEZONE e TOURNAMENT_EXPORT_DIR (ADR-011)', () => {

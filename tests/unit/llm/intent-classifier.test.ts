@@ -242,12 +242,12 @@ describe('buildClassifySystemPrompt — contesto lega in test mode (D7)', () => 
     expect(prompt).toContain('"pick"');
   });
 
-  it('testMode=true → prompt chiarisce la lega sintetica (Serie B, NON Serie A)', () => {
+  it('testMode=true → prompt chiarisce la lega sintetica (rosa Serie A, stagione fittizia)', () => {
     const prompt = buildClassifySystemPrompt({ ...opts, testMode: true });
-    expect(prompt).toContain('Serie B');
     expect(prompt).toContain('campionato sintetico');
-    expect(prompt).toContain('club cadetti, NON di Serie A');
-    expect(prompt).not.toContain('pronostici sulla Serie A');
+    expect(prompt).toContain('rosa di Serie A 2025/26');
+    expect(prompt).toContain('stagione fittizia di test, NON la stagione reale');
+    expect(prompt).not.toContain('pronostici sulla Serie A.');
   });
 
   it('gli esempi di unsubscribe citano le conferme "confermo"/"sì"/"si" come segnali (B1, D1/D2)', () => {

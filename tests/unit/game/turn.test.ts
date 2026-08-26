@@ -9,7 +9,9 @@ import { describe, expect, it } from 'vitest';
 
 import { migrate } from '../../../src/db/schema.js';
 import {
+  championshipHeaderLabel,
   getStartRound,
+  roundHeaderLabel,
   ttFor,
   turnCompact,
   turnExtended,
@@ -68,5 +70,15 @@ describe('forme testuali (RF-25)', () => {
 
   it('forma estesa per il corpo email', () => {
     expect(turnExtended(2, 7)).toBe('TT 2, TC 7');
+  });
+});
+
+describe('label header renderer (ADR-015 email v4)', () => {
+  it('roundHeaderLabel → "Round del torneo N"', () => {
+    expect(roundHeaderLabel(3)).toBe('Round del torneo 3');
+  });
+
+  it('championshipHeaderLabel → "Turno di Campionato M" (maiuscolo)', () => {
+    expect(championshipHeaderLabel(5)).toBe('Turno di Campionato 5');
   });
 });

@@ -58,11 +58,23 @@ export function roundLabel(tt: number): string {
 }
 
 /**
- * Forma UMANA del turno di campionato per il RENDERER email ("Turno di
- * campionato 7"): stessa regola di `roundLabel` — solo renderer, mai prompt,
- * mai log/CLI. La coppia "Round N · Turno di campionato M" è la forma
- * approvata dal PO per le comunicazioni verso l'esterno (mai sigle TT/TC).
+ * Forma UMANA del turno di torneo per l'HEADER del renderer email ("Round del
+ * torneo 2", ADR-015 email v4): label DEDICATA all'header, distinta da
+ * `roundLabel` (usata dal box "squadre già usate" nella forma compatta
+ * "(Round N)"). Solo renderer, mai prompt, mai log/CLI.
  */
-export function championshipLabel(tc: number): string {
-  return `Turno di campionato ${tc}`;
+export function roundHeaderLabel(tt: number): string {
+  return `Round del torneo ${tt}`;
+}
+
+/**
+ * Forma UMANA del turno di campionato per l'HEADER del renderer email ("Turno
+ * di Campionato 7", ADR-015 email v4): label DEDICATA all'header, con
+ * "Campionato" maiuscolo per coerenza col soggetto (`subjectFor`). Solo
+ * renderer, mai prompt, mai log/CLI. La coppia
+ * "Round del torneo N · Turno di Campionato M" è la forma approvata dal PO
+ * per le comunicazioni verso l'esterno (mai sigle TT/TC).
+ */
+export function championshipHeaderLabel(tc: number): string {
+  return `Turno di Campionato ${tc}`;
 }

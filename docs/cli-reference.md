@@ -997,20 +997,22 @@ of the system is independently invocable), not part of the tournament flow.
 ### `llm:parse`
 
 ```
-llm:parse --input <text> [--json]
+llm:parse --input <text> [--mode <llm|deterministic>] [--json]
 ```
 
 **Purpose.** Extracts `{team, outcome}` from free text (as a player's email
-would be): the LLM receives the canonical team list from the database plus
-the alias resource (synthetic Serie B roster in TEST MODE) and returns the
-canonical name and the predicted outcome, or `null` when the pick is not
-recognizable or ambiguous.
+would be): the LLM (or, with `--mode deterministic`, the deterministic
+parser with unique formulas) receives the canonical team list from the
+database plus the alias resource (synthetic Serie B roster in TEST MODE) and
+returns the canonical name and the predicted outcome, or `null` when the pick
+is not recognizable or ambiguous.
 
 **Parameters.**
 
 | Option | Type | Description |
 |---|---|---|
 | `--input` | string, **required** | Player's email text to analyze. |
+| `--mode` | string | Extraction mode: `llm` (LLM) or `deterministic` (unique formulas `<TEAM> <ESITO>`); default follows `AI_EMAIL_PARSER`. |
 | `--json` | boolean (default `false`) | JSON output `{"testMode":…, "team":…, "outcome":…}` (or `{"team": null}`). Text output: `{team: "<team>", outcome: "<outcome>"}` or `{team: null} — pick non riconosciuto o ambiguo` (or the empty-canonical-list message when the DB has no teams). |
 
 ---
@@ -1018,19 +1020,24 @@ recognizable or ambiguous.
 ### `llm:classify`
 
 ```
-llm:classify --input <text|json> [--json]
+llm:classify --input <text|json> [--mode <llm|deterministic>] [--json]
 ```
 
-**Purpose.** Classifies a message's **intent** and pick in a single LLM call:
+**Purpose.** Classifies a message's **intent** and pick:
 `{intent: subscribe|unsubscribe|pick|other, pick: {team, outcome}|null}` —
 the classification used by the email channel to route incoming messages.
-Also extracts the player's **name** from a registration message.
+With `--mode llm` it is a single LLM call; with `--mode deterministic` (or
+`AI_EMAIL_PARSER=false`) the unique formulas `ISCRIZIONE [NOME]`,
+`DISISCRIZIONE`, `<TEAM> <ESITO>` are recognized in the subject or body
+(anything else → `other`). Also extracts the player's **name** from a
+registration message.
 
 **Parameters.**
 
 | Option | Type | Description |
 |---|---|---|
 | `--input` | string, **required** | The message body as plain text, or as JSON `{"body": "<text>"}` (the JSON form is convenient when the body contains quotes/newlines). |
+| `--mode` | string | Classification mode: `llm` (LLM) or `deterministic` (unique formulas); default follows `AI_EMAIL_PARSER`. |
 | `--json` | boolean (default `false`) | JSON output `{"testMode":…, "intent":…, "pick":…}`. Text output: `{intent: "pick", pick: {team: "<t>", outcome: "<o>"}}` or `{intent: "<intent>", pick: …}`. |
 
 ---
@@ -1040,27 +1047,32 @@ Also extracts the player's **name** from a registration message.
 ```
 llm:generate --type <type> [--player-name <n>] [--tt <n>] [--tc <n>] [--team <t>]
              [--outcome <win|draw|lose>] [--reason <r>] [--deadline <ISO>]
-             [--available-teams <a,b,…>] [--json]
+             [--available-teams <a,b,…>] [--mode <llm|deterministic>] [--json]
 ```
 
 **Purpose.** Generates an email from a structured context: the deterministic
-subject (human form, e.g. `Survivor League — Round 2 · Turno di campionato 7: …`)
-plus the rendered body (fixed header, ASCII boxes and call-to-action around
-the LLM-written narrative). The LLM only writes the narrative; numbers,
-deadlines, available teams and outcomes are injected deterministically.
-Diagnostic tool to preview any of the email types.
+subject (`⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - {etichetta}`; the
+subject carries only the championship round, the "Round del torneo N · Turno di
+Campionato M" pair stays in the body) plus the rendered body (fixed header,
+plain-text sections with emoji + UPPERCASE titles, key message and
+call-to-action around the narrative). By default the narrative is
+deterministic (`AI_EMAIL_GENERATOR=false`); with `--mode llm` the LLM writes
+the narrative (fallback to deterministic on `LLMError`/degenerate output).
+Numbers, deadlines, available teams and outcomes are injected
+deterministically. Diagnostic tool to preview any of the email types.
 
 **Parameters.**
 
 | Option | Type | Description |
 |---|---|---|
-| `--type` | string, **required** | Email type. Allowed values: `platform_registered`, `platform_unsubscribe_confirm`, `platform_unsubscribed`, `platform_already_registered`, `tournament_open`, `pick_instructions`, `pick_confirmed`, `pick_rejected`, `pick_missing_elimination`, `round_result_correct`, `round_result_wrong`, `pick_postponed`, `round_closed_survived`, `tournament_won`, `tournament_shared_win`, `clarification`. |
+| `--type` | string, **required** | Email type. Allowed values: `platform_registered`, `platform_unsubscribe_confirm`, `platform_unsubscribed`, `platform_already_registered`, `tournament_open`, `pick_instructions`, `pick_confirmed`, `pick_rejected`, `pick_missing_elimination`, `round_result_correct`, `round_result_wrong`, `pick_postponed`, `round_closed_survived`, `tournament_won`, `tournament_shared_win`, `clarification`, `tournament_closed`. |
 | `--player-name` | string | Player name to address the email to. |
-| `--tt` | number | Tournament round (TT) shown in subject/header. |
-| `--tc` | number | Championship round (TC) shown in subject/header. |
+| `--tt` | number | Tournament round (TT) shown in the body header. |
+| `--tc` | number | Championship round (TC) shown in the subject and body header. |
 | `--team` | string | Canonical team name of the pick. |
 | `--outcome` | string | Pick outcome: `win` \| `draw` \| `lose`. |
 | `--reason` | string | Rejection/elimination reason to communicate. |
 | `--deadline` | string | Deadline in ISO-8601 format; displayed in Italian, in the system `TIMEZONE`. |
 | `--available-teams` | string | Comma-separated list of available teams (for `pick_instructions`). |
+| `--mode` | string | Generation mode: `llm` (LLM narrative) or `deterministic` (fixed texts); default follows `AI_EMAIL_GENERATOR`. |
 | `--json` | boolean (default `false`) | JSON output `{"testMode":…, "subject":…, "body":…}`. Text output: `Oggetto: <subject>` followed by the rendered body. |

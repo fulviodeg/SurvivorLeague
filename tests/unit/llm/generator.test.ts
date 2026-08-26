@@ -3,14 +3,14 @@
  * LLD §6.3; briefing Fase 5-6 §3, D1/D4/D9).
  *
  * HTTP mockato (fetch iniettato, LLD §8). Coprono: un contract test per OGNI
- * tipo di email (16, inclusa `clarification`): corpo = renderer deterministico
+ * tipo di email (17, inclusa `clarification` e `tournament_closed`): corpo = renderer deterministico
  * (header con coppia umana, box, CTA) + narrativa LLM; soggetto `subjectFor`
- * in forma UMANA "Survivor League — Round N · Turno di campionato M:
- * etichetta" (RF-25/D1, mai sigle TT/TC); template senza numeri di turno
- * letterali (D4/ADR-004: mai nel prompt); soggetto neutro per le mail di
- * esito (convenzione 4); coppia assente → soggetto senza prefisso; priorità
- * di `ctx.subject`; date it-IT nel fuso iniettato (D9/ADR-011); LLMError
- * propagata (D3).
+ * in forma "⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - etichetta"
+ * (RF-25/D1, mai sigle TT/TC, il subject porta il SOLO turno di campionato);
+ * template senza numeri di turno letterali (D4/ADR-004: mai nel prompt);
+ * soggetto neutro per le mail di esito (convenzione 4); TC assente → soggetto
+ * senza prefisso di turno; priorità di `ctx.subject`; date it-IT nel fuso
+ * iniettato (D9/ADR-011); LLMError propagata (D3).
  */
 import { describe, expect, it, vi } from 'vitest';
 
@@ -24,7 +24,7 @@ import {
   type EmailContext,
   type EmailType
 } from '../../../src/llm/generator.js';
-import { EMAIL_TEMPLATES, FALLBACK_NARRATIVES } from '../../../src/llm/templates.js';
+import { EMAIL_TEMPLATES, DETERMINISTIC_NARRATIVES } from '../../../src/llm/templates.js';
 import { LLMError } from '../../../src/llm/errors.js';
 
 /** Generatore con fetch iniettato che registra i prompt (test ermetici). */
@@ -87,14 +87,15 @@ describe('LLM Generator v2 — contract test per ogni tipo (ADR-011)', () => {
 
       // Il corpo è il renderer deterministico: header con coppia UMANA
       // (mai sigle TT/TC, convenzione 1) + narrativa dell'LLM.
-      expect(body).toContain('Round 2 · Turno di campionato 7');
+      expect(body).toContain('Round del torneo 2 · Turno di Campionato 7');
       expect(body).toContain('Narrativa di prova');
       expect(body).toContain('Ciao Aldo!');
       expect(body).not.toContain('TT 2');
       expect(body).not.toContain('TC 7');
       // D1: soggetto in forma umana (mai TT2TC7).
-      expect(subject).toMatch(/^Survivor League — Round 2 · Turno di campionato 7: .+$/);
+      expect(subject).toMatch(/^⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 7 di Campionato - .+$/);
       expect(subject).not.toContain('TT2TC7');
+      expect(subject).not.toContain('Round 2');
 
       // Il prompt (system/user) NON contiene numeri di turno (D4/ADR-004).
       const prompt = requests[0]?.system ?? '';
@@ -119,22 +120,38 @@ describe('LLM Generator v2 — contract test per ogni tipo (ADR-011)', () => {
   it('soggetti NEUTRI per le mail di esito round (convenzione 4)', () => {
     const pair = { round: 2, championshipRound: 7 };
     expect(subjectFor({ type: 'round_closed_survived', ...pair })).toBe(
-      'Survivor League — Round 2 · Turno di campionato 7: Riepilogo del round'
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 7 di Campionato - Riepilogo Round'
     );
     expect(subjectFor({ type: 'round_result_correct', ...pair })).toBe(
-      'Survivor League — Round 2 · Turno di campionato 7: Esito del round'
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 7 di Campionato - Esito Round'
     );
     expect(subjectFor({ type: 'round_result_wrong', ...pair })).toBe(
-      'Survivor League — Round 2 · Turno di campionato 7: Esito del round'
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 7 di Campionato - Esito Round'
     );
     expect(subjectFor({ type: 'pick_missing_elimination', ...pair })).toBe(
-      'Survivor League — Round 2 · Turno di campionato 7: Esito del round'
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 7 di Campionato - Esito Round'
     );
   });
 
-  it('senza coppia round/campionato il soggetto non ha prefisso (D1)', () => {
-    expect(subjectFor({ type: 'pick_instructions' })).toBe('Survivor League — Invia il tuo pick');
-    expect(subjectFor({ type: 'clarification' })).toBe('Survivor League — Non ho capito');
+  it('senza TC il soggetto non ha prefisso di turno (D1)', () => {
+    expect(subjectFor({ type: 'pick_instructions' })).toBe(
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Round Aperto'
+    );
+    expect(subjectFor({ type: 'clarification' })).toBe('⚽🏆SURVIVOR LEAGUE🏆⚽ - Non Ho Capito');
+    // ADR-015 email v4: la mail di chiusura torneo NON porta il turno.
+    expect(subjectFor({ type: 'tournament_closed' })).toBe(
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Chiusura Torneo'
+    );
+  });
+
+  it('tournament_won/tournament_shared_win includono il turno quando TC noto (D1)', () => {
+    const pair = { round: 3, championshipRound: 5 };
+    expect(subjectFor({ type: 'tournament_won', ...pair })).toBe(
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 5 di Campionato - Hai Vinto'
+    );
+    expect(subjectFor({ type: 'tournament_shared_win', ...pair })).toBe(
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 5 di Campionato - Vittoria Condivisa'
+    );
   });
 
   it('ctx.subject esplicito ha priorità in subjectFor (D1)', () => {
@@ -195,7 +212,7 @@ describe('LLM Generator — guardia anti-degenerazione dell\'output (narrativa)'
       playerName: 'Sara'
     });
     expect(body).not.toContain('We need to produce a short narrative text');
-    expect(body).toContain(FALLBACK_NARRATIVES.platform_already_registered);
+    expect(body).toContain(DETERMINISTIC_NARRATIVES.platform_already_registered);
     expect(body.length).toBeLessThan(5_000);
   });
 
@@ -203,14 +220,14 @@ describe('LLM Generator — guardia anti-degenerazione dell\'output (narrativa)'
     const { generator } = makeGenerator(() => Promise.resolve(chatOk('Narrativa valida e breve')));
     const body = await generator.generate({ type: 'pick_instructions', playerName: 'Aldo' });
     expect(body).toContain('Narrativa valida e breve');
-    expect(body).not.toContain(FALLBACK_NARRATIVES.pick_instructions);
+    expect(body).not.toContain(DETERMINISTIC_NARRATIVES.pick_instructions);
   });
 });
 
 describe('deterministicNarrative — guardia pura sull\'output LLM', () => {
   it('narrativa vuota o whitespace → fallback deterministico per tipo', () => {
     expect(deterministicNarrative({ type: 'tournament_open' }, '   ')).toBe(
-      FALLBACK_NARRATIVES.tournament_open
+      DETERMINISTIC_NARRATIVES.tournament_open
     );
   });
 
@@ -219,13 +236,13 @@ describe('deterministicNarrative — guardia pura sull\'output LLM', () => {
     const over = 'y'.repeat(MAX_NARRATIVE_CHARS + 1);
     expect(deterministicNarrative({ type: 'pick_confirmed' }, atLimit)).toBe(atLimit);
     expect(deterministicNarrative({ type: 'pick_confirmed' }, over)).toBe(
-      FALLBACK_NARRATIVES.pick_confirmed
+      DETERMINISTIC_NARRATIVES.pick_confirmed
     );
   });
 
-  it('fallback narrativo presente per OGNI EmailType (Record completo)', () => {
+  it('narrativa deterministica presente per OGNI EmailType (Record completo, anche vuota)', () => {
     for (const type of EMAIL_TYPES) {
-      expect(FALLBACK_NARRATIVES[type], `fallback per ${type}`).toBeTruthy();
+      expect(DETERMINISTIC_NARRATIVES[type], `narrativa per ${type}`).toBeDefined();
     }
   });
 });

@@ -320,8 +320,66 @@ describe('chiusura automatica — caso 3 (superstiti dopo l’ultimo TC scored)'
 
     const shared = h.generator.byType('tournament_shared_win');
     expect(shared).toHaveLength(2);
-    const sharedSent = h.channel.sent.filter((s) => s.subject?.includes('Vittoria condivisa'));
+    const sharedSent = h.channel.sent.filter((s) => s.subject?.includes('Vittoria Condivisa'));
     expect(sharedSent.map((s) => s.to).sort()).toEqual(['a@test.it', 'b@test.it']);
+    // ADR-015 email v4: ogni vincitore riceve la lista degli ALTRI vincitori.
+    const aldo = shared.find((c) => c.playerName === 'Aldo');
+    const beppe = shared.find((c) => c.playerName === 'Beppe');
+    expect(aldo?.coWinners).toEqual(['Beppe']);
+    expect(beppe?.coWinners).toEqual(['Aldo']);
+  });
+});
+
+describe('chiusura automatica — mail tournament_closed (ADR-015 email v4)', () => {
+  it('alla chiusura tournament_closed va a TUTTI i partecipanti (vincitori inclusi) con lo storico, UNA sola volta', async () => {
+    const h = await makeHarness();
+    await startTournament(h.ctx);
+    await openRound(h.ctx, 1);
+    insertProfile(h.db, 'a@test.it', 'Aldo');
+    insertProfile(h.db, 'b@test.it', 'Beppe');
+    h.platform.register('a@test.it', 'Aldo', NOW);
+    h.platform.register('b@test.it', 'Beppe', NOW);
+    await playRound1(h, [
+      { email: 'a@test.it', team: IM },
+      { email: 'b@test.it', team: JU }
+    ]);
+
+    // Entrambi i partecipanti (vincitore a + eliminato b) ricevono la chiusura.
+    const closed = h.generator.byType('tournament_closed');
+    expect(closed).toHaveLength(2);
+    const closingSent = h.channel.sent.filter((s) => s.subject === '⚽🏆SURVIVOR LEAGUE🏆⚽ - Chiusura Torneo');
+    expect(closingSent.map((s) => s.to).sort()).toEqual(['a@test.it', 'b@test.it']);
+    // Il vincitore riceve SIA la vittoria SIA la chiusura.
+    expect(h.generator.byType('tournament_won')).toHaveLength(1);
+    // Storico: solo il round giocato (TT 1 / TC 1), con i due partecipanti.
+    expect(closed[0]?.tournamentHistory).toHaveLength(1);
+    expect(closed[0]?.tournamentHistory?.[0]).toMatchObject({ round: 1, championshipRound: 1 });
+    expect(closed[0]?.tournamentHistory?.[0]?.players.map((p) => p.name).sort()).toEqual(['Aldo', 'Beppe']);
+
+    // Idempotenza: un nuovo scoreRound NON rinvìa la chiusura (guardia atomica).
+    h.generator.contexts = [];
+    h.ctx.now = new Date('2026-09-13T21:00:00.000Z');
+    await scoreRound(h.ctx, 1);
+    expect(h.generator.byType('tournament_closed')).toHaveLength(0);
+  });
+
+  it('participant con account NON active → nessuna tournament_closed (filtro RF-P6)', async () => {
+    const h = await makeHarness();
+    await startTournament(h.ctx);
+    await openRound(h.ctx, 1);
+    insertProfile(h.db, 'a@test.it', 'Aldo');
+    insertProfile(h.db, 'b@test.it', 'Beppe');
+    h.platform.register('a@test.it', 'Aldo', NOW);
+    h.platform.register('b@test.it', 'Beppe', NOW);
+    h.platform.beginUnsubscribe('b@test.it', NOW); // pending → escluso
+    await playRound1(h, [
+      { email: 'a@test.it', team: IM },
+      { email: 'b@test.it', team: JU }
+    ]);
+
+    // b è eliminato (wrong_pick) e pending: la chiusura va solo ad a (active).
+    const closingSent = h.channel.sent.filter((s) => s.subject === '⚽🏆SURVIVOR LEAGUE🏆⚽ - Chiusura Torneo');
+    expect(closingSent.map((s) => s.to)).toEqual(['a@test.it']);
   });
 });
 

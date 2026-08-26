@@ -27,8 +27,8 @@
  * unknown). CRLF normalizzato a LF (D8).
  */
 
-/** Separatore anteposto a ogni email di sistema (D2/D3). PROVVISORIA — da decidere la stringa definitiva. */
-export const SYSTEM_EMAIL_SEPARATOR = '───';
+/** Separatore di brand anteposto a ogni email di sistema (D2/D3, email v3). */
+export const SYSTEM_EMAIL_SEPARATOR = '─── Survivor League ───';
 
 /** Marker "ha scritto:" / "wrote:" (D5c): ciò che segue è citazione della mail precedente. */
 const QUOTE_MARKER_PATTERN = /ha scritto:|wrote:/i;

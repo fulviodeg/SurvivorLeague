@@ -105,7 +105,7 @@ Il Game Engine non conosce i dettagli di trasporto. Dialoga con un'interfaccia a
 | **ChannelAdapter** (interfaccia) | Contratto astratto per qualsiasi canale di comunicazione: `fetchMessages()`, `sendMessage()` |
 | **EmailAdapter** (implementazione) | Unica implementazione nella PoC. Al suo interno contiene: |
 | &nbsp;&nbsp;├─ **IMAP Client** | Si connette alla casella Gmail, recupera le nuove email (`imapflow`). Popola `IncomingMessage.receivedAt` con l'`internaldate` del messaggio (arrivo in casella), non con l'header `Date` (PRD §5.3) |
-| &nbsp;&nbsp;├─ **Message Router** | Normalizza l'identità del mittente in `ExternalIdentity { channel, identifier }` (ADR-008): per l'email `{channel: 'email', identifier: <indirizzo minuscolo, senza nome visualizzato>}` (D6/K). **La decisione di intento è dell'LLM (ADR-009):** il router NON usa più keyword (`REGISTRATION_KEYWORDS` rimossa) e produce `{ kind: 'classified', identity, body }`; corpo/mittente vuoto → `kind: 'unknown'` (nessuna chiamata LLM). **Il router NON decide nulla di gioco** (auto-join/rifiuti = Game Engine, PRD §4.1): il wiring (6.2) decide. **"Round corrente" del wiring (D8):** il primo `round_state` con `status='open'` nella finestra `[start_round..N]` (stessa semantica di `tournament:status`); nessun round aperto → rifiuto `round_not_open` (CL3) per il ramo pick |
+| &nbsp;&nbsp;├─ **Message Router** | Normalizza l'identità del mittente in `ExternalIdentity { channel, identifier }` (ADR-008): per l'email `{channel: 'email', identifier: <indirizzo minuscolo, senza nome visualizzato>}` (D6/K). **La decisione di intento è del classificatore (ADR-009, LLM o deterministico — ADR-014):** il router NON usa più keyword (`REGISTRATION_KEYWORDS` rimossa) e produce `{ kind: 'classified', identity, body, subject? }`; corpo e subject vuoti → `kind: 'unknown'` (nessuna chiamata di classificazione). **Il router NON decide nulla di gioco** (auto-join/rifiuti = Game Engine, PRD §4.1): il wiring (6.2) decide. **"Round corrente" del wiring (D8):** il primo `round_state` con `status='open'` nella finestra `[start_round..N]` (stessa semantica di `tournament:status`); nessun round aperto → rifiuto `round_not_open` (CL3) per il ramo pick |
 | &nbsp;&nbsp;└─ **SMTP Client** | Invia email di risposta e notifica (`nodemailer`): `sendMail({from, to, subject, text})`, soggetto dal chiamante (D1) |
 
 **Adapters futuri** (fuori scope PoC, da FUTURE_EXPLORATIONS.md punto 7):
@@ -319,6 +319,8 @@ Tutti i parametri modificabili vivono in variabili d'ambiente, validate con `zod
 | LLM model | `LLM_MODEL` | `gpt-4o-mini` | Lista separata da virgola, in ordine di priorità (failover client-side: il primo è il primario, i successivi sono fallback). Il failover scatta SOLO su errore di trasporto/HTTP (`LLMError`), MAI su `null` (D3: per il Parser `null` è una risposta valida = pick ambiguo, e non deve cambiare modello) |
 | LLM timeout (ms) | `LLM_TIMEOUT_MS` | `15000` | Timeout di una singola richiesta LLM. Abbassarlo rende il failover più rapido ma scarta risposte lente (tier free); worst case latenza per messaggio: Σ modelli × tentativi × timeout ≈ 135 s con 3×3×15 s (i fallimenti reali 429/5xx sono però immediati) |
 | LLM retries | `LLM_RETRIES` | `3` | Tentativi TOTALI per modello (1 richiesta + N-1 ritentativi) su errori ritentabili (429, 5xx, timeout, rete, body malformato), con ~1 s di pausa tra i tentativi; `1` = nessun ritentativo. I 4xx deterministici (400/401/403/404) non vengono ritentati: failover diretto al modello successivo |
+| Generazione IA email | `AI_EMAIL_GENERATOR` | `false` | Interruttore email v3 (ADR-013): `true` = narrativa LLM con fallback deterministico su `LLMError`/narrativa degenerata; assente/`false` = generatore deterministico (`DeterministicGenerator`, MAI chiamate LLM per i testi email). Lettura a ogni invocazione CLI (nessun daemon da riavviare) |
+| Classificazione IA input | `AI_EMAIL_PARSER` | `false` | Interruttore email v3 Parte B (ADR-014): `true` = classificazione LLM con fallback per-messaggio sul deterministico; assente/`false` = `DeterministicIntentClassifier` (formule univoche `ISCRIZIONE [NOME]`/`DISISCRIZIONE`/`<TEAM> <ESITO>` nel subject o corpo, MAI chiamate LLM per la classificazione). Con entrambi i flag AI false `LLM_API_KEY` non è richiesta (run senza IA) |
 | Database path | `DB_PATH` | `./data/survivor.db` | |
 | Database piattaforma path | `PLATFORM_DB_PATH` | `./data/platform.db` | DB **separato** per gli account piattaforma (ADR-009, RF-P7): MAI uguale a `DB_PATH`; `platform:migrate` lo migra; `channel:email:process`/`simulate:*` lo richiedono (errore esplicito se assente). `simulate:*` rifiuta/avvisa se coincide col valore di produzione |
 | Log level | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
@@ -504,7 +506,9 @@ Autenticazione via header HTTP `X-Auth-Token`; il client deve rispettare gli hea
 
 ### 6.2 LLM Parser e Intent Classifier
 
-> **Emendamento ADR-011 (nome del giocatore, RF-P1).** L'output della classificazione diventa `{intent, pick, name?}`: `name` è il nome del giocatore dedotto dalla mail di REGISTRAZIONE (valorizzato SOLO per `subscribe`, null altrimenti). Il prompt del classificatore istruisce a dedurlo (es. "mi chiamo Mario e voglio iscrivermi" → `"name": "Mario"`); senza nome nel testo → `null` (il sistema usa l'email al posto del nome). Formula di iscrizione ovunque: "dimmi il tuo nome e scrivi voglio iscrivermi".
+> **Emendamento ADR-011 (nome del giocatore, RF-P1).** L'output della classificazione diventa `{intent, pick, name?}`: `name` è il nome del giocatore dedotto dalla mail di REGISTRAZIONE (valorizzato SOLO per `subscribe`, null altrimenti). Il prompt del classificatore istruisce a dedurlo (es. "mi chiamo Mario e voglio iscrivermi" → `"name": "Mario"`); senza nome nel testo → `null` (il sistema usa l'email al posto del nome).
+>
+> **Emendamento ADR-014 (email v3 Parte B, parser deterministico).** `LLMIntentClassifier` ha due implementazioni selezionate da `AI_EMAIL_PARSER` (default `false`): `OpenAIIntentClassifier` (LLM, invariato) e `DeterministicIntentClassifier` (`src/llm/deterministic-parser.ts`) con FORMULE UNIVOCHE riconosciute nel subject (`opts.subject`) O nel corpo — `ISCRIZIONE [NOME]` (nome a fine riga, trim, max 40 char), `DISISCRIZIONE`, `<TEAM> <ESITO>` (lista canonica + tabella alias, longest-match, normalizzazione maiuscole/accenti; sinonimi esito); altrimenti `other`. Le formule libere ("voglio iscrivermi") NON sono riconosciute; l'istruzione d'iscrizione ovunque è `ISCRIZIONE [NOME]` (sostituisce la vecchia "dici voglio iscrivermi"). Con `AI_EMAIL_PARSER=true` l'LLM è avvolto da `FallbackIntentClassifier` (su `LLMError` → deterministico, batch continua). `IncomingMessage.subject` è plumbato dal router.
 
 ```typescript
 // Definito UNA volta in src/llm/parser.ts e riusato da game/registration.ts
@@ -559,7 +563,7 @@ interface LLMIntentClassifier {
 
 ### 6.3 LLM Generator
 
-> **Emendamento ADR-011 (email v2, stile unico "energetic").** L'LLM produce SOLO il testo NARRATIVO (2-4 frasi brevi, tono entusiasta); il corpo completo è composto DETERMINISTICAMENTE dal renderer di canale `src/llm/email-renderer.ts` attorno alla narrativa: header con coppia UMANA "Round N · Turno di campionato M" (mai sigle TT/TC nelle mail), box ASCII (esito ✅/❌, deadline+countdown, squadre bruciate, partite/risultati, stato aggregato), sezioni dati e CTA per tipo. Il countdown è calcolato DAL SISTEMA con `formatRemaining(now, deadline)` (src/game/round-time.ts, clock iniettato — mai dall'LLM né dal renderer, RNF1). Le mail di esito hanno soggetti NEUTRI ("riepilogo del round"/"esito del round"); mai elenchi nominativi di partecipanti (solo conteggi). Il vecchio prompt-set V1 è stato RIMOSSO (2026-08-23). Canale email = SOLO text/plain (opzione 2 approvata: NIENTE HTML).
+> **Emendamento ADR-011 (email v2), ADR-013 (email v3, plain-text senza riquadri) e ADR-015 (email v4).** L'LLM produce SOLO il testo NARRATIVO (2-4 frasi brevi, tono entusiasta); il corpo completo è composto DETERMINISTICAMENTE dal renderer di canale `src/llm/email-renderer.ts` attorno alla narrativa: header con coppia UMANA "Round del torneo N · Turno di Campionato M" (mai sigle TT/TC nelle mail), **sezioni a righe con titolo emoji + MAIUSCOLO** (esito ✅/❌, deadline+countdown, squadre già usate, partite/risultati, stato aggregato — NIENTE riquadri ASCII), messaggio chiave `keyMessage(ctx)` in MAIUSCOLO, sezioni dati e CTA per tipo. Il countdown è calcolato DAL SISTEMA con `formatRemaining(now, deadline)` (src/game/round-time.ts, clock iniettato — mai dall'LLM né dal renderer, RNF1). Le mail di esito hanno soggetti NEUTRI ("Esito Round"); MAI elenchi nominativi di partecipanti (solo conteggi), **con carve-out ADR-015** per i soli tipi retrospettivi `round_closed_survived` e `tournament_closed` (sezione `👥 GIOCATORI DEL ROUND` / `📜 STORICO DEL TORNEO` dai campi `players`/`tournamentHistory`). Email v4 aggiunge inoltre la sezione co-vincitori `🤝 HAI CONDIVISO LA VITTORIA CON` (`coWinners`) e il nuovo tipo `tournament_closed`. La narrativa è prodotta da `DeterministicGenerator` (default) o dall'LLM con fallback (`AI_EMAIL_GENERATOR`, ADR-013). Il vecchio prompt-set V1 è stato RIMOSSO (2026-08-23). Canale email = SOLO text/plain (niente HTML né riquadri).
 
 ```typescript
 type EmailType = 
@@ -578,7 +582,8 @@ type EmailType =
   | "round_closed_survived"        // riepilogo chiusura round ai SOLI sopravvissuti (RF-P6)
   | "tournament_won"
   | "tournament_shared_win"
-  | "clarification";               // ADR-011 (Task 7): messaggio non interpretabile (soggetto "Non ho capito")
+  | "clarification"                // ADR-011 (Task 7): messaggio non interpretabile (soggetto "Non ho capito")
+  | "tournament_closed";           // ADR-015 (email v4): chiusura torneo con storico per-round a TUTTI i partecipanti
 
 // RIMOSSI rispetto a v0.4.0 (ADR-009): "welcome", "registration_open_invite",
 // "auto_registered", "round_closed_eliminated".
@@ -586,8 +591,8 @@ type EmailType =
 interface EmailContext {
   type: EmailType;
   playerName?: string;
-  round?: number;              // round del TORNEO (ex tt), iniettato (ADR-008, RF-25); reso "Round N" dal renderer
-  championshipRound?: number;  // turno di CAMPIONATO (ex tc), iniettato; reso "Turno di campionato M"
+  round?: number;              // round del TORNEO (ex tt), iniettato (ADR-008, RF-25); reso "Round del torneo N" dal renderer
+  championshipRound?: number;  // turno di CAMPIONATO (ex tc), iniettato; reso "Turno di Campionato M"
   roundStart?: Date;           // inizio del round (kickoff prima partita)
   deadline?: Date;
   deadlineRemaining?: string;  // countdown pre-calcolato dal Game Engine (formatRemaining, RNF1)
@@ -596,13 +601,31 @@ interface EmailContext {
   outcome?: string;
   reason?: string;
   availableTeams?: string[];
-  burnedTeams?: { team: string; round: number }[]; // squadre bruciate + round di utilizzo (box dedicato)
+  burnedTeams?: { team: string; round: number }[]; // squadre già usate + round di utilizzo (sezione dedicata)
   matches?: { home: string; away: string; date: Date; score?: { home: number; away: number }; postponed?: boolean }[];
   inGameCount?: number;        // conteggi AGGREGATI (mai elenchi nominativi)
   eliminatedWrong?: number;
   eliminatedMissing?: number;
   platformCount?: number;      // iscritti alla piattaforma (annuncio apertura torneo)
   playerResult?: "correct" | "wrong" | "missing";
+  players?: EmailPlayerResult[];      // ADR-015: elenco giocatori del round (round_closed_survived/tournament_closed)
+  coWinners?: string[];               // ADR-015: nomi degli ALTRI vincitori (tournament_shared_win)
+  tournamentHistory?: EmailTournamentRound[]; // ADR-015: storico per-round (tournament_closed)
+}
+
+// ADR-015 (email v4): partecipante in un elenco retrospettivo; nome con fallback sull'email.
+interface EmailPlayerResult {
+  name: string;
+  team?: string;              // squadra del pick (assente = nessun pick)
+  outcome?: string;           // win|draw|lose (assente = nessun pick)
+  eliminated: boolean;        // true = eliminato IN QUESTO round
+}
+
+// ADR-015 (email v4): storico per-round del torneo (riusa EmailPlayerResult).
+interface EmailTournamentRound {
+  round: number;              // TT
+  championshipRound: number;  // TC
+  players: EmailPlayerResult[];
 }
 
 interface LLMGenerator {
@@ -610,9 +633,9 @@ interface LLMGenerator {
 }
 ```
 
-> **Coppia umana (ADR-011):** `round`/`championshipRound` sono i numeri di torneo/campionato iniettati dal Game Engine (ADR-008). **Nessun numero di turno entra nel prompt** (ADR-004, D4): la coppia è scritta dal renderer in forma umana; le forme compatte TT2TC7 restano SOLO per log/CLI (src/game/turn.ts, invariato).
+> **Coppia umana (ADR-011, emendata ADR-015):** `round`/`championshipRound` sono i numeri di torneo/campionato iniettati dal Game Engine (ADR-008). **Nessun numero di turno entra nel prompt** (ADR-004, D4): la coppia è scritta dal renderer in forma umana "Round del torneo N · Turno di Campionato M" (label dedicate `roundHeaderLabel`/`championshipHeaderLabel`; il box bruciate resta "(Round N)"); le forme compatte TT2TC7 restano SOLO per log/CLI (src/game/turn.ts, invariato).
 >
-> **Soggetto (D1):** composto DETERMINISTICAMENTE dal chiamante con l'helper `subjectFor(ctx)` — forma UMANA "Survivor League — Round N · Turno di campionato M: etichetta" (coppia assente → senza prefisso); etichette NEUTRE per gli esiti ("riepilogo del round"/"esito del round", convenzione 4); mai dall'LLM, mai numeri inventati. `ctx.subject` permette a un chiamante di fornire un oggetto esplicito (priorità).
+> **Soggetto (D1, emendato ADR-013/ADR-015):** composto DETERMINISTICAMENTE dal chiamante con l'helper `subjectFor(ctx)` — forma `⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - {etichetta}` (TC assente → `⚽🏆SURVIVOR LEAGUE🏆⚽ - {etichetta}`); il soggetto porta il SOLO turno di campionato, la coppia "Round del torneo N · Turno di Campionato M" resta nel corpo. Etichette iper-condensate e NEUTRE per gli esiti ("Esito Round", convenzione 4); `tournament_closed` non porta il turno ("Chiusura Torneo"); mai dall'LLM, mai numeri inventati. `ctx.subject` permette a un chiamante di fornire un oggetto esplicito (priorità).
 >
 > **Formato date nei testi (D9/ADR-011):** le date sono istanti UTC; i testi email le mostrano con `formatItDate(date, timeZone)` nel FUSO DI SISTEMA (`TIMEZONE`, default Europe/Rome, validato al boot) — fuso esplicito = determinismo (RNF1). Il fuso conta SOLO nella comunicazione verso l'esterno (email e log): le decisioni di gioco restano su UTC.
 >
@@ -620,7 +643,7 @@ interface LLMGenerator {
 
 ### 6.4 ChannelAdapter
 
-> **Emendamento ADR-011 (principio "resa = canale, dati = canale-agnostici").** La RESA dei testi appartiene al CANALE: il renderer `src/llm/email-renderer.ts` è il renderer DEDICATO del canale email (header/box/CTA deterministici attorno alla narrativa LLM). Il Game Engine compone SOLO `EmailContext` (dati) e chiama `generator.generate` + `channel.sendMessage` (flusso invariato): un futuro WebAdapter riusa gli stessi dati con un renderer dedicato, senza toccare la logica di gioco. Il banner TEST MODE anteposto dall'EmailAdapter resta indipendente dal corpo e si preserva automaticamente.
+> **Emendamento ADR-011/ADR-013 (principio "resa = canale, dati = canale-agnostici").** La RESA dei testi appartiene al CANALE: il renderer `src/llm/email-renderer.ts` è il renderer DEDICATO del canale email (header/sezioni/CTA deterministici attorno alla narrativa). Il Game Engine compone SOLO `EmailContext` (dati) e chiama `generator.generate` + `channel.sendMessage` (flusso invariato): un futuro WebAdapter riusa gli stessi dati con un renderer dedicato, senza toccare la logica di gioco. Il banner TEST MODE anteposto dall'EmailAdapter resta indipendente dal corpo e si preserva automaticamente.
 
 ```typescript
 interface IncomingMessage {
@@ -790,7 +813,7 @@ npm run cli -- elimination:list               # Lista profili eliminati con moti
 
 ### 7.7 Game Engine — Winner Engine
 
-> **Emendamento ADR-011 (chiusura automatica e completa).** `checkWinner` resta SOLA LETTURA e senza gate sullo stato; il Round Manager espone l'hook `settleWinnerIfNeeded` (invocato dopo `closeRound` e dopo `scoreRound`) che, alla identificazione del/i vincitore/i, esegue in sequenza: guardia atomica idempotente (`tournament_state.winner_notified = 1` + `finished_at` dal clock — migrazioni additive), notifica ai vincitori (`tournament_won`/`tournament_shared_win`, best-effort per destinatario con filtro account `active`), EXPORT AUTOMATICO (riuso di `tournamentExport` → file JSON in `TOURNAMENT_EXPORT_DIR`, filename dal clock iniettato — archivio per il reset) e inibizione dello scheduler (`computeActions` → `[]` a torneo chiuso). `tournament:start` è RIAMMISSIBILE su torneo chiuso: reset atomico del DB di GIOCO (pick/profile/player/round_state) + reset di `tournament_state`; il DB piattaforma non è toccato (ADR-009). `winner:check` resta invocabile in qualunque momento, anche a torneo ultimato (stesso risultato della chiusura, senza side-effect); dopo il reset, lo storico del torneo precedente è consultabile SOLO nell'export automatico. La rimozione della riga crontab fisica a torneo chiuso resta attività operativa del commissioner (guida test-mode).
+> **Emendamento ADR-011 (chiusura automatica e completa) e ADR-015 (email v4).** `checkWinner` resta SOLA LETTURA e senza gate sullo stato; il Round Manager espone l'hook `settleWinnerIfNeeded` (invocato dopo `closeRound` e dopo `scoreRound`) che, alla identificazione del/i vincitore/i, esegue in sequenza: guardia atomica idempotente (`tournament_state.winner_notified = 1` + `finished_at` dal clock — migrazioni additive), notifica ai vincitori (`tournament_won`/`tournament_shared_win` con la lista `coWinners` degli altri vincitori, best-effort per destinatario con filtro account `active`), notifica di chiusura `tournament_closed` con lo storico per-round a TUTTI i partecipanti (profili con almeno un pick, vincitori inclusi — ADR-015), EXPORT AUTOMATICO (riuso di `tournamentExport` → file JSON in `TOURNAMENT_EXPORT_DIR`, filename dal clock iniettato — archivio per il reset) e inibizione dello scheduler (`computeActions` → `[]` a torneo chiuso). `tournament:start` è RIAMMISSIBILE su torneo chiuso: reset atomico del DB di GIOCO (pick/profile/player/round_state) + reset di `tournament_state`; il DB piattaforma non è toccato (ADR-009). `winner:check` resta invocabile in qualunque momento, anche a torneo ultimato (stesso risultato della chiusura, senza side-effect); dopo il reset, lo storico del torneo precedente è consultabile SOLO nell'export automatico. La rimozione della riga crontab fisica a torneo chiuso resta attività operativa del commissioner (guida test-mode).
 
 ```bash
 npm run cli -- winner:check                   # Verifica se il torneo è finito (SOLA LETTURA). Output: JSON {finished, winners, case}
@@ -799,18 +822,23 @@ npm run cli -- winner:check                   # Verifica se il torneo è finito 
 ### 7.8 LLM Adapter
 
 ```bash
-npm run cli -- llm:parse --input <text>       # Estrae {team, outcome} da testo libero. Output: JSON.
-                                              # Lista canonica da getTeams() (DB reale) + contenuto di
-                                              # team-aliases.md iniettati per chiamata; DB vuoto → lista
-                                              # vuota → {team: null} con messaggio chiaro
-npm run cli -- llm:classify --input <json>    # Classifica {intent, pick, name} da JSON {"intent": "...", "pick": {...}}
-                                              # o testo: UNA chiamata LLM (ADR-009, RF-P1/P2); output JSON
-                                              # {intent: subscribe|unsubscribe|pick|other, pick, name} (ADR-011)
-npm run cli -- llm:generate --type <email-type> [--player-name <name>] [--tt <n>] [--tc <n>] [--team <name>] [--outcome <outcome>] [--reason <text>] [--deadline <datetime>] [--available-teams <comma,sep>]
-                                              # Genera email da contesto strutturato. Output: SOGGETTO
-                                              # (subjectFor, forma UMANA "Round N · Turno di campionato M",
-                                              # ADR-011) + corpo renderizzato (header/box/CTA deterministici
-                                              # attorno alla narrativa LLM, date nel TIMEZONE di sistema)
+npm run cli -- llm:parse --input <text> [--mode <llm|deterministic>]
+                                               # Estrae {team, outcome} da testo libero. Output: JSON.
+                                               # Lista canonica da getTeams() (DB reale) + contenuto di
+                                               # team-aliases.md iniettati per chiamata; DB vuoto → lista
+                                               # vuota → {team: null} con messaggio chiaro. --mode forza
+                                               # llm o deterministic (default = AI_EMAIL_PARSER, ADR-014)
+npm run cli -- llm:classify --input <json> [--mode <llm|deterministic>]
+                                               # Classifica {intent, pick, name} da JSON {"intent": "...", "pick": {...}}
+                                               # o testo: LLM (ADR-009, RF-P1/P2) o deterministico con formule
+                                               # univoche (ADR-014); output JSON {intent: subscribe|unsubscribe|pick|other, pick, name}
+                                               # --mode forza llm o deterministic (default = AI_EMAIL_PARSER)
+npm run cli -- llm:generate --type <email-type> [--player-name <name>] [--tt <n>] [--tc <n>] [--team <name>] [--outcome <outcome>] [--reason <text>] [--deadline <datetime>] [--available-teams <comma,sep>] [--mode <llm|deterministic>]
+                                               # Genera email da contesto strutturato. Output: SOGGETTO
+                                               # (subjectFor: "⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - {etichetta}",
+                                               # ADR-013) + corpo renderizzato (header/sezioni/CTA deterministici
+                                               # attorno alla narrativa, date nel TIMEZONE di sistema). --mode
+                                               # forza llm o deterministic (default = AI_EMAIL_GENERATOR)
 ```
 
 ### 7.9 Channel Adapter
@@ -988,7 +1016,8 @@ Casi aggiuntivi al set di test già definito, da distribuire tra unit/integratio
 - `tournament:start` → `tournament_open` a tutti gli `activeEmails()` (una sola volta); no-op senza componenti email
 - `round:open` → `pick_instructions` ai soli partecipanti attivi (`eliminated = 0`) con account `active`; **all'apertura del TT 1 anche agli account `active` SENZA profilo** (emendamento RF-P6, 2026-08-21), con dedup sulle email dei profili
 - `round:close` → `pick_missing_elimination` ai soli account `active`
-- `round:score` → `round_result_correct`/`round_result_wrong` ai soli account `active`; alla transizione `closed→scored` `round_closed_survived` ai soli sopravvissuti con `summary_sent = 1`; riapertura `round:score` → nessun ri-invio (idempotente)
+- `round:score` → `round_result_correct`/`round_result_wrong` ai soli account `active`; alla transizione `closed→scored` `round_closed_survived` ai soli sopravvissuti con `summary_sent = 1` (con l'elenco `players` dei partecipanti del round, ADR-015); riapertura `round:score` → nessun ri-invio (idempotente)
+- chiusura automatica → `tournament_won`/`tournament_shared_win` ai vincitori (con `coWinners`, ADR-015) + `tournament_closed` a TUTTI i partecipanti (profili con almeno un pick, vincitori inclusi), UNA sola volta
 - `unsubscribed` e `pending_unsubscribe` esclusi da OGNI email; nessun `round_closed_eliminated`, nessun criterio `eliminated_at >= opened_at`
 
 **Scheduler + simulazione (Task 10):**

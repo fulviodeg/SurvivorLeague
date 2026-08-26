@@ -14,8 +14,9 @@
  *   - `llm:generate --type <t> [--player-name] [--tt] [--tc] [--team]
  *     [--outcome] [--reason] [--deadline] [--available-teams]` — genera
  *     l'email dal contesto: output = SOGGETTO (subjectFor, forma UMANA
- *     "Round N · Turno di campionato M", ADR-011) + corpo RENDERIZZATO
- *     (header/box/CTA deterministici attorno alla narrativa LLM).
+ *     "Turno {TC} di Campionato - {etichetta}", ADR-013) + corpo RENDERIZZATO
+ *     (header "Round del torneo N · Turno di Campionato M"/box/CTA
+ *     deterministici attorno alla narrativa).
  *
  * Pattern CLI consolidato: il comando costruisce config → DB → provider e
  * inietta i parametri; i moduli LLM non accedono mai a DB/config (ADR-004).
@@ -27,6 +28,8 @@ import { DbSeasonDataProvider } from '../../data/db-provider.js';
 import { createConnection } from '../../db/connection.js';
 import { migrate } from '../../db/schema.js';
 import { EMAIL_TYPES, OpenAIGenerator, subjectFor, type EmailContext } from '../../llm/generator.js';
+import { DeterministicGenerator } from '../../llm/deterministic-generator.js';
+import { DeterministicIntentClassifier } from '../../llm/deterministic-parser.js';
 import { OpenAIIntentClassifier } from '../../llm/intent-classifier.js';
 import { OpenAIClient } from '../../llm/openai-client.js';
 import { loadTeamAliasesFor, OpenAIParser } from '../../llm/parser.js';
@@ -36,7 +39,7 @@ interface JsonArg {
   json: boolean;
 }
 
-export const llmParseCommand: CommandModule<object, JsonArg & { input: string }> = {
+export const llmParseCommand: CommandModule<object, JsonArg & { input: string; mode?: string }> = {
   command: 'llm:parse',
   describe:
     'Estrae {team, outcome} da testo libero (lista canonica da DB + team-aliases.md iniettati per chiamata, D2)',
@@ -51,6 +54,12 @@ export const llmParseCommand: CommandModule<object, JsonArg & { input: string }>
         type: 'string' as const,
         demandOption: true,
         describe: 'Testo dell\'email del giocatore da analizzare'
+      })
+      .option('mode', {
+        type: 'string' as const,
+        choices: ['llm', 'deterministic'],
+        describe:
+          'Modalità di estrazione: llm (LLM) o deterministic (formule univoche); default = AI_EMAIL_PARSER della config'
       }),
   handler: async (argv) => {
     const config = getConfig();
@@ -60,16 +69,21 @@ export const llmParseCommand: CommandModule<object, JsonArg & { input: string }>
       const provider = new DbSeasonDataProvider(db);
       const teams = await provider.getTeams();
       const aliases = await loadTeamAliasesFor(config.testMode);
-      const parser = new OpenAIParser(
-        new OpenAIClient({
-          baseUrl: config.LLM_API_BASE_URL,
-          apiKey: config.LLM_API_KEY,
-          models: config.LLM_MODEL,
-          timeoutMs: config.LLM_TIMEOUT_MS,
-          retries: config.LLM_RETRIES
-        })
-      );
-      const result = await parser.extractPick(argv.input, { teams, aliases, testMode: config.testMode });
+      const opts = { teams, aliases, testMode: config.testMode };
+      // `--mode` esplicito prevale sulla config; senza --mode si segue la config
+      // (default deterministico, email v3 Parte B).
+      const useLlm = argv.mode === 'llm' || (argv.mode === undefined && config.AI_EMAIL_PARSER);
+      const result = useLlm
+        ? await new OpenAIParser(
+            new OpenAIClient({
+              baseUrl: config.LLM_API_BASE_URL,
+              apiKey: config.LLM_API_KEY,
+              models: config.LLM_MODEL,
+              timeoutMs: config.LLM_TIMEOUT_MS,
+              retries: config.LLM_RETRIES
+            })
+          ).extractPick(argv.input, opts)
+        : (await new DeterministicIntentClassifier().classify(argv.input, opts)).pick;
       const output = result ?? { team: null };
       if (argv.json) {
         console.log(jsonWithTestMode(config, output));
@@ -113,12 +127,13 @@ export function classifyInputBody(input: string): string {
 
 interface ClassifyArgs extends JsonArg {
   input: string;
+  mode?: string;
 }
 
 export const llmClassifyCommand: CommandModule<object, ClassifyArgs> = {
   command: 'llm:classify',
   describe:
-    'Classifica {intent, pick} dal corpo del messaggio in UNA chiamata LLM (ADR-009); input JSON {"body": "..."} o testo libero',
+    'Classifica {intent, pick} dal corpo del messaggio (LLM, ADR-009, o deterministico con formule univoche); input JSON {"body": "..."} o testo libero',
   builder: (yargs: Argv<object>) =>
     yargs
       .option('json', {
@@ -130,6 +145,12 @@ export const llmClassifyCommand: CommandModule<object, ClassifyArgs> = {
         type: 'string' as const,
         demandOption: true,
         describe: 'Testo del messaggio o JSON {"body": "<testo>"} da classificare'
+      })
+      .option('mode', {
+        type: 'string' as const,
+        choices: ['llm', 'deterministic'],
+        describe:
+          'Modalità di classificazione: llm (LLM) o deterministic (formule univoche); default = AI_EMAIL_PARSER della config'
       }),
   handler: async (argv) => {
     const config = getConfig();
@@ -139,15 +160,20 @@ export const llmClassifyCommand: CommandModule<object, ClassifyArgs> = {
       const provider = new DbSeasonDataProvider(db);
       const teams = await provider.getTeams();
       const aliases = await loadTeamAliasesFor(config.testMode);
-      const classifier = new OpenAIIntentClassifier(
-        new OpenAIClient({
-          baseUrl: config.LLM_API_BASE_URL,
-          apiKey: config.LLM_API_KEY,
-          models: config.LLM_MODEL,
-          timeoutMs: config.LLM_TIMEOUT_MS,
-          retries: config.LLM_RETRIES
-        })
-      );
+      // `--mode` esplicito prevale sulla config; senza --mode si segue la config
+      // (default deterministico, email v3 Parte B).
+      const useLlm = argv.mode === 'llm' || (argv.mode === undefined && config.AI_EMAIL_PARSER);
+      const classifier = useLlm
+        ? new OpenAIIntentClassifier(
+            new OpenAIClient({
+              baseUrl: config.LLM_API_BASE_URL,
+              apiKey: config.LLM_API_KEY,
+              models: config.LLM_MODEL,
+              timeoutMs: config.LLM_TIMEOUT_MS,
+              retries: config.LLM_RETRIES
+            })
+          )
+        : new DeterministicIntentClassifier();
       const body = classifyInputBody(argv.input);
       const result = await classifier.classify(body, { teams, aliases, testMode: config.testMode });
       if (argv.json) {
@@ -178,6 +204,7 @@ interface GenerateArgs extends JsonArg {
   reason?: string;
   deadline?: string;
   availableTeams?: string;
+  mode?: string;
 }
 
 export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
@@ -214,6 +241,12 @@ export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
       .option('availableTeams', {
         type: 'string' as const,
         describe: 'Squadre disponibili separate da virgola'
+      })
+      .option('mode', {
+        type: 'string' as const,
+        choices: ['llm', 'deterministic'],
+        describe:
+          'Modalità di generazione: llm (narrativa LLM) o deterministic (testi fissi); default = AI_EMAIL_GENERATOR della config'
       }),
   handler: async (argv) => {
     const config = getConfig();
@@ -228,16 +261,22 @@ export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
       deadline: argv.deadline !== undefined ? new Date(argv.deadline) : undefined,
       availableTeams: argv.availableTeams?.split(',').map((t) => t.trim()).filter((t) => t !== '')
     };
-    const generator = new OpenAIGenerator(
-      new OpenAIClient({
-        baseUrl: config.LLM_API_BASE_URL,
-        apiKey: config.LLM_API_KEY,
-        models: config.LLM_MODEL,
-        timeoutMs: config.LLM_TIMEOUT_MS,
-        retries: config.LLM_RETRIES
-      }),
-      config.TIMEZONE
-    );
+    // `--mode` esplicito prevale sulla config (confronto delle due strade sullo
+    // stesso input senza toccare AI_EMAIL_GENERATOR); senza --mode si segue la
+    // config (default deterministico, email v3).
+    const useLlm = argv.mode === 'llm' || (argv.mode === undefined && config.AI_EMAIL_GENERATOR);
+    const generator = useLlm
+      ? new OpenAIGenerator(
+          new OpenAIClient({
+            baseUrl: config.LLM_API_BASE_URL,
+            apiKey: config.LLM_API_KEY,
+            models: config.LLM_MODEL,
+            timeoutMs: config.LLM_TIMEOUT_MS,
+            retries: config.LLM_RETRIES
+          }),
+          config.TIMEZONE
+        )
+      : new DeterministicGenerator(config.TIMEZONE);
     const body = await generator.generate(emailCtx);
     const subject = subjectFor(emailCtx);
     if (argv.json) {

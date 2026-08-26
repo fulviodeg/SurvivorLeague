@@ -98,6 +98,19 @@ describe('fetchUnseen — internaldate, corpo e id (ADR-001/D7)', () => {
     ]);
     const [message] = await fetchUnseen(conn);
     expect(message?.body).toBe('Solo oggetto');
+    expect(message?.subject).toBe('Solo oggetto');
+  });
+
+  it('email v3 Parte B: subject popolato da parsed.subject (indipendente dal corpo)', async () => {
+    const { conn } = fakeConn([
+      {
+        internalDate: new Date('2026-09-12T09:44:00.000Z'),
+        source: mime('Fri, 01 Jan 2021 08:00:00 +0000', 'm@x.it', 'Roma vince', 'ISCRIZIONE Mario')
+      }
+    ]);
+    const [message] = await fetchUnseen(conn);
+    expect(message?.body).toBe('Roma vince');
+    expect(message?.subject).toBe('ISCRIZIONE Mario');
   });
 
   it('mailbox vuota → nessun messaggio', async () => {

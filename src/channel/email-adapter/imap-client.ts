@@ -66,6 +66,7 @@ export async function fetchUnseen(
       from: parsed.from?.text ?? '',
       channel: 'email',
       body,
+      subject: parsed.subject,
       receivedAt
     });
   }

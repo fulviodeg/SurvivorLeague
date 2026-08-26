@@ -189,7 +189,7 @@ describe('channel:email:process — subscribe (RF-P1/P3, ADR-009)', () => {
     const account = platform.find('new@test.it');
     expect(account).toMatchObject({ status: 'active', registerId: 1 });
     expect(generator.contexts[0]).toMatchObject({ type: 'platform_registered' });
-    expect(channel.sent[0]?.subject).toBe('Survivor League — Iscrizione confermata');
+    expect(channel.sent[0]?.subject).toBe('⚽🏆SURVIVOR LEAGUE🏆⚽ - Iscrizione Confermata');
     expect(result.messages[0]).toMatchObject({ action: 'subscribed', seen: true });
     expect(seen).toEqual(['1']);
   });
@@ -239,7 +239,7 @@ describe('channel:email:process — subscribe (RF-P1/P3, ADR-009)', () => {
     expect(platform.find('a@test.it')?.status).toBe('active');
   });
 
-  it('mittente già active → soggetto "Survivor League — Già iscritto alla piattaforma" e action already_subscribed (A7/B6)', async () => {
+  it('mittente già active → soggetto "⚽🏆SURVIVOR LEAGUE🏆⚽ - Già Iscritto" e action already_subscribed (A7/B6)', async () => {
     const { ctx, platform, channel, generator, deps } = makeHarness();
     platform.register('a@test.it', null, T_OPEN);
     useClassifier(ctx, new Map([['mi iscrivo di nuovo', { intent: 'subscribe', pick: null, name: null }]]));
@@ -251,7 +251,7 @@ describe('channel:email:process — subscribe (RF-P1/P3, ADR-009)', () => {
     );
 
     expect(generator.contexts[0]).toMatchObject({ type: 'platform_already_registered' });
-    expect(channel.sent[0]?.subject).toBe('Survivor League — Già iscritto alla piattaforma');
+    expect(channel.sent[0]?.subject).toBe('⚽🏆SURVIVOR LEAGUE🏆⚽ - Già Iscritto');
     expect(result.messages[0]).toMatchObject({ action: 'already_subscribed', seen: true });
     expect(platform.list()).toHaveLength(1);
     expect(platform.find('a@test.it')?.status).toBe('active');
@@ -288,7 +288,7 @@ describe('channel:email:process — unsubscribe a due passi (RF-P2)', () => {
     expect(platform.find('a@test.it')?.status).toBe('pending_unsubscribe');
     expect(platform.find('a@test.it')?.unsubscribedAt).toBeNull();
     expect(generator.contexts[0]).toMatchObject({ type: 'platform_unsubscribe_confirm' });
-    expect(channel.sent[0]?.subject).toBe('Survivor League — Conferma la disiscrizione');
+    expect(channel.sent[0]?.subject).toBe('⚽🏆SURVIVOR LEAGUE🏆⚽ - Richiesta conferma disiscrizione');
     expect(result.messages[0]).toMatchObject({ action: 'unsubscribe_pending', seen: true });
     expect(seen).toEqual(['1']);
   });
@@ -449,7 +449,7 @@ describe('channel:email:process — pick (RF-P4/P5, auto-join)', () => {
     const stored = db.prepare('SELECT team, outcome, status FROM pick').get();
     expect(stored).toMatchObject({ team: JU, outcome: 'win', status: 'pending' });
     expect(generator.contexts[0]).toMatchObject({ type: 'pick_confirmed', round: 1, championshipRound: 1, deadline: new Date('2026-09-12T15:30:00.000Z') });
-    expect(channel.sent[0]?.subject).toBe('Survivor League — Round 1 · Turno di campionato 1: Pick registrato');
+    expect(channel.sent[0]?.subject).toBe('⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 1 di Campionato - Pick Registrato');
     expect(result.messages[0]).toMatchObject({ action: 'pick_registered', seen: true });
     expect(seen).toEqual(['1']);
   });
@@ -552,10 +552,10 @@ describe('channel:email:process — other, unknown, gate round (ADR-009)', () =>
     expect(channel.sent).toHaveLength(1); // solo il chiarimento al noto
     expect(channel.sent[0]?.to).toBe('a@test.it');
     // ADR-011 (Task 7): il chiarimento usa il tipo DEDICATO `clarification`
-    // (soggetto "Non ho capito", CTA con formula iscrizione col nome) con
-    // coppia umana e box deadline del round aperto.
+    // (soggetto "Non Ho Capito", CTA con formula iscrizione col nome) con
+    // turno di campionato e box deadline del round aperto.
     expect(channel.sent[0]?.subject).toBe(
-      'Survivor League — Round 1 · Turno di campionato 1: Non ho capito'
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 1 di Campionato - Non Ho Capito'
     );
     expect(generator.contexts[0]).toMatchObject({
       type: 'clarification',
@@ -621,6 +621,29 @@ describe('channel:email:process — other, unknown, gate round (ADR-009)', () =>
     expect(channel.sent).toHaveLength(0);
     expect(classifier.calls).toHaveLength(0);
     expect(seen).toEqual(['1']);
+  });
+
+  it('email v3 Parte B: subject non vuoto + corpo vuoto → classified e subject passato al classificatore', async () => {
+    const { ctx, deps } = makeHarness();
+    const classifier = useClassifier(ctx, new Map());
+
+    await processEmailBatch(
+      ctx,
+      [
+        {
+          from: 'mario@test.it',
+          channel: 'email',
+          body: '   ',
+          subject: 'ISCRIZIONE Mario',
+          receivedAt: T_PICK,
+          id: '1'
+        }
+      ],
+      deps()
+    );
+
+    expect(classifier.calls).toHaveLength(1);
+    expect(classifier.calls[0]?.subject).toBe('ISCRIZIONE Mario');
   });
 
   it('pick da active senza round aperto → round_not_open (il ramo pick richiede un round)', async () => {

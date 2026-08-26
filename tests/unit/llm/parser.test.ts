@@ -209,11 +209,11 @@ describe('Selezione risorsa alias in base al test mode (Task 0.4, D7)', () => {
     expect(content).not.toContain('US Cremonese');
   });
 
-  it('loadTeamAliasesFor(true) → risorsa sintetica (Serie B)', async () => {
+  it('loadTeamAliasesFor(true) → risorsa sintetica (rosa Serie A del calendario sintetico)', async () => {
     const content = await loadTeamAliasesFor(true);
-    expect(content).toContain('US Cremonese');
-    expect(content).toContain('Serie B');
-    expect(content).not.toContain('Juventus FC');
+    expect(content).toContain('AC Pisa 1909'); // promossa: nel calendario sintetico, non in produzione
+    expect(content).toContain('US Sassuolo Calcio');
+    expect(content).not.toContain('Empoli FC'); // retrocessa: solo nella risorsa di produzione
   });
 });
 
@@ -227,11 +227,11 @@ describe('buildParseSystemPrompt — contesto lega in test mode (Task 0.4, D7)',
     expect(prompt).not.toContain('campionato sintetico');
   });
 
-  it('testMode=true → prompt chiarisce la lega sintetica (Serie B, NON Serie A)', () => {
+  it('testMode=true → prompt chiarisce la lega sintetica (rosa Serie A, stagione fittizia)', () => {
     const prompt = buildParseSystemPrompt({ ...basicOpts, testMode: true });
-    expect(prompt).toContain('Serie B');
     expect(prompt).toContain('campionato sintetico');
-    expect(prompt).toContain('club cadetti, NON di Serie A');
-    expect(prompt).not.toContain('pronostici sulla Serie A');
+    expect(prompt).toContain('rosa di Serie A 2025/26');
+    expect(prompt).toContain('stagione fittizia di test, NON la stagione reale');
+    expect(prompt).not.toContain('pronostici sulla Serie A.');
   });
 });

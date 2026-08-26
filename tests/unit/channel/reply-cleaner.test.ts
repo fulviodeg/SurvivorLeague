@@ -15,8 +15,8 @@ import { describe, expect, it } from 'vitest';
 import { SYSTEM_EMAIL_SEPARATOR, extractPlayerReply } from '../../../src/channel/email-adapter/reply-cleaner.js';
 
 describe('SYSTEM_EMAIL_SEPARATOR (D2/D9)', () => {
-  it('è la stringa provvisoria condivisa tra invio e ricezione', () => {
-    expect(SYSTEM_EMAIL_SEPARATOR).toBe('───');
+  it('è la stringa di brand condivisa tra invio e ricezione', () => {
+    expect(SYSTEM_EMAIL_SEPARATOR).toBe('─── Survivor League ───');
   });
 });
 

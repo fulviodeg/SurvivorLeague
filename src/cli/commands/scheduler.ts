@@ -70,7 +70,7 @@ function makeSchedulerContext(): {
   // Manager (es. riepilogo non inviato a un destinatario durante
   // round:score, B2 decisione (b)) restano visibili nei log del tick senza
   // far fallire l'azione.
-  const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode, config.TIMEZONE);
+  const logger = createLogger(config.LOG_LEVEL, undefined, config.testMode, config.TIMEZONE, config.LOG_FILE);
   const base: GameContext = { db, dataProvider, config, now: makeNow(config), logger };
   // Seam di archiviazione iniettato (ADR-011 §1.3): la chiusura automatica in
   // produzione scrive l'export in TOURNAMENT_EXPORT_DIR.

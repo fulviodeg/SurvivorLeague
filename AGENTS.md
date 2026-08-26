@@ -78,6 +78,7 @@ The live project status (phase, work plan, checkpoints, next step) is kept in `a
 
 - After every **substantial change** or **key step** in the project's progress (updated design, recorded ADR decision, implemented feature, completed milestone, priority change), update the **Current status** file (`agent-context/current-status.md`, referenced from §1.7): bump its `Last updated` timestamp and append an ISO-8601 UTC changelog entry summarizing the change, keeping it consistent with the documentation map above (§1.6).
 - Status must never be left behind: every agent that touches the project must check whether its work requires an update to `agent-context/current-status.md` and, if so, apply it in the same session.
+- **Never update the status while executing tests/UAT sessions** (test mode, seeds, registrations, runs, results): tests are ephemeral activities that do not change the project, so they require no changelog entry. Update `agent-context/current-status.md` **only** when modifying project files and source code (implemented features, fixes, design/ADR changes).
 
 ### 1. Think before coding
 

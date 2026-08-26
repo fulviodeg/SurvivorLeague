@@ -15,13 +15,14 @@
  *   - i TIPI condivisi (`EmailType`, `EmailContext`, `LLMGenerator`), usati
  *     dal Game Engine e mockati nei suoi test;
  *   - l'helper puro `subjectFor(ctx)` (D1): soggetto deterministico in forma
- *     UMANA "Survivor League — Round N · Turno di campionato M: etichetta"
- *     (coppia assente → senza prefisso). MAI dall'LLM, MAI sigle TT/TC
- *     (RF-25, convenzione 1/4 approvata: soggetti neutri per gli esiti);
+ *     "⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - etichetta" (TC
+ *     assente → senza prefisso di turno; il subject porta il SOLO turno di
+ *     campionato, la coppia TT/TC resta nel corpo). MAI dall'LLM, MAI sigle
+ *     TT/TC (RF-25, convenzione 1/4 approvata: soggetti neutri per gli esiti);
  *   - la guardia anti-degenerazione `deterministicNarrative` (+ costante
  *     `MAX_NARRATIVE_CHARS`): l'output LLM è validato (lunghezza, non vuoto)
- *     e, se degenerato/vuoto, sostituito dal fallback fisso per tipo
- *     (`FALLBACK_NARRATIVES`, src/llm/templates.ts) — MAI spazzatura;
+ *     e, se degenerato/vuoto, sostituito dalla narrativa deterministica per
+ *     tipo (`DETERMINISTIC_NARRATIVES`, src/llm/templates.ts) — MAI spazzatura;
  *   - l'implementazione POC `OpenAIGenerator` (API OpenAI-compatibile):
  *     template di sistema (src/llm/templates.ts) + contesto serializzato →
  *     chiamata al client condiviso → guardia → composizione `renderEmailV2(ctx,
@@ -32,7 +33,7 @@
  * chiamante (CLI/wiring); errori di trasporto → `LLMError` rilanciata (D3,
  * mai silenziosa: il chiamante decide se notificare).
  */
-import { EMAIL_TEMPLATES, FALLBACK_NARRATIVES, serializeEmailContext } from './templates.js';
+import { DETERMINISTIC_NARRATIVES, EMAIL_TEMPLATES, serializeEmailContext } from './templates.js';
 import { renderEmailV2 } from './email-renderer.js';
 import { OpenAIClient } from './openai-client.js';
 
@@ -53,7 +54,8 @@ export const EMAIL_TYPES = [
   'round_closed_survived', // riepilogo chiusura round ai SOLI sopravvissuti (RF-P6)
   'tournament_won', // vittoria del torneo
   'tournament_shared_win', // vittoria condivisa
-  'clarification' // chiarimento su messaggio non interpretabile (ADR-011, Task 7)
+  'clarification', // chiarimento su messaggio non interpretabile (ADR-011, Task 7)
+  'tournament_closed' // chiusura torneo con storico per-round (ADR-015, email v4)
 ] as const;
 
 /** Tipi di email previsti dal POC. */
@@ -77,6 +79,32 @@ export interface EmailBurnedTeam {
   team: string;
   /** Round del torneo (TT) in cui è stata usata. */
   round: number;
+}
+
+/**
+ * Giocatore in un elenco nominativo retrospettivo (ADR-015 email v4): usato
+ * dal riepilogo `round_closed_survived` e dallo storico `tournament_closed`.
+ * Dati SOLO LETTI dal Game Engine (pick/profile/player), mai generati.
+ */
+export interface EmailPlayerResult {
+  /** Nome del giocatore (fallback sull'email quando il nome è assente). */
+  name: string;
+  /** Squadra del pick nel round (assente = nessun pick). */
+  team?: string;
+  /** Esito previsto del pick (win|draw|lose; assente = nessun pick). */
+  outcome?: string;
+  /** true = eliminato IN QUESTO round; false = ancora in gara. */
+  eliminated: boolean;
+}
+
+/** Storico per-round del torneo per `tournament_closed` (ADR-015 email v4). */
+export interface EmailTournamentRound {
+  /** Round del TORNEO (TT). */
+  round: number;
+  /** Turno di CAMPIONATO (TC). */
+  championshipRound: number;
+  /** Partecipanti del round (stesso formato di `EmailPlayerResult`). */
+  players: EmailPlayerResult[];
 }
 
 /**
@@ -128,6 +156,24 @@ export interface EmailContext {
   /** Esito del pick per le mail di esito round (correct/wrong/missing). */
   playerResult?: 'correct' | 'wrong' | 'missing';
   /**
+   * Elenco nominativo dei giocatori del round (ADR-015 email v4, carve-out
+   * della convenzione 6): SOLO per `round_closed_survived` e `tournament_closed`
+   * (retrospettive informative). Assente → il renderer omette la sezione e le
+   * mail restano sui soli conteggi aggregati.
+   */
+  players?: EmailPlayerResult[];
+  /**
+   * Nomi degli ALTRI vincitori (escluso il destinatario) per
+   * `tournament_shared_win` (ADR-015 email v4). Assente → sezione omessa;
+   * `tournament_won` (vittoria unica) non la imposta.
+   */
+  coWinners?: string[];
+  /**
+   * Storico per-round del torneo per `tournament_closed` (ADR-015 email v4):
+   * il renderer produce la sezione `📜 STORICO DEL TORNEO`. Assente → omessa.
+   */
+  tournamentHistory?: EmailTournamentRound[];
+  /**
    * Oggetto esplicito opzionale (D1): se presente, `subjectFor(ctx)` lo usa
    * al posto dell'etichetta composta; chi non lo imposta ottiene il soggetto
    * deterministico standard.
@@ -145,44 +191,47 @@ export interface LLMGenerator {
  * Etichetta del soggetto per ogni tipo di email (deterministica, D1).
  * Convenzione 4 (approvata): i soggetti delle mail di ESITO round sono
  * NEUTRI — non rivelano se il giocatore è ancora in gara o eliminato:
- * `round_closed_survived` usa "riepilogo del round", gli esiti
+ * `round_closed_survived` usa "Riepilogo Round", gli esiti
  * (`round_result_correct`/`round_result_wrong`/`pick_missing_elimination`)
- * usano "esito del round".
+ * usano "Esito Round". Etichette iper-condensate, senza articoli/preposizioni
+ * (email v3).
  */
 const SUBJECT_LABELS: Record<EmailType, string> = {
-  platform_registered: 'Iscrizione confermata',
-  platform_unsubscribe_confirm: 'Conferma la disiscrizione',
-  platform_unsubscribed: 'Disiscrizione confermata',
-  platform_already_registered: 'Già iscritto alla piattaforma',
-  tournament_open: 'Il torneo è aperto',
-  pick_instructions: 'Invia il tuo pick',
-  pick_confirmed: 'Pick registrato',
-  pick_rejected: 'Pick non registrato',
-  pick_missing_elimination: 'Esito del round',
-  round_result_correct: 'Esito del round',
-  round_result_wrong: 'Esito del round',
-  pick_postponed: 'Partita rinviata',
-  round_closed_survived: 'Riepilogo del round',
-  tournament_won: 'Hai vinto il torneo',
-  tournament_shared_win: 'Vittoria condivisa',
-  clarification: 'Non ho capito'
+  platform_registered: 'Iscrizione Confermata',
+  platform_unsubscribe_confirm: 'Richiesta conferma disiscrizione',
+  platform_unsubscribed: 'Disiscrizione Confermata',
+  platform_already_registered: 'Già Iscritto',
+  tournament_open: 'Torneo Aperto',
+  pick_instructions: 'Round Aperto',
+  pick_confirmed: 'Pick Registrato',
+  pick_rejected: 'Pick Rifiutato',
+  pick_missing_elimination: 'Esito Round',
+  round_result_correct: 'Esito Round',
+  round_result_wrong: 'Esito Round',
+  pick_postponed: 'Partita Rinviata',
+  round_closed_survived: 'Riepilogo Round',
+  tournament_won: 'Hai Vinto',
+  tournament_shared_win: 'Vittoria Condivisa',
+  clarification: 'Non Ho Capito',
+  tournament_closed: 'Chiusura Torneo'
 };
 
 /**
- * Compone il soggetto dell'email in modo DETERMINISTICO (D1, RF-25) in
- * forma UMANA (convenzione 1: mai sigle TT/TC nelle email):
- * "Survivor League — Round N · Turno di campionato M: {etichetta}";
- * coppia assente → "Survivor League — {etichetta}". Mai dall'LLM, mai
- * numeri inventati. `ctx.subject` esplicito ha priorità.
+ * Compone il soggetto dell'email in modo DETERMINISTICO (D1, RF-25) in forma
+ * "⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - {etichetta}"; TC
+ * assente → "⚽🏆SURVIVOR LEAGUE🏆⚽ - {etichetta}". Il subject porta il SOLO
+ * turno di campionato (TC): la coppia "Round N · Turno di campionato M" resta
+ * nel corpo (renderer). Mai dall'LLM, mai numeri inventati. `ctx.subject`
+ * esplicito ha priorità.
  */
 export function subjectFor(ctx: EmailContext): string {
   if (ctx.subject !== undefined && ctx.subject.trim() !== '') return ctx.subject;
   const label = SUBJECT_LABELS[ctx.type];
-  const pair =
-    ctx.round !== undefined && ctx.championshipRound !== undefined
-      ? `Round ${ctx.round} · Turno di campionato ${ctx.championshipRound}: `
+  const turno =
+    ctx.championshipRound !== undefined
+      ? `Turno ${ctx.championshipRound} di Campionato - `
       : '';
-  return `Survivor League — ${pair}${label}`;
+  return `⚽🏆SURVIVOR LEAGUE🏆⚽ - ${turno}${label}`;
 }
 
 /**
@@ -200,15 +249,15 @@ export const MAX_NARRATIVE_CHARS = 1000;
 /**
  * Guardia sull'output dell'LLM (pura): accetta SOLO narrativa non vuota e
  * entro `MAX_NARRATIVE_CHARS`; in ogni altro caso (vuoto, whitespace, dump
- * enormi o illeggibili) ripiega sul testo NARRATIVO FISSO per tipo
- * (`FALLBACK_NARRATIVES`): mai spedire spazzatura al giocatore. Il fallback
- * è DETERMINISTICO (nessuna chiamata LLM di ripiego, nessuna invenzione:
- * il renderer compone comunque box/CTA dai dati iniettati).
+ * enormi o illeggibili) ripiega sul testo NARRATIVO DETERMINISTICO per tipo
+ * (`DETERMINISTIC_NARRATIVES`): mai spedire spazzatura al giocatore. Il
+ * fallback è DETERMINISTICO (nessuna chiamata LLM di ripiego, nessuna
+ * invenzione: il renderer compone comunque sezioni/CTA dai dati iniettati).
  */
 export function deterministicNarrative(ctx: EmailContext, raw: string): string {
   const trimmed = raw.trim();
   if (trimmed === '' || trimmed.length > MAX_NARRATIVE_CHARS) {
-    return FALLBACK_NARRATIVES[ctx.type];
+    return DETERMINISTIC_NARRATIVES[ctx.type];
   }
   return trimmed;
 }

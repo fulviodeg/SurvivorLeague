@@ -18,8 +18,8 @@ import type { IncomingMessage } from '../../../src/channel/adapter.js';
 import { classify, normalizeEmail } from '../../../src/channel/email-adapter/message-router.js';
 
 /** Messaggio di test con mittente grezzo (possibile display name). */
-function msg(from: string, body: string): IncomingMessage {
-  return { from, channel: 'email', body, receivedAt: new Date('2026-09-12T10:00:00.000Z') };
+function msg(from: string, body: string, subject?: string): IncomingMessage {
+  return { from, channel: 'email', body, subject, receivedAt: new Date('2026-09-12T10:00:00.000Z') };
 }
 
 describe('normalizeEmail (K)', () => {
@@ -60,6 +60,25 @@ describe('classify (ADR-009) — preparazione senza decisione di intento', () =>
   it('corpo vuoto o mittente vuoto → unknown (nessuna chiamata LLM)', () => {
     expect(classify(msg('a@test.it', '   ')).kind).toBe('unknown');
     expect(classify(msg('', 'Juventus win')).kind).toBe('unknown');
+  });
+
+  it('email v3 Parte B: subject non vuoto + corpo vuoto → classified con subject propagato', () => {
+    const routed = classify(msg('a@test.it', '   ', 'ISCRIZIONE Mario'));
+    expect(routed).toMatchObject({
+      kind: 'classified',
+      identity: { channel: 'email', identifier: 'a@test.it' },
+      subject: 'ISCRIZIONE Mario'
+    });
+  });
+
+  it('email v3 Parte B: subject e corpo entrambi vuoti → unknown', () => {
+    expect(classify(msg('a@test.it', '  ', '   ')).kind).toBe('unknown');
+  });
+
+  it('email v3 Parte B: subject propagato anche con corpo non vuoto', () => {
+    const routed = classify(msg('a@test.it', 'Roma vince', 'Pick'));
+    expect(routed.kind).toBe('classified');
+    expect(routed.subject).toBe('Pick');
   });
 
   it('corpo trimmato per il classificatore', () => {

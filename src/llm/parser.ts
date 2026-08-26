@@ -7,8 +7,9 @@
  * risorsa alias sono INIETTATI PER CHIAMATA (`PickParseOptions`, D2/E):
  * l'import stagionale può cambiare le squadre a metà torneo e la risorsa
  * alias è editabile a mano senza ricompilare. In test mode (D7) la CLI
- * inietta la risorsa alias SINTETICA (Serie B) e il flag `testMode`, che fa
- * chiarire al prompt la lega sintetica (mai mischiare Serie A e B, CS7).
+ * inietta la risorsa alias SINTETICA (rosa di Serie A 2025/26 del calendario
+ * sintetico) e il flag `testMode`, che fa chiarire al prompt la lega
+ * sintetica (mai mischiare calendario sintetico e stagione reale, CS7).
  *
  * Doppia barriera (D2/C): il filtro deterministico esatto (squadra non nella
  * lista → null) vive nel classificatore di intento (confine I/O: nessun nome
@@ -45,10 +46,18 @@ export interface PickParseOptions {
   aliases: string;
   /**
    * Test mode (D7): quando `true` la lista canonica è il calendario sintetico
-   * di Serie B e il prompt chiarisce la lega (NON Serie A). Default assente =
-   * produzione (Serie A). Iniettato dalla CLI, mai letto da config qui.
+   * (rosa di Serie A 2025/26 del calendario sintetico) e il prompt chiarisce
+   * la lega sintetica (non la stagione reale). Default assente = produzione.
+   * Iniettato dalla CLI, mai letto da config qui.
    */
   testMode?: boolean;
+  /**
+   * Oggetto dell'email (opzionale, email v3 Parte B): usato SOLO dal parser
+   * deterministico (`DeterministicIntentClassifier`) per riconoscere le
+   * formule `ISCRIZIONE [NOME]`/`DISISCRIZIONE`/`<TEAM> <ESITO>` nel subject;
+   * il classificatore LLM NON lo inietta nel prompt (comportamento invariato).
+   */
+  subject?: string;
 }
 
 /** Contratto del Parser (LLD §6.2): mai eccezioni per il contenuto, LLMError per il trasporto. */
@@ -59,13 +68,13 @@ export interface LLMParser {
 
 /** Percorso della risorsa alias di PRODUZIONE (Serie A 2025/26, legata all'API). */
 const PROD_ALIASES_URL = new URL('./team-aliases.md', import.meta.url);
-/** Percorso della risorsa alias SINTETICA (Serie B, test-only, NON legata all'API). */
+/** Percorso della risorsa alias SINTETICA (rosa Serie A 2025/26, test-only). */
 const SYNTHETIC_ALIASES_URL = new URL('./team-aliases-synthetic.md', import.meta.url);
 
 /**
  * Carica la risorsa alias per il prompt in base al test mode (D7): in test
- * mode restituisce la risorsa sintetica (`team-aliases-synthetic.md`, Serie B),
- * altrimenti quella di produzione (`team-aliases.md`, Serie A). Usa
+ * mode restituisce la risorsa sintetica (`team-aliases-synthetic.md`, rosa
+ * Serie A 2025/26), altrimenti quella di produzione (`team-aliases.md`). Usa
  * `new URL(..., import.meta.url)`: indipendente dalla cwd del processo (il
  * build `tsc` non copia asset .md — in POC si gira via tsx dalla root, LLD §5).
  */
@@ -87,10 +96,11 @@ export async function loadTeamAliasesFor(testMode: boolean): Promise<string> {
 export function buildParseSystemPrompt(opts: PickParseOptions): string {
   const list = opts.teams.map((t, i) => `${i + 1}. ${t}`).join('\n');
   // Contesto lega (D7): in test mode la lista canonica è il calendario
-  // sintetico di Serie B, NON la Serie A — va dichiarato per non confondere
-  // l'LLM e preservare la robustezza CS7 (mai mischiare i due campionati).
+  // sintetico (rosa di Serie A, stagione sintetica) — NON la stagione reale
+  // importata — va dichiarato per non confondere l'LLM e preservare la
+  // robustezza CS7 (mai mischiare i due domini).
   const league = opts.testMode
-    ? 'un torneo privato di pronostici basato su un campionato sintetico di Serie B (nomi di club cadetti, NON di Serie A).'
+    ? 'un torneo privato di pronostici basato su un campionato sintetico (rosa di Serie A 2025/26, stagione fittizia di test, NON la stagione reale).'
     : 'un torneo privato di pronostici sulla Serie A.';
   return [
     `Sei il parser di Survivor League, ${league}`,
