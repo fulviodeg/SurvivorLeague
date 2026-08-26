@@ -1052,8 +1052,8 @@ llm:generate --type <type> [--player-name <n>] [--tt <n>] [--tc <n>] [--team <t>
 
 **Purpose.** Generates an email from a structured context: the deterministic
 subject (`⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - {etichetta}`; the
-subject carries only the championship round, the "Round N · Turno di
-campionato M" pair stays in the body) plus the rendered body (fixed header,
+subject carries only the championship round, the "Round del torneo N · Turno di
+Campionato M" pair stays in the body) plus the rendered body (fixed header,
 plain-text sections with emoji + UPPERCASE titles, key message and
 call-to-action around the narrative). By default the narrative is
 deterministic (`AI_EMAIL_GENERATOR=false`); with `--mode llm` the LLM writes
@@ -1065,7 +1065,7 @@ deterministically. Diagnostic tool to preview any of the email types.
 
 | Option | Type | Description |
 |---|---|---|
-| `--type` | string, **required** | Email type. Allowed values: `platform_registered`, `platform_unsubscribe_confirm`, `platform_unsubscribed`, `platform_already_registered`, `tournament_open`, `pick_instructions`, `pick_confirmed`, `pick_rejected`, `pick_missing_elimination`, `round_result_correct`, `round_result_wrong`, `pick_postponed`, `round_closed_survived`, `tournament_won`, `tournament_shared_win`, `clarification`. |
+| `--type` | string, **required** | Email type. Allowed values: `platform_registered`, `platform_unsubscribe_confirm`, `platform_unsubscribed`, `platform_already_registered`, `tournament_open`, `pick_instructions`, `pick_confirmed`, `pick_rejected`, `pick_missing_elimination`, `round_result_correct`, `round_result_wrong`, `pick_postponed`, `round_closed_survived`, `tournament_won`, `tournament_shared_win`, `clarification`, `tournament_closed`. |
 | `--player-name` | string | Player name to address the email to. |
 | `--tt` | number | Tournament round (TT) shown in the body header. |
 | `--tc` | number | Championship round (TC) shown in the subject and body header. |

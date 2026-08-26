@@ -54,7 +54,8 @@ export const EMAIL_TYPES = [
   'round_closed_survived', // riepilogo chiusura round ai SOLI sopravvissuti (RF-P6)
   'tournament_won', // vittoria del torneo
   'tournament_shared_win', // vittoria condivisa
-  'clarification' // chiarimento su messaggio non interpretabile (ADR-011, Task 7)
+  'clarification', // chiarimento su messaggio non interpretabile (ADR-011, Task 7)
+  'tournament_closed' // chiusura torneo con storico per-round (ADR-015, email v4)
 ] as const;
 
 /** Tipi di email previsti dal POC. */
@@ -78,6 +79,32 @@ export interface EmailBurnedTeam {
   team: string;
   /** Round del torneo (TT) in cui è stata usata. */
   round: number;
+}
+
+/**
+ * Giocatore in un elenco nominativo retrospettivo (ADR-015 email v4): usato
+ * dal riepilogo `round_closed_survived` e dallo storico `tournament_closed`.
+ * Dati SOLO LETTI dal Game Engine (pick/profile/player), mai generati.
+ */
+export interface EmailPlayerResult {
+  /** Nome del giocatore (fallback sull'email quando il nome è assente). */
+  name: string;
+  /** Squadra del pick nel round (assente = nessun pick). */
+  team?: string;
+  /** Esito previsto del pick (win|draw|lose; assente = nessun pick). */
+  outcome?: string;
+  /** true = eliminato IN QUESTO round; false = ancora in gara. */
+  eliminated: boolean;
+}
+
+/** Storico per-round del torneo per `tournament_closed` (ADR-015 email v4). */
+export interface EmailTournamentRound {
+  /** Round del TORNEO (TT). */
+  round: number;
+  /** Turno di CAMPIONATO (TC). */
+  championshipRound: number;
+  /** Partecipanti del round (stesso formato di `EmailPlayerResult`). */
+  players: EmailPlayerResult[];
 }
 
 /**
@@ -129,6 +156,24 @@ export interface EmailContext {
   /** Esito del pick per le mail di esito round (correct/wrong/missing). */
   playerResult?: 'correct' | 'wrong' | 'missing';
   /**
+   * Elenco nominativo dei giocatori del round (ADR-015 email v4, carve-out
+   * della convenzione 6): SOLO per `round_closed_survived` e `tournament_closed`
+   * (retrospettive informative). Assente → il renderer omette la sezione e le
+   * mail restano sui soli conteggi aggregati.
+   */
+  players?: EmailPlayerResult[];
+  /**
+   * Nomi degli ALTRI vincitori (escluso il destinatario) per
+   * `tournament_shared_win` (ADR-015 email v4). Assente → sezione omessa;
+   * `tournament_won` (vittoria unica) non la imposta.
+   */
+  coWinners?: string[];
+  /**
+   * Storico per-round del torneo per `tournament_closed` (ADR-015 email v4):
+   * il renderer produce la sezione `📜 STORICO DEL TORNEO`. Assente → omessa.
+   */
+  tournamentHistory?: EmailTournamentRound[];
+  /**
    * Oggetto esplicito opzionale (D1): se presente, `subjectFor(ctx)` lo usa
    * al posto dell'etichetta composta; chi non lo imposta ottiene il soggetto
    * deterministico standard.
@@ -167,7 +212,8 @@ const SUBJECT_LABELS: Record<EmailType, string> = {
   round_closed_survived: 'Riepilogo Round',
   tournament_won: 'Hai Vinto',
   tournament_shared_win: 'Vittoria Condivisa',
-  clarification: 'Non Ho Capito'
+  clarification: 'Non Ho Capito',
+  tournament_closed: 'Chiusura Torneo'
 };
 
 /**

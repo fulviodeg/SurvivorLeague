@@ -1,19 +1,20 @@
 /**
- * Test del renderer deterministico del canale email (email v3, Task 2).
+ * Test del renderer deterministico del canale email (email v3 + v4, Task 2).
  *
  * Funzione pura (`renderEmailV2`): nessun clock, nessun DB — date e fuso
- * iniettati. Il piano email-v3 richiede gli OUTPUT ESATTI dei 16 template:
+ * iniettati. Il piano email-v3/v4 richiede gli OUTPUT ESATTI dei 17 template:
  * nessun riquadro ASCII (`╔ ═ ╗ ║ ╚ ─`), messaggio chiave `keyMessage` in
  * MAIUSCOLO, sezioni a righe con titolo emoji + MAIUSCOLO (esito ✅/❌,
  * deadline con data+countdown sulla stessa riga, partite/risultati, squadre
- * già usate "(Round N)", stato aggregato), CTA per tipo, chiusura fissa
- * dell'eliminato. Ogni `it` asserisce l'intero corpo per un tipo, con i dati
- * di esempio del piano.
+ * già usate "(Round N)", stato aggregato), elenco giocatori (ADR-015),
+ * co-vincitori (ADR-015), storico torneo (ADR-015), CTA per tipo, chiusura
+ * fissa dell'eliminato. Ogni `it` asserisce l'intero corpo per un tipo, con i
+ * dati di esempio del piano.
  */
 import { describe, expect, it } from 'vitest';
 
 import { renderEmailV2 } from '../../../src/llm/email-renderer.js';
-import type { EmailContext } from '../../../src/llm/generator.js';
+import { EMAIL_TYPES, type EmailContext, type EmailType } from '../../../src/llm/generator.js';
 
 const ROME = 'Europe/Rome';
 
@@ -22,8 +23,8 @@ const DEADLINE = new Date('2026-09-19T15:30:00.000Z');
 /** Riga deadline attesa: data it-IT + countdown sulla stessa riga. */
 const DEADLINE_LINE = 'sabato 19 settembre 2026 alle ore 17:30 · Mancano circa 2 ore';
 
-/** Coppia umana header (round 3 · turno di campionato 5). */
-const HEADER = 'Round 3 · Turno di campionato 5';
+/** Coppia umana header (round del torneo 3 · turno di campionato 5). */
+const HEADER = 'Round del torneo 3 · Turno di Campionato 5';
 
 /** Partite in programma (senza punteggio) per le istruzioni pick. */
 const UPCOMING_MATCHES = [
@@ -45,7 +46,7 @@ const BURNED = [
   { team: 'Inter', round: 2 }
 ];
 
-describe('renderEmailV2 (email v3) — output esatto per i 16 template', () => {
+describe('renderEmailV2 (email v3/v4) — output esatto per i 17 template', () => {
   it('platform_registered', () => {
     const body = renderEmailV2(
       { type: 'platform_registered', playerName: 'Mario' },
@@ -183,17 +184,14 @@ describe('renderEmailV2 (email v3) — output esatto per i 16 template', () => {
       team: 'Roma',
       outcome: 'win'
     };
-    const body = renderEmailV2(
-      ctx,
-      'Puoi correggere la scelta rispondendo con un nuovo pick finché il round è aperto.',
-      ROME
-    );
+    // D1: narrativa deterministica VUOTA → nessuna frase di correzione, solo
+    // il messaggio chiave + deadline in coda.
+    const body = renderEmailV2(ctx, '', ROME);
     expect(body).toBe(
       [
         HEADER,
         'Ciao Mario!',
         'PICK REGISTRATO → ROMA → VITTORIA',
-        'Puoi correggere la scelta rispondendo con un nuovo pick finché il round è aperto.',
         '',
         '⏰ DEADLINE PICK',
         DEADLINE_LINE
@@ -343,11 +341,17 @@ describe('renderEmailV2 (email v3) — output esatto per i 16 template', () => {
       playerName: 'Mario',
       round: 3,
       championshipRound: 5,
-      inGameCount: 13,
-      eliminatedWrong: 3,
+      matches: RESULT_MATCHES,
+      players: [
+        { name: 'Mario Rossi', team: 'Roma', outcome: 'win', eliminated: false },
+        { name: 'Sara Verdi', team: 'Inter', outcome: 'draw', eliminated: false },
+        { name: 'Luca Bianchi', eliminated: true }
+      ],
+      inGameCount: 2,
+      eliminatedWrong: 0,
       eliminatedMissing: 1
     };
-    // Narrativa vuota → blocco omesso.
+    // Narrativa vuota → blocco omesso; elenco giocatori (ADR-015) tra risultati e stato.
     const body = renderEmailV2(ctx, '   ', ROME);
     expect(body).toBe(
       [
@@ -356,8 +360,18 @@ describe('renderEmailV2 (email v3) — output esatto per i 16 template', () => {
         '',
         'ROUND CHIUSO: SEI ANCORA IN GARA!',
         '',
+        '⚽ RISULTATI DEL ROUND',
+        'Roma - Genoa: 2-1',
+        'Cagliari - Como: 0-0',
+        'Torino - Lecce: 1-3',
+        '',
+        '👥 GIOCATORI DEL ROUND',
+        'Mario Rossi — Roma · vittoria — ✅ ancora in gara',
+        'Sara Verdi — Inter · pareggio — ✅ ancora in gara',
+        'Luca Bianchi — nessun pick — ❌ eliminato',
+        '',
         '📊 STATO DEL TORNEO',
-        'In gara: 13 · Eliminati: 4 (3 pick sbagliati · 1 senza pick)',
+        'In gara: 2 · Eliminati: 1 (1 senza pick)',
         '',
         '📌 PROSSIMO PASSO',
         "Le istruzioni per il prossimo pick arriveranno all'apertura del prossimo round."
@@ -390,7 +404,8 @@ describe('renderEmailV2 (email v3) — output esatto per i 16 template', () => {
       type: 'tournament_shared_win',
       playerName: 'Mario',
       round: 3,
-      championshipRound: 5
+      championshipRound: 5,
+      coWinners: ['Sara Verdi', 'Luca Bianchi']
     };
     const body = renderEmailV2(
       ctx,
@@ -403,6 +418,10 @@ describe('renderEmailV2 (email v3) — output esatto per i 16 template', () => {
         'Ciao Mario!',
         '🏆 VITTORIA CONDIVISA!',
         'Insieme ai tuoi compagni di vetta avete portato a casa il torneo.',
+        '',
+        '🤝 HAI CONDIVISO LA VITTORIA CON',
+        'Sara Verdi',
+        'Luca Bianchi',
         '',
         '🎉 Festeggiate, ve lo siete meritato!'
       ].join('\n')
@@ -438,10 +457,56 @@ describe('renderEmailV2 (email v3) — output esatto per i 16 template', () => {
       ].join('\n')
     );
   });
+
+  it('tournament_closed', () => {
+    const ctx: EmailContext = {
+      type: 'tournament_closed',
+      playerName: 'Mario',
+      tournamentHistory: [
+        {
+          round: 1,
+          championshipRound: 5,
+          players: [
+            { name: 'Mario Rossi', team: 'Roma', outcome: 'win', eliminated: false },
+            { name: 'Sara Verdi', team: 'Inter', outcome: 'draw', eliminated: false },
+            { name: 'Luca Bianchi', eliminated: true }
+          ]
+        },
+        {
+          round: 2,
+          championshipRound: 6,
+          players: [
+            { name: 'Mario Rossi', team: 'Milan', outcome: 'win', eliminated: false },
+            { name: 'Sara Verdi', team: 'Napoli', outcome: 'lose', eliminated: true }
+          ]
+        }
+      ]
+    };
+    // Nessun header (senza round/championshipRound): il brand è nel separatore.
+    const body = renderEmailV2(ctx, '', ROME);
+    expect(body).toBe(
+      [
+        'Ciao Mario!',
+        '',
+        '🏆 TORNEO CONCLUSO!',
+        '',
+        '📜 STORICO DEL TORNEO',
+        '',
+        'Round del torneo 1 · Turno di Campionato 5',
+        'Mario Rossi — Roma · vittoria — ✅ ancora in gara',
+        'Sara Verdi — Inter · pareggio — ✅ ancora in gara',
+        'Luca Bianchi — nessun pick — ❌ eliminato',
+        '',
+        'Round del torneo 2 · Turno di Campionato 6',
+        'Mario Rossi — Milan · vittoria — ✅ ancora in gara',
+        'Sara Verdi — Napoli · sconfitta — ❌ eliminato'
+      ].join('\n')
+    );
+  });
 });
 
 describe('renderEmailV2 (email v3) — vincoli strutturali', () => {
-  it('nessun carattere di riquadro ASCII negli output dei 16 tipi', () => {
+  it('nessun carattere di riquadro ASCII negli output dei 17 tipi', () => {
     const contexts: Array<EmailContext> = [
       { type: 'platform_registered', playerName: 'Mario' },
       { type: 'platform_unsubscribe_confirm' },
@@ -525,6 +590,17 @@ describe('renderEmailV2 (email v3) — vincoli strutturali', () => {
         championshipRound: 5,
         deadline: DEADLINE,
         deadlineRemaining: '2 ore'
+      },
+      {
+        type: 'tournament_closed',
+        playerName: 'Mario',
+        tournamentHistory: [
+          {
+            round: 1,
+            championshipRound: 5,
+            players: [{ name: 'Mario Rossi', team: 'Roma', outcome: 'win', eliminated: false }]
+          }
+        ]
       }
     ];
     for (const ctx of contexts) {
@@ -560,5 +636,71 @@ describe('renderEmailV2 (email v3) — vincoli strutturali', () => {
       ROME
     );
     expect(withoutState).not.toContain('STATO DEL TORNEO');
+  });
+
+  it('deadline in CODA (D6): il corpo TERMINA con la riga data+countdown per i 4 tipi con pick', () => {
+    const base = {
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      deadline: DEADLINE,
+      deadlineRemaining: '2 ore'
+    };
+    const contexts: Array<EmailContext> = [
+      { type: 'pick_instructions', ...base, matches: UPCOMING_MATCHES },
+      { type: 'pick_confirmed', ...base, team: 'Roma', outcome: 'win' },
+      { type: 'pick_rejected', ...base, reason: 'squadra già usata' },
+      { type: 'clarification', ...base }
+    ];
+    for (const ctx of contexts) {
+      const body = renderEmailV2(ctx, 'narrativa di prova', ROME);
+      expect(body, `tipo ${ctx.type}`).toContain(`⏰ DEADLINE PICK\n${DEADLINE_LINE}`);
+      expect(body.endsWith(DEADLINE_LINE), `tipo ${ctx.type}`).toBe(true);
+    }
+  });
+
+  it('keyMessage MAIUSCOLO e primo dopo il saluto (D7) per i 17 tipi', () => {
+    const base = { playerName: 'Mario', round: 3, championshipRound: 5 };
+    // Riga chiave attesa per tipo: `resultLine` per le mail di esito,
+    // `keyMessage(ctx)` per tutte le altre (con i dati iniettati sotto).
+    const keyLines: Record<EmailType, string> = {
+      platform_registered: 'ISCRIZIONE CONFERMATA: SEI IN PIATTAFORMA!',
+      platform_unsubscribe_confirm: 'CONFERMA LA DISISCRIZIONE?',
+      platform_unsubscribed: 'DISISCRIZIONE COMPLETATA',
+      platform_already_registered: 'SEI GIÀ ISCRITTO: NON SERVE RE-ISCRIVERTI.',
+      tournament_open: '🏆 TORNEO APERTO!',
+      pick_instructions: 'ROUND APERTO: INVIA IL TUO PICK!',
+      pick_confirmed: 'PICK REGISTRATO → ROMA → VITTORIA',
+      pick_rejected: 'PICK NON REGISTRATO: squadra già usata',
+      pick_missing_elimination: '❌ SEI STATO ELIMINATO!',
+      round_result_correct: '✅ SEI ANCORA IN GARA!',
+      round_result_wrong: '❌ SEI STATO ELIMINATO!',
+      pick_postponed: '⏸ PARTITA RINVIATA',
+      round_closed_survived: 'ROUND CHIUSO: SEI ANCORA IN GARA!',
+      tournament_won: '🏆 HAI VINTO IL TORNEO!',
+      tournament_shared_win: '🏆 VITTORIA CONDIVISA!',
+      clarification: 'NON HO CAPITO LA TUA RICHIESTA',
+      tournament_closed: '🏆 TORNEO CONCLUSO!'
+    };
+    for (const type of EMAIL_TYPES) {
+      const ctx: EmailContext = {
+        ...base,
+        type,
+        team: 'Roma',
+        outcome: 'win',
+        reason: 'squadra già usata'
+      };
+      const body = renderEmailV2(ctx, 'NARRATIVA DI PROVA', ROME);
+      const lines = body.split('\n');
+      const keyIndex = lines.indexOf(keyLines[type]);
+      const narrativeIndex = lines.indexOf('NARRATIVA DI PROVA');
+      // La riga chiave precede la narrativa (mai dopo di essa).
+      expect(keyIndex, `tipo ${type}: riga chiave presente`).toBeGreaterThanOrEqual(0);
+      expect(narrativeIndex, `tipo ${type}`).toBeGreaterThan(keyIndex);
+      // La parte FISSA è in MAIUSCOLO; per `pick_rejected` il `reason` è un
+      // dato dinamico verbatim (minuscolo): si verifica il solo prefisso.
+      const fixedPart = type === 'pick_rejected' ? keyLines[type].split(':')[0] ?? keyLines[type] : keyLines[type];
+      expect(fixedPart, `tipo ${type}: parte fissa MAIUSCOLA`).toBe(fixedPart.toUpperCase());
+    }
   });
 });

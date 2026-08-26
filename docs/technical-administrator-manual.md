@@ -208,13 +208,16 @@ confirmation flow itself.
 | Pick confirmation (`pick_confirmed`) / rejection (`pick_rejected`) | The sender, with the reason of a rejection. |
 | Round closing — elimination for missing Pick (`pick_missing_elimination`) | Each eliminated profile, at `round:close`. |
 | Accounting results (`round_result_correct` / `round_result_wrong`) | Each evaluated profile, at `round:score`. `wrong` is the elimination notice. |
-| Round-closing summary (`round_closed_survived`) | **Survivors only**, sent exactly once when the round reaches the accounted state. Eliminated profiles never receive it. |
+| Round-closing summary (`round_closed_survived`) | **Survivors only**, sent exactly once when the round reaches the accounted state. Eliminated profiles never receive it. Includes the **players list** of the round (ADR-015). |
 | Postponement notice (`pick_postponed`) | Profiles whose Pick entered Freeze. |
-| Victory (`tournament_won` / `tournament_shared_win`) | The winner(s), at the automatic tournament closure. |
+| Victory (`tournament_won` / `tournament_shared_win`) | The winner(s), at the automatic tournament closure. `tournament_shared_win` lists the **other co-winners** (ADR-015). |
+| Tournament closing (`tournament_closed`) | **All participants** (profiles with at least one Pick, winners included), once at the automatic closure, with the per-round history (ADR-015). |
 | Registration / unsubscription confirmations | The sender, always (this is the confirmation flow itself). |
 
 Constraint: **emails never list participants' names** — only aggregate counts
-(designed for 50+ players).
+(designed for 50+ players). **Exception (ADR-015):** the retrospective emails
+`round_closed_survived` and `tournament_closed` do list the round participants,
+with the elimination outcome; all the other emails stay on aggregate counts.
 
 ---
 
@@ -700,11 +703,14 @@ When a winner is identified (single survivor, all remaining eliminated in the
 same round, or survivors at the end of the season), the system **closes the
 tournament by itself**:
 
-1. it notifies the winner(s) (`tournament_won` / `tournament_shared_win`);
-2. it writes the **automatic export** — the full JSON archive of the
+1. it notifies the winner(s) (`tournament_won` / `tournament_shared_win`, with
+   the list of the other co-winners in the shared case);
+2. it sends `tournament_closed` with the per-round history to **all
+   participants** (profiles with at least one Pick, winners included) — ADR-015;
+3. it writes the **automatic export** — the full JSON archive of the
    tournament — into `TOURNAMENT_EXPORT_DIR` (the directory is created if
    missing; the same dump format as `tournament:export`);
-3. it **stops the scheduler**: no more rounds are opened and no more game
+4. it **stops the scheduler**: no more rounds are opened and no more game
    emails are sent (`scheduler:status` shows `FINITO (chiuso
    automaticamente)`, no next actions).
 
@@ -945,7 +951,8 @@ closure and accounting:
    share the victory.
 
 On identification, the closure is automatic and complete: winner notification,
-automatic export to `TOURNAMENT_EXPORT_DIR`, scheduler stopped (§6.6).
+`tournament_closed` with the per-round history to all participants, automatic
+export to `TOURNAMENT_EXPORT_DIR`, scheduler stopped (§6.6).
 
 ### 8.5 Worked example with production defaults
 
@@ -1001,7 +1008,7 @@ The domain terms used throughout the system's output, kept in Italian:
 | **Pick** | A player's prediction: one team + one outcome (win/draw/lose). |
 | **TC — Turno di Campionato** | The championship matchday (the real round number of the season). |
 | **TT — Turno del Torneo** | The tournament round; `TT = TC − start_round + 1`. |
-| **TTnTCm** | The compact double numbering of a turn (e.g. `TT2TC7`), used in the CLI and logs. In emails the body carries the extended form "Round N · Turno di campionato M" and the subject only the championship round "Turno {TC} di Campionato". |
+| **TTnTCm** | The compact double numbering of a turn (e.g. `TT2TC7`), used in the CLI and logs. In emails the body carries the extended form "Round del torneo N · Turno di Campionato M" and the subject only the championship round "Turno {TC} di Campionato". |
 | **Girone / andata / ritorno** | Half-season (first leg / second leg); the team pool resets at the boundary `floor(N/2)+1`. |
 | **Bruciata (team)** | A team already used by a profile in the current girone — no longer pickable. |
 | **Finestra di Pick** | The pick window: from the round opening to the deadline. |

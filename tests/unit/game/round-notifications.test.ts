@@ -413,6 +413,45 @@ describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
     expect(generator.byType('round_closed_eliminated' as EmailContext['type'])).toHaveLength(0);
   });
 
+  it('round:score → riepilogo con elenco `players` (ADR-015): nome/squadra/esito/stato per TUTTI i partecipanti del round', async () => {
+    const { db, ctx, platform, generator } = await makeHarness();
+    const a = platform.register('a@test.it', null, NOW);
+    platform.register('b@test.it', null, NOW);
+    platform.register('c@test.it', null, NOW);
+    insertProfile(db, 'a@test.it', a.registerId);
+    insertProfile(db, 'b@test.it');
+    insertProfile(db, 'c@test.it');
+    // IM vince 2-0; JU perde 0-2: a (IM) corretto, b (JU) sbagliato, c senza pick.
+    db.prepare('UPDATE match SET home_score = 2, away_score = 0 WHERE round = 1 AND home_team = ?').run(IM);
+    db.prepare('UPDATE match SET home_score = 0, away_score = 2 WHERE round = 1 AND home_team = ?').run(JU);
+
+    ctx.now = T_PICK;
+    const pickFor = async (email: string, team: string) => {
+      const profile = db
+        .prepare('SELECT id FROM profile WHERE player_id = (SELECT id FROM player WHERE email = ?)')
+        .get(email) as { id: number };
+      await registerPick(ctx, { profileId: profile.id, round: 1, team, outcome: 'win', receivedAt: T_PICK });
+    };
+    await pickFor('a@test.it', IM);
+    await pickFor('b@test.it', JU);
+
+    ctx.now = T_CLOSE;
+    await closeRound(ctx, 1); // c mancante → eliminato alla chiusura
+    generator.contexts = [];
+    ctx.now = T_SCORE;
+    await scoreRound(ctx, 1);
+
+    const summary = generator.byType('round_closed_survived');
+    expect(summary).toHaveLength(1);
+    // Nome con fallback sull'email (i profili fixture non hanno `name`);
+    // ordine per p.id: a (sopravvissuto), b (wrong_pick), c (missing_pick).
+    expect(summary[0]?.players).toEqual([
+      { name: 'a@test.it', team: IM, outcome: 'win', eliminated: false },
+      { name: 'b@test.it', team: JU, outcome: 'win', eliminated: true },
+      { name: 'c@test.it', eliminated: true }
+    ]);
+  });
+
   it('round:score con invio riepilogo che fallisce sul 2° destinatario → scored+summary_sent atomici, best-effort, idempotente (A3/B2)', async () => {
     const { db, ctx, platform, channel } = await makeHarness();
     const a = platform.register('a@test.it', null, NOW);

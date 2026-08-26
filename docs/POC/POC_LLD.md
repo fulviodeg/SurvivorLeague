@@ -563,7 +563,7 @@ interface LLMIntentClassifier {
 
 ### 6.3 LLM Generator
 
-> **Emendamento ADR-011 (email v2) e ADR-013 (email v3, plain-text senza riquadri).** L'LLM produce SOLO il testo NARRATIVO (2-4 frasi brevi, tono entusiasta); il corpo completo è composto DETERMINISTICAMENTE dal renderer di canale `src/llm/email-renderer.ts` attorno alla narrativa: header con coppia UMANA "Round N · Turno di campionato M" (mai sigle TT/TC nelle mail), **sezioni a righe con titolo emoji + MAIUSCOLO** (esito ✅/❌, deadline+countdown, squadre già usate, partite/risultati, stato aggregato — NIENTE riquadri ASCII), messaggio chiave `keyMessage(ctx)` in MAIUSCOLO, sezioni dati e CTA per tipo. Il countdown è calcolato DAL SISTEMA con `formatRemaining(now, deadline)` (src/game/round-time.ts, clock iniettato — mai dall'LLM né dal renderer, RNF1). Le mail di esito hanno soggetti NEUTRI ("Esito Round"); mai elenchi nominativi di partecipanti (solo conteggi). La narrativa è prodotta da `DeterministicGenerator` (default) o dall'LLM con fallback (`AI_EMAIL_GENERATOR`, ADR-013). Il vecchio prompt-set V1 è stato RIMOSSO (2026-08-23). Canale email = SOLO text/plain (niente HTML né riquadri).
+> **Emendamento ADR-011 (email v2), ADR-013 (email v3, plain-text senza riquadri) e ADR-015 (email v4).** L'LLM produce SOLO il testo NARRATIVO (2-4 frasi brevi, tono entusiasta); il corpo completo è composto DETERMINISTICAMENTE dal renderer di canale `src/llm/email-renderer.ts` attorno alla narrativa: header con coppia UMANA "Round del torneo N · Turno di Campionato M" (mai sigle TT/TC nelle mail), **sezioni a righe con titolo emoji + MAIUSCOLO** (esito ✅/❌, deadline+countdown, squadre già usate, partite/risultati, stato aggregato — NIENTE riquadri ASCII), messaggio chiave `keyMessage(ctx)` in MAIUSCOLO, sezioni dati e CTA per tipo. Il countdown è calcolato DAL SISTEMA con `formatRemaining(now, deadline)` (src/game/round-time.ts, clock iniettato — mai dall'LLM né dal renderer, RNF1). Le mail di esito hanno soggetti NEUTRI ("Esito Round"); MAI elenchi nominativi di partecipanti (solo conteggi), **con carve-out ADR-015** per i soli tipi retrospettivi `round_closed_survived` e `tournament_closed` (sezione `👥 GIOCATORI DEL ROUND` / `📜 STORICO DEL TORNEO` dai campi `players`/`tournamentHistory`). Email v4 aggiunge inoltre la sezione co-vincitori `🤝 HAI CONDIVISO LA VITTORIA CON` (`coWinners`) e il nuovo tipo `tournament_closed`. La narrativa è prodotta da `DeterministicGenerator` (default) o dall'LLM con fallback (`AI_EMAIL_GENERATOR`, ADR-013). Il vecchio prompt-set V1 è stato RIMOSSO (2026-08-23). Canale email = SOLO text/plain (niente HTML né riquadri).
 
 ```typescript
 type EmailType = 
@@ -582,7 +582,8 @@ type EmailType =
   | "round_closed_survived"        // riepilogo chiusura round ai SOLI sopravvissuti (RF-P6)
   | "tournament_won"
   | "tournament_shared_win"
-  | "clarification";               // ADR-011 (Task 7): messaggio non interpretabile (soggetto "Non ho capito")
+  | "clarification"                // ADR-011 (Task 7): messaggio non interpretabile (soggetto "Non ho capito")
+  | "tournament_closed";           // ADR-015 (email v4): chiusura torneo con storico per-round a TUTTI i partecipanti
 
 // RIMOSSI rispetto a v0.4.0 (ADR-009): "welcome", "registration_open_invite",
 // "auto_registered", "round_closed_eliminated".
@@ -590,8 +591,8 @@ type EmailType =
 interface EmailContext {
   type: EmailType;
   playerName?: string;
-  round?: number;              // round del TORNEO (ex tt), iniettato (ADR-008, RF-25); reso "Round N" dal renderer
-  championshipRound?: number;  // turno di CAMPIONATO (ex tc), iniettato; reso "Turno di campionato M"
+  round?: number;              // round del TORNEO (ex tt), iniettato (ADR-008, RF-25); reso "Round del torneo N" dal renderer
+  championshipRound?: number;  // turno di CAMPIONATO (ex tc), iniettato; reso "Turno di Campionato M"
   roundStart?: Date;           // inizio del round (kickoff prima partita)
   deadline?: Date;
   deadlineRemaining?: string;  // countdown pre-calcolato dal Game Engine (formatRemaining, RNF1)
@@ -607,6 +608,24 @@ interface EmailContext {
   eliminatedMissing?: number;
   platformCount?: number;      // iscritti alla piattaforma (annuncio apertura torneo)
   playerResult?: "correct" | "wrong" | "missing";
+  players?: EmailPlayerResult[];      // ADR-015: elenco giocatori del round (round_closed_survived/tournament_closed)
+  coWinners?: string[];               // ADR-015: nomi degli ALTRI vincitori (tournament_shared_win)
+  tournamentHistory?: EmailTournamentRound[]; // ADR-015: storico per-round (tournament_closed)
+}
+
+// ADR-015 (email v4): partecipante in un elenco retrospettivo; nome con fallback sull'email.
+interface EmailPlayerResult {
+  name: string;
+  team?: string;              // squadra del pick (assente = nessun pick)
+  outcome?: string;           // win|draw|lose (assente = nessun pick)
+  eliminated: boolean;        // true = eliminato IN QUESTO round
+}
+
+// ADR-015 (email v4): storico per-round del torneo (riusa EmailPlayerResult).
+interface EmailTournamentRound {
+  round: number;              // TT
+  championshipRound: number;  // TC
+  players: EmailPlayerResult[];
 }
 
 interface LLMGenerator {
@@ -614,9 +633,9 @@ interface LLMGenerator {
 }
 ```
 
-> **Coppia umana (ADR-011):** `round`/`championshipRound` sono i numeri di torneo/campionato iniettati dal Game Engine (ADR-008). **Nessun numero di turno entra nel prompt** (ADR-004, D4): la coppia è scritta dal renderer in forma umana; le forme compatte TT2TC7 restano SOLO per log/CLI (src/game/turn.ts, invariato).
+> **Coppia umana (ADR-011, emendata ADR-015):** `round`/`championshipRound` sono i numeri di torneo/campionato iniettati dal Game Engine (ADR-008). **Nessun numero di turno entra nel prompt** (ADR-004, D4): la coppia è scritta dal renderer in forma umana "Round del torneo N · Turno di Campionato M" (label dedicate `roundHeaderLabel`/`championshipHeaderLabel`; il box bruciate resta "(Round N)"); le forme compatte TT2TC7 restano SOLO per log/CLI (src/game/turn.ts, invariato).
 >
-> **Soggetto (D1, emendato ADR-013):** composto DETERMINISTICAMENTE dal chiamante con l'helper `subjectFor(ctx)` — forma `⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - {etichetta}` (TC assente → `⚽🏆SURVIVOR LEAGUE🏆⚽ - {etichetta}`); il soggetto porta il SOLO turno di campionato, la coppia "Round N · Turno di campionato M" resta nel corpo. Etichette iper-condensate e NEUTRE per gli esiti ("Esito Round", convenzione 4); mai dall'LLM, mai numeri inventati. `ctx.subject` permette a un chiamante di fornire un oggetto esplicito (priorità).
+> **Soggetto (D1, emendato ADR-013/ADR-015):** composto DETERMINISTICAMENTE dal chiamante con l'helper `subjectFor(ctx)` — forma `⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - {etichetta}` (TC assente → `⚽🏆SURVIVOR LEAGUE🏆⚽ - {etichetta}`); il soggetto porta il SOLO turno di campionato, la coppia "Round del torneo N · Turno di Campionato M" resta nel corpo. Etichette iper-condensate e NEUTRE per gli esiti ("Esito Round", convenzione 4); `tournament_closed` non porta il turno ("Chiusura Torneo"); mai dall'LLM, mai numeri inventati. `ctx.subject` permette a un chiamante di fornire un oggetto esplicito (priorità).
 >
 > **Formato date nei testi (D9/ADR-011):** le date sono istanti UTC; i testi email le mostrano con `formatItDate(date, timeZone)` nel FUSO DI SISTEMA (`TIMEZONE`, default Europe/Rome, validato al boot) — fuso esplicito = determinismo (RNF1). Il fuso conta SOLO nella comunicazione verso l'esterno (email e log): le decisioni di gioco restano su UTC.
 >
@@ -794,7 +813,7 @@ npm run cli -- elimination:list               # Lista profili eliminati con moti
 
 ### 7.7 Game Engine — Winner Engine
 
-> **Emendamento ADR-011 (chiusura automatica e completa).** `checkWinner` resta SOLA LETTURA e senza gate sullo stato; il Round Manager espone l'hook `settleWinnerIfNeeded` (invocato dopo `closeRound` e dopo `scoreRound`) che, alla identificazione del/i vincitore/i, esegue in sequenza: guardia atomica idempotente (`tournament_state.winner_notified = 1` + `finished_at` dal clock — migrazioni additive), notifica ai vincitori (`tournament_won`/`tournament_shared_win`, best-effort per destinatario con filtro account `active`), EXPORT AUTOMATICO (riuso di `tournamentExport` → file JSON in `TOURNAMENT_EXPORT_DIR`, filename dal clock iniettato — archivio per il reset) e inibizione dello scheduler (`computeActions` → `[]` a torneo chiuso). `tournament:start` è RIAMMISSIBILE su torneo chiuso: reset atomico del DB di GIOCO (pick/profile/player/round_state) + reset di `tournament_state`; il DB piattaforma non è toccato (ADR-009). `winner:check` resta invocabile in qualunque momento, anche a torneo ultimato (stesso risultato della chiusura, senza side-effect); dopo il reset, lo storico del torneo precedente è consultabile SOLO nell'export automatico. La rimozione della riga crontab fisica a torneo chiuso resta attività operativa del commissioner (guida test-mode).
+> **Emendamento ADR-011 (chiusura automatica e completa) e ADR-015 (email v4).** `checkWinner` resta SOLA LETTURA e senza gate sullo stato; il Round Manager espone l'hook `settleWinnerIfNeeded` (invocato dopo `closeRound` e dopo `scoreRound`) che, alla identificazione del/i vincitore/i, esegue in sequenza: guardia atomica idempotente (`tournament_state.winner_notified = 1` + `finished_at` dal clock — migrazioni additive), notifica ai vincitori (`tournament_won`/`tournament_shared_win` con la lista `coWinners` degli altri vincitori, best-effort per destinatario con filtro account `active`), notifica di chiusura `tournament_closed` con lo storico per-round a TUTTI i partecipanti (profili con almeno un pick, vincitori inclusi — ADR-015), EXPORT AUTOMATICO (riuso di `tournamentExport` → file JSON in `TOURNAMENT_EXPORT_DIR`, filename dal clock iniettato — archivio per il reset) e inibizione dello scheduler (`computeActions` → `[]` a torneo chiuso). `tournament:start` è RIAMMISSIBILE su torneo chiuso: reset atomico del DB di GIOCO (pick/profile/player/round_state) + reset di `tournament_state`; il DB piattaforma non è toccato (ADR-009). `winner:check` resta invocabile in qualunque momento, anche a torneo ultimato (stesso risultato della chiusura, senza side-effect); dopo il reset, lo storico del torneo precedente è consultabile SOLO nell'export automatico. La rimozione della riga crontab fisica a torneo chiuso resta attività operativa del commissioner (guida test-mode).
 
 ```bash
 npm run cli -- winner:check                   # Verifica se il torneo è finito (SOLA LETTURA). Output: JSON {finished, winners, case}
@@ -997,7 +1016,8 @@ Casi aggiuntivi al set di test già definito, da distribuire tra unit/integratio
 - `tournament:start` → `tournament_open` a tutti gli `activeEmails()` (una sola volta); no-op senza componenti email
 - `round:open` → `pick_instructions` ai soli partecipanti attivi (`eliminated = 0`) con account `active`; **all'apertura del TT 1 anche agli account `active` SENZA profilo** (emendamento RF-P6, 2026-08-21), con dedup sulle email dei profili
 - `round:close` → `pick_missing_elimination` ai soli account `active`
-- `round:score` → `round_result_correct`/`round_result_wrong` ai soli account `active`; alla transizione `closed→scored` `round_closed_survived` ai soli sopravvissuti con `summary_sent = 1`; riapertura `round:score` → nessun ri-invio (idempotente)
+- `round:score` → `round_result_correct`/`round_result_wrong` ai soli account `active`; alla transizione `closed→scored` `round_closed_survived` ai soli sopravvissuti con `summary_sent = 1` (con l'elenco `players` dei partecipanti del round, ADR-015); riapertura `round:score` → nessun ri-invio (idempotente)
+- chiusura automatica → `tournament_won`/`tournament_shared_win` ai vincitori (con `coWinners`, ADR-015) + `tournament_closed` a TUTTI i partecipanti (profili con almeno un pick, vincitori inclusi), UNA sola volta
 - `unsubscribed` e `pending_unsubscribe` esclusi da OGNI email; nessun `round_closed_eliminated`, nessun criterio `eliminated_at >= opened_at`
 
 **Scheduler + simulazione (Task 10):**

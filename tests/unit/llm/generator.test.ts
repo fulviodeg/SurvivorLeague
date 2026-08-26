@@ -3,7 +3,7 @@
  * LLD §6.3; briefing Fase 5-6 §3, D1/D4/D9).
  *
  * HTTP mockato (fetch iniettato, LLD §8). Coprono: un contract test per OGNI
- * tipo di email (16, inclusa `clarification`): corpo = renderer deterministico
+ * tipo di email (17, inclusa `clarification` e `tournament_closed`): corpo = renderer deterministico
  * (header con coppia umana, box, CTA) + narrativa LLM; soggetto `subjectFor`
  * in forma "⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - etichetta"
  * (RF-25/D1, mai sigle TT/TC, il subject porta il SOLO turno di campionato);
@@ -87,7 +87,7 @@ describe('LLM Generator v2 — contract test per ogni tipo (ADR-011)', () => {
 
       // Il corpo è il renderer deterministico: header con coppia UMANA
       // (mai sigle TT/TC, convenzione 1) + narrativa dell'LLM.
-      expect(body).toContain('Round 2 · Turno di campionato 7');
+      expect(body).toContain('Round del torneo 2 · Turno di Campionato 7');
       expect(body).toContain('Narrativa di prova');
       expect(body).toContain('Ciao Aldo!');
       expect(body).not.toContain('TT 2');
@@ -138,6 +138,10 @@ describe('LLM Generator v2 — contract test per ogni tipo (ADR-011)', () => {
       '⚽🏆SURVIVOR LEAGUE🏆⚽ - Round Aperto'
     );
     expect(subjectFor({ type: 'clarification' })).toBe('⚽🏆SURVIVOR LEAGUE🏆⚽ - Non Ho Capito');
+    // ADR-015 email v4: la mail di chiusura torneo NON porta il turno.
+    expect(subjectFor({ type: 'tournament_closed' })).toBe(
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Chiusura Torneo'
+    );
   });
 
   it('tournament_won/tournament_shared_win includono il turno quando TC noto (D1)', () => {

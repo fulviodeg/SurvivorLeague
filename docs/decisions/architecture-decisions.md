@@ -20,6 +20,9 @@
 | [ADR-010](#adr-010-chiarimenti-adr-009-post-revisione-2026-08-21) | Chiarimenti ADR-009 post-revisione 2026-08-21 | Accepted (2026-08-21) |
 | [ADR-011](#adr-011-email-v2-chiusura-automatica-del-torneo-nome-giocatore-e-timezone) | Email v2, chiusura automatica del torneo, nome giocatore e timezone | Accepted (2026-08-21) |
 | [ADR-012](#adr-012-emendamenti-adr-011-post-revisione-2026-08-21) | Emendamenti ADR-011 post-revisione 2026-08-21 | Accepted (2026-08-21) |
+| [ADR-013](#adr-013-email-v3--restyle-plain-text-senza-riquadri-e-generatore-deterministico) | Email v3 — restyle plain-text senza riquadri e generatore deterministico | Accepted (2026-08-24) |
+| [ADR-014](#adr-014-email-v3-parte-b--parser-deterministico-dellinput-con-interruttore) | Email v3 Parte B — Parser deterministico dell'input con interruttore | Accepted (2026-08-24) |
+| [ADR-015](#adr-015-email-v4--riepilogo-con-elenco-giocatori-vittoria-condivisa-con-nomi-e-chiusura-torneo-con-storico) | Email v4 — riepilogo con elenco giocatori, vittoria condivisa con nomi, chiusura torneo con storico | Accepted (2026-08-25) |
 
 ---
 
@@ -342,6 +345,34 @@
 - *Subject iniettato nel prompt LLM* — scartata: il subject resta un'ancora del solo parser deterministico; il comportamento LLM è verificato invariato.
 
 **Conseguenze.** Con i flag AI false il sistema gira senza LLM e senza `LLM_API_KEY`; il parser deterministico è più rigido (più chiarimenti, mitigati dal file alias editabile e dalle mail che insegnano le formule); il fallback per-messaggio in modalità LLM rende la classificazione robusta ai blackout (il batch non si ferma). `DeterministicIntentClassifier`/`FallbackIntentClassifier` sono coperti da test unitari; i body reali UID 291/295 sono regressione.
+
+---
+
+## ADR-015: Email v4 — riepilogo con elenco giocatori, vittoria condivisa con nomi, chiusura torneo con storico
+
+- **Status:** Accepted
+- **Date:** 2026-08-25
+- **Riferimenti:** ADR-011 (emendata), ADR-013 (emendata), ADR-004, ADR-008, ADR-009 (RF-P6) · PRD RF-25 · LLD §6.2/§6.3/§6.4 · Piano `.kilo/plans/1787675020248-email-v4-chiusura-torneo.md` · correzioni PO `email_pick_registered_no_correction_phrase`, `email_round_result_subject_wording`, `email_shared_win_coincludes_names`, `email_tournament_closing_round_history`, `email_key_message_caps_first`
+
+**Contesto.** Il PO ha chiesto quattro ritocchi alle email (D1–D5) e due verifiche trasversali (D6–D7): (1) la mail di pick confermato conteneva una frase fattualmente errata ("puoi correggere la scelta…") — verificato sui sorgenti che un secondo pick entro la deadline NON sovrascrive: la cascata di `pick-processor` rifiuta con `pick_already_exists` (CL6, RF-08) e il vincolo `UNIQUE(profile_id, round)` lo garantisce a livello DB; (2) il riferimento testuale "Round N · Turno di campionato M" doveva diventare "Round del torneo N · Turno di Campionato M"; (3) il riepilogo di chiusura round e la vittoria condivisa dovevano arricchirsi con dati nominativi; (4) alla chiusura del torneo mancava una mail di riepilogo con lo storico per-round. Tutti e quattro i cambi restano sul canale email e sul Game Engine: nessuna modifica alle interfacce `ChannelAdapter`/`LLMGenerator`/`LLMIntentClassifier`, nessuna modifica a `tasks/llm/regole-email-design.md`.
+
+**Decisione.**
+
+1. **`pick_confirmed` senza frase di correzione (D1).** `DETERMINISTIC_NARRATIVES.pick_confirmed` diventa stringa vuota (blocco narrativa omesso) e il template LLM perde l'istruzione "può correggere la scelta". Resta solo il messaggio chiave deterministico `PICK REGISTRATO → {TEAM} → {ESITO}` + deadline in coda.
+2. **Header "Round del torneo N · Turno di Campionato M" (D2).** Nuove label DEDICATE all'header in `src/game/turn.ts`: `roundHeaderLabel(tt)` → "Round del torneo N" e `championshipHeaderLabel(tc)` → "Turno di Campionato M" (maiuscolo, coerente col subject). Il box "squadre già usate" resta sulla forma compatta "(Round N)" (`roundLabel`, invariata); `championshipLabel` diventa morto e viene rimosso. Vale per TUTTE le mail con header.
+3. **Elenco giocatori nel riepilogo (D3) e nello storico (D5) — carve-out della convenzione 6 (ADR-011 §2/ADR-013).** Nuovo campo canale-agnostico `EmailContext.players?: EmailPlayerResult[]` (nome/squadra/esito/eliminato nel round), popolato dal Game Engine con una query per-round (partecipanti = `eliminated = 0 OR eliminated_at >= opened_at`, LEFT JOIN pick, computata UNA volta, stesso valore per ogni destinatario). Il renderer rende `👥 GIOCATORI DEL ROUND` SOLO se `players` è presente. Il vincolo "mai elenchi nominativi, solo conteggi aggregati" è quindi CARVED-OUT per i SOLI due tipi retrospettivi `round_closed_survived` e `tournament_closed`; le mail di istruzione/pick/esito restano sui soli conteggi (`stateSection` invariata). I nomi sono SOLO LETTI (mai generati); fallback del nome = email.
+4. **Nomi dei co-vincitori (D4).** Nuovo campo `EmailContext.coWinners?: string[]` (gli ALTRI vincitori, escluso il destinatario), popolato in `settleWinnerIfNeeded` da una mappa `profileId → nome` costruita PRIMA del loop. Il renderer rende `🤝 HAI CONDIVISO LA VITTORIA CON` SOLO se presente (quindi solo `tournament_shared_win`).
+5. **Nuova mail `tournament_closed` (D5).** 17° `EmailType`, soggetto `⚽🏆SURVIVOR LEAGUE🏆⚽ - Chiusura Torneo` (senza turno), `keyMessage` `🏆 TORNEO CONCLUSO!`, narrativa deterministica vuota, sezione `📜 STORICO DEL TORNEO` dal nuovo campo `EmailContext.tournamentHistory?: EmailTournamentRound[]` (riusa `EmailPlayerResult`). Generata dal Game Engine con `buildTournamentHistory` (SOLA lettura: per ogni round non `pending` applica la query di D3 con lo snapshot di quel round; NON riusa `tournamentExport`, che resta il dump JSON di archivio). Invio in `settleWinnerIfNeeded`, UNA sola volta (guardia `guarded.changes === 1`), best-effort, a TUTTI i partecipanti (profili con almeno un pick, vincitori inclusi), filtrati su account `active`.
+6. **Verifiche trasversali (D6/D7).** Deadline+countdown già in coda (nessuna modifica); keyMessage MAIUSCOLO e primo dopo il saluto già rispettato. Aggiunti test strutturali: (a) il corpo dei 4 tipi con pick termina con la riga deadline; (b) per i 17 tipi la riga chiave è in MAIUSCOLO (parte fissa) e precede la narrativa. Finding documentato: `pick_rejected` include il `reason` in minuscolo (dato dinamico) — il prefisso `PICK NON REGISTRATO:` resta MAIUSCOLO, il reason resta verbatim.
+
+**Alternative considerate.**
+- *Cambio globale della label "Round N" → "Round del torneo N"* — scartato: renderebbe il box bruciate "(Round del torneo N)", rumore non richiesto; si usano label dedicate all'header.
+- *Elenco nominativo esteso a tutte le mail* — scartato: il carve-out è limitato ai due tipi retrospettivi; le mail di istruzione/pick/esito restano sui conteggi (scalabilità 50+).
+- *Testo sostitutivo alla frase di correzione in `pick_confirmed`* — scartato (default raccomandato): resta solo il messaggio chiave; un'eventuale frase "contatta il commissioner" è domanda aperta PO.
+- *Riuso di `tournamentExport` per lo storico della mail* — scartato: è il dump JSON di archivio (per il file), non dati email strutturati; la mail usa un elenco per-round snello e canale-agnostico.
+- *Recap vincitori in coda allo storico* — scartato (default raccomandato): già nelle mail di vittoria.
+
+**Conseguenze.** Il renderer resta PURO e deterministico (nuove sezioni composte solo dai campi iniettati; nessun clock/DB nel renderer); `players`/`coWinners`/`tournamentHistory` sono campi canale-agnostici (un futuro WebAdapter li riusa); il 17° tipo forza l'esaustività dei `Record<EmailType, …>` (typecheck); la mail di chiusura è inviata una sola volta e non duplica l'export; i vincitori ricevono vittoria + chiusura (comportamento intenzionale). Documentazione allineata (LLD §6.2/§6.3/§6.4, guida test-mode, cli-reference, manuale).
 
 ---
 

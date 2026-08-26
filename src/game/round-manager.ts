@@ -42,7 +42,14 @@
  */
 import type Database from 'better-sqlite3';
 
-import { subjectFor, type EmailBurnedTeam, type EmailContext, type EmailMatchContext } from '../llm/generator.js';
+import {
+  subjectFor,
+  type EmailBurnedTeam,
+  type EmailContext,
+  type EmailMatchContext,
+  type EmailPlayerResult,
+  type EmailTournamentRound
+} from '../llm/generator.js';
 import type { Match } from '../data/provider.js';
 import type { GameContext } from './context.js';
 import { eliminate } from './elimination.js';
@@ -108,6 +115,42 @@ function countInGame(db: Database.Database): number {
   return (
     db.prepare('SELECT COUNT(*) AS n FROM profile WHERE eliminated = 0').get() as { n: number }
   ).n;
+}
+
+/**
+ * Giocatori di un round per l'elenco nominativo retrospettivo (ADR-015 email
+ * v4): partecipanti del round = profili in gara alla chiusura del round
+ * (`eliminated = 0`) O eliminati IN QUESTO round (`eliminated_at >= opened_at`):
+ * gli eliminati nei round PRECEDENTI restano esclusi. LEFT JOIN `pick` per
+ * squadra/esito (mancante → nessun pick); `name` con fallback sull'email
+ * quando vuoto. Sola lettura, computata UNA volta per round (stesso valore
+ * per ogni destinatario, come `countInGame`). `openedAt` è la stringa ISO-8601
+ * di apertura del round (mai il clock: il filtro è sullo snapshot di stato).
+ */
+function getRoundPlayers(db: Database.Database, round: number, openedAt: string): EmailPlayerResult[] {
+  const rows = db
+    .prepare(
+      `SELECT COALESCE(pl.name, '') AS name, COALESCE(pl.email, '') AS email,
+              pk.team AS team, pk.outcome AS outcome, p.eliminated AS eliminated
+       FROM profile p
+       JOIN player pl ON pl.id = p.player_id
+       LEFT JOIN pick pk ON pk.profile_id = p.id AND pk.round = ?
+       WHERE p.eliminated = 0 OR p.eliminated_at >= ?
+       ORDER BY p.id`
+    )
+    .all(round, openedAt) as unknown as Array<{
+    name: string;
+    email: string;
+    team: string | null;
+    outcome: string | null;
+    eliminated: number;
+  }>;
+  return rows.map((r) => ({
+    name: r.name !== '' ? r.name : r.email,
+    ...(r.team !== null ? { team: r.team } : {}),
+    ...(r.outcome !== null ? { outcome: r.outcome } : {}),
+    eliminated: r.eliminated === 1
+  }));
 }
 
 /** Esito di `round:open`. */
@@ -691,7 +734,9 @@ export async function scoreRound(ctx: GameContext, round: number): Promise<Round
     // (trade-off POC accettato, rischio §8 del piano): resta visibile nei log.
     //
     // ADR-011: il riepilogo porta risultati del round e stato AGGREGATO
-    // (solo conteggi, mai elenchi nominativi — convenzione 6). Nessuna
+    // (solo conteggi — convenzione 6) PIÙ, da ADR-015 email v4, l'elenco
+    // nominativo dei partecipanti del round (carve-out della convenzione 6,
+    // SOLO per `round_closed_survived` e `tournament_closed`). Nessuna
     // deadline del prossimo round (fix review 2026-08-23: il box deadline
     // del renderer vale SOLO per le mail che richiedono un pick,
     // PICK_EMAIL_TYPES in email-renderer.ts — l'iniezione era dato morto
@@ -716,6 +761,17 @@ export async function scoreRound(ctx: GameContext, round: number): Promise<Round
               )
               .get(openedAt.toISOString()) as { n: number }
           ).n;
+    // ADR-015 (email v4): elenco nominativo dei partecipanti del round,
+    // computato UNA volta (come `inGame`) e condiviso da OGNI destinatario
+    // del riepilogo — stesso valore per tutti, mai query per giocatore.
+    // `openedAt` sentinella: un round chiuso è SEMPRE stato aperto (opened_at
+    // valorizzato); la sentinella preserva il filtro "eliminati nel round" in
+    // un eventuale stato anomalo senza far saltare l'invio.
+    const roundPlayers = getRoundPlayers(
+      db,
+      round,
+      openedAt === null ? '0000-01-01T00:00:00.000Z' : openedAt.toISOString()
+    );
 
     const survivors = getActiveProfiles(db);
     // MEDIUM-2: a torneo chiuso il riepilogo round_closed_survived tace
@@ -729,6 +785,7 @@ export async function scoreRound(ctx: GameContext, round: number): Promise<Round
             round: tt,
             championshipRound: tc,
             matches: emailMatches,
+            players: roundPlayers,
             inGameCount: inGame,
             eliminatedWrong,
             eliminatedMissing
@@ -780,8 +837,12 @@ export interface SettleWinnerResult {
  *    `finished_at = <clock>` in un'unica istruzione (UPSERT con WHERE
  *    winner_notified = 0): ri-avvii di round/CL9 non duplicano nulla.
  * 3. NOTIFICA VINCITORI: `tournament_won` (vincitore unico) /
- *    `tournament_shared_win` (2+), best-effort per destinatario (filtro
+ *    `tournament_shared_win` (2+, con la lista `coWinners` degli altri
+ *    vincitori, ADR-015 email v4), best-effort per destinatario (filtro
  *    account `active` in notify, warn pino in inglese via ctx.logger).
+ * 3b. NOTIFICA CHIUSURA (ADR-015 email v4): `tournament_closed` con lo
+ *    storico per-round a TUTTI i partecipanti (profili con almeno un pick,
+ *    vincitori inclusi), best-effort per destinatario.
  * 4. EXPORT AUTOMATICO: riuso di `tournamentExport` (dump JSON completo)
  *    archiviato via il SEAM `ctx.archiveTournament` iniettato dal wiring
  *    (ADR-011 §1.3: mai node:fs nei moduli di gioco) — il path di
@@ -833,7 +894,13 @@ export async function settleWinnerIfNeeded(ctx: GameContext): Promise<SettleWinn
   if (guarded.changes === 0) return { closed: false, winners: [] };
 
   // Notifica vincitori (best-effort per destinatario, filtro active in notify).
+  // ADR-015 (email v4): costruita PRIMA la mappa profilo→nome per tutti i
+  // vincitori (fallback nome vuoto → email), poi per ogni vincitore la lista
+  // degli ALTRI vincitori (`coWinners`), escluso sé stesso — usata dal
+  // renderer per la sezione "HAI CONDIVISO LA VITTORIA CON" (solo
+  // `tournament_shared_win`; `tournament_won` resta senza coWinners).
   const type = result.winners.length === 1 ? 'tournament_won' : 'tournament_shared_win';
+  const winnerNames = new Map<number, string>();
   for (const winner of result.winners) {
     const row = db
       .prepare(
@@ -841,10 +908,18 @@ export async function settleWinnerIfNeeded(ctx: GameContext): Promise<SettleWinn
          FROM profile p JOIN player pl ON pl.id = p.player_id WHERE p.id = ?`
       )
       .get(winner.profileId) as { playerName: string } | undefined;
+    const playerName = row?.playerName ?? '';
+    winnerNames.set(winner.profileId, playerName === '' ? winner.email : playerName);
+  }
+  for (const winner of result.winners) {
+    const coWinners = result.winners
+      .filter((w) => w.profileId !== winner.profileId)
+      .map((w) => winnerNames.get(w.profileId) ?? w.email);
     try {
       await notify(ctx, winner.email, {
         type,
-        playerName: row?.playerName === '' ? winner.email : row?.playerName
+        playerName: winnerNames.get(winner.profileId),
+        ...(coWinners.length > 0 ? { coWinners } : {})
       });
     } catch (error) {
       ctx.logger?.warn(
@@ -857,11 +932,73 @@ export async function settleWinnerIfNeeded(ctx: GameContext): Promise<SettleWinn
     }
   }
 
+  // ADR-015 (email v4): mail `tournament_closed` con lo STORICO per-round a
+  // TUTTI i partecipanti (profili con almeno un pick), UNA sola volta (questo
+  // ramo è raggiunto solo con `guarded.changes === 1`), best-effort per
+  // destinatario (filtro active in notify, warn pino in inglese). I vincitori
+  // la ricevono IN AGGIUNTA alla loro mail di vittoria. Lo storico è
+  // calcolato UNA volta e condiviso da ogni destinatario.
+  const participants = db
+    .prepare(
+      `SELECT p.id, COALESCE(pl.email, '') AS email, COALESCE(pl.name, '') AS playerName
+       FROM profile p
+       JOIN player pl ON pl.id = p.player_id
+       WHERE EXISTS (SELECT 1 FROM pick pk WHERE pk.profile_id = p.id)
+       ORDER BY p.id`
+    )
+    .all() as unknown as ActiveProfile[];
+  const tournamentHistory = await buildTournamentHistory(ctx);
+  for (const participant of participants) {
+    try {
+      await notify(ctx, participant.email, {
+        type: 'tournament_closed',
+        playerName: participant.playerName === '' ? participant.email : participant.playerName,
+        tournamentHistory
+      });
+    } catch (error) {
+      ctx.logger?.warn(
+        {
+          email: participant.email,
+          error: error instanceof Error ? error.message : String(error)
+        },
+        `tournament closed: closing notification not sent to ${participant.email} — continuing (best-effort)`
+      );
+    }
+  }
+
   // Export automatico (vedi `archiveTournamentExport`): il fallimento è
   // loggato e NON blocca la chiusura; il recupero avviene al rientro.
   const exportPath = await archiveTournamentExport(ctx, now);
 
   return { closed: true, winners: result.winners, exportPath };
+}
+
+/**
+ * Storico per-round del torneo per la mail `tournament_closed` (ADR-015 email
+ * v4): SOLA LETTURA. Per ogni round della finestra `[start_round..N]` con
+ * `round_state` non `pending` (quindi giocato), riusa la query di
+ * `getRoundPlayers` con lo snapshot di apertura di quel round (partecipanti =
+ * `eliminated = 0 OR eliminated_at >= opened_at`). NON riusa `tournamentExport`:
+ * quello è il dump JSON di archivio (destinato al file), qui serve un elenco
+ * per-round snello e canale-agnostico per il renderer. I round futuri (mai
+ * aperti, `pending`) sono esclusi; `opened_at` sentinella per stati anomali.
+ */
+async function buildTournamentHistory(ctx: GameContext): Promise<EmailTournamentRound[]> {
+  const { db, dataProvider } = ctx;
+  const startRound = getStartRound(db);
+  const totalRounds = await dataProvider.getTotalRounds();
+  const history: EmailTournamentRound[] = [];
+  for (let round = startRound; round <= totalRounds; round++) {
+    const rs = getRoundState(db, round);
+    if (rs === undefined || rs.status === 'pending') continue;
+    const openedAt = rs.opened_at ?? '0000-01-01T00:00:00.000Z';
+    history.push({
+      round: ttFor(round, startRound),
+      championshipRound: round,
+      players: getRoundPlayers(db, round, openedAt)
+    });
+  }
+  return history;
 }
 
 /**

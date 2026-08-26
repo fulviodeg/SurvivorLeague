@@ -24,22 +24,29 @@
  *     sulla STESSA riga, separati da " · ";
  *   - esito (✅/❌) subito dopo il saluto nelle mail di esito;
  *   - `keyMessage(ctx)` deterministico per tipo, in MAIUSCOLO;
- *   - MAI elenchi nominativi di partecipanti: solo conteggi aggregati;
+ *   - MAI elenchi nominativi di partecipanti: solo conteggi aggregati — ad
+ *     eccezione dei due tipi retrospettivi `round_closed_survived` e
+ *     `tournament_closed` (ADR-015 email v4, carve-out esplicito: elenco
+ *     nominativo opt-in via il campo `players`, mai nelle mail di istruzione,
+ *     pick o esito);
  *   - date in `it-IT` nel fuso iniettato (TIMEZONE): il sistema di gioco
  *     lavora su istanti UTC assoluti, il fuso conta solo qui (e nei log);
  *   - dati assenti → blocco OMESSO ("se un dato è assente, non inventarlo:
  *     ometti la frase"); chiusura fissa dell'eliminato ("Grazie per essere
  *     stato con noi!", mai riferimenti a canali inesistenti).
  *
- * Ordine dei blocchi (email v3; deadline in CODA per richiesta PO):
+ * Ordine dei blocchi (email v3 + v4; deadline in CODA per richiesta PO):
  * header → saluto → esito → messaggio chiave → narrativa →
- * partite/risultati → squadre già usate → stato → CTA → iscritti piattaforma
- * → chiusura eliminato → deadline (ultima, solo mail con pick). Blocchi con
- * dati assenti OMESSI; narrativa vuota → blocco omesso (mai testo inventato).
+ * partite/risultati → elenco giocatori (solo `round_closed_survived`/
+ * `tournament_closed`) → squadre già usate → stato → storico torneo (solo
+ * `tournament_closed`) → co-vincitori (solo `tournament_shared_win`) → CTA →
+ * iscritti piattaforma → chiusura eliminato → deadline (ultima, solo mail con
+ * pick). Blocchi con dati assenti OMESSI; narrativa vuota → blocco omesso
+ * (mai testo inventato).
  */
 import { formatItDate } from './templates.js';
-import { championshipLabel, roundLabel } from '../game/turn.js';
-import type { EmailContext, EmailType } from './generator.js';
+import { championshipHeaderLabel, roundHeaderLabel, roundLabel } from '../game/turn.js';
+import type { EmailContext, EmailPlayerResult, EmailType } from './generator.js';
 
 /** Esito pick in italiano (dati iniettati, mai generati). */
 function outcomeItalian(outcome: string | undefined): string | null {
@@ -57,7 +64,7 @@ function section(title: string, lines: string[]): string {
 /** Header della mail: coppia umana se presente; altrimenti null (il brand è nel separatore di sistema). */
 function header(ctx: EmailContext): string | null {
   if (ctx.round !== undefined && ctx.championshipRound !== undefined) {
-    return `${roundLabel(ctx.round)} · ${championshipLabel(ctx.championshipRound)}`;
+    return `${roundHeaderLabel(ctx.round)} · ${championshipHeaderLabel(ctx.championshipRound)}`;
   }
   return null;
 }
@@ -118,6 +125,8 @@ function keyMessage(ctx: EmailContext): string | null {
       return '⏸ PARTITA RINVIATA';
     case 'round_closed_survived':
       return 'ROUND CHIUSO: SEI ANCORA IN GARA!';
+    case 'tournament_closed':
+      return '🏆 TORNEO CONCLUSO!';
     case 'tournament_won':
       return '🏆 HAI VINTO IL TORNEO!';
     case 'tournament_shared_win':
@@ -141,9 +150,13 @@ const PICK_EMAIL_TYPES: readonly EmailType[] = [
  * Tipi il cui messaggio chiave è separato dal saluto da una riga vuota (email
  * di notifica "autonoma" sul round, con sezioni dati a seguire). Le email di
  * piattaforma e di vittoria, invece, fanno fluire il messaggio chiave subito
- * dopo il saluto (output dei 16 template del piano email v3).
+ * dopo il saluto (output dei 17 template del piano email v3/v4).
  */
-const MESSAGE_BLANK_BEFORE_TYPES: readonly EmailType[] = ['pick_postponed', 'round_closed_survived'];
+const MESSAGE_BLANK_BEFORE_TYPES: readonly EmailType[] = [
+  'pick_postponed',
+  'round_closed_survived',
+  'tournament_closed'
+];
 
 /**
  * Sezione deadline (email v3): data nel fuso iniettato + countdown
@@ -184,6 +197,60 @@ function matchesSection(ctx: EmailContext): string | null {
     return `${m.home} - ${m.away}`;
   });
   return section(title, lines);
+}
+
+/**
+ * Riga di un giocatore in un elenco nominativo (ADR-015 email v4, carve-out
+ * della convenzione 6 per i SOLI tipi retrospettivi `round_closed_survived` e
+ * `tournament_closed`): con pick "{nome} — {squadra} · {esito} — {esito}",
+ * senza pick "{nome} — nessun pick — ❌ eliminato". Esito/eliminazione dai
+ * DATI iniettati (mai inventati); l'esito è in italiano via `outcomeItalian`.
+ */
+function playerResultRow(p: EmailPlayerResult): string {
+  const outcome = outcomeItalian(p.outcome);
+  if (p.team !== undefined && p.team !== '' && outcome !== null) {
+    return `${p.name} — ${p.team} · ${outcome} — ${p.eliminated ? '❌ eliminato' : '✅ ancora in gara'}`;
+  }
+  return `${p.name} — nessun pick — ❌ eliminato`;
+}
+
+/**
+ * Sezione elenco giocatori del round (ADR-015 email v4): resa SOLO se
+ * `ctx.players` è presente (opt-in del Game Engine per `round_closed_survived`
+ * e — riusata — per lo storico di `tournament_closed`). Le altre mail restano
+ * sui soli conteggi aggregati di `stateSection` (convenzione 6).
+ */
+function playersSection(ctx: EmailContext): string | null {
+  if (ctx.players === undefined || ctx.players.length === 0) return null;
+  return section('👥 GIOCATORI DEL ROUND', ctx.players.map(playerResultRow));
+}
+
+/**
+ * Sezione co-vincitori (ADR-015 email v4): resa SOLO se `ctx.coWinners` è
+ * presente (nomi degli ALTRI vincitori, escluso il destinatario), per
+ * `tournament_shared_win` — `tournament_won` (vittoria unica) non la riceve.
+ */
+function coWinnersSection(ctx: EmailContext): string | null {
+  if (ctx.coWinners === undefined || ctx.coWinners.length === 0) return null;
+  return section('🤝 HAI CONDIVISO LA VITTORIA CON', ctx.coWinners);
+}
+
+/**
+ * Sezione storico del torneo (ADR-015 email v4): per ogni round della finestra
+ * giocata, la riga "Round del torneo N · Turno di Campionato M" seguita dalle
+ * righe giocatore (stesso formato di `playerResultRow`). Resa SOLO se
+ * `ctx.tournamentHistory` è presente (`tournament_closed`).
+ */
+function historySection(ctx: EmailContext): string | null {
+  if (ctx.tournamentHistory === undefined || ctx.tournamentHistory.length === 0) return null;
+  const blocks = ctx.tournamentHistory.map(
+    (r) =>
+      [
+        `${roundHeaderLabel(r.round)} · ${championshipHeaderLabel(r.championshipRound)}`,
+        ...r.players.map(playerResultRow)
+      ].join('\n')
+  );
+  return `📜 STORICO DEL TORNEO\n\n${blocks.join('\n\n')}`;
 }
 
 /**
@@ -257,11 +324,13 @@ function ctaFor(ctx: EmailContext): string | null {
 }
 
 /**
- * Compone il corpo completo dell'email (deterministico, email v3). Ordine:
+ * Compone il corpo completo dell'email (deterministico, email v3 + v4). Ordine:
  * header → saluto (nome se noto) → esito (mail di esito, subito dopo il
- * saluto) → deadline (mail con pick, elemento n.1) → messaggio chiave →
- * narrativa → partite/risultati → squadre già usate → stato → CTA → iscritti
- * piattaforma → chiusura eliminato. Blocchi con dati assenti OMESSI.
+ * saluto) → messaggio chiave → narrativa → partite/risultati → elenco
+ * giocatori (solo se `players`) → squadre già usate → stato → storico torneo
+ * (solo se `tournamentHistory`) → co-vincitori (solo se `coWinners`) → CTA →
+ * iscritti piattaforma → chiusura eliminato → deadline (ultima, solo mail con
+ * pick). Blocchi con dati assenti OMESSI.
  * `narrative` è il testo dell'LLM/del generatore deterministico: se vuota
  * dopo il trim, il blocco è omesso (mai testo inventato).
  */
@@ -297,10 +366,16 @@ export function renderEmailV2(ctx: EmailContext, narrative: string, timeZone: st
 
   const matches = matchesSection(ctx);
   if (matches !== null) segments.push({ text: matches, blankBefore: true });
+  const players = playersSection(ctx);
+  if (players !== null) segments.push({ text: players, blankBefore: true });
   const burned = burnedSection(ctx);
   if (burned !== null) segments.push({ text: burned, blankBefore: true });
   const state = stateSection(ctx);
   if (state !== null) segments.push({ text: state, blankBefore: true });
+  const history = historySection(ctx);
+  if (history !== null) segments.push({ text: history, blankBefore: true });
+  const coWinners = coWinnersSection(ctx);
+  if (coWinners !== null) segments.push({ text: coWinners, blankBefore: true });
   const cta = ctaFor(ctx);
   if (cta !== null) segments.push({ text: cta, blankBefore: true });
   const count = platformCountLine(ctx);

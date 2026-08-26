@@ -14,8 +14,9 @@
  *   - `llm:generate --type <t> [--player-name] [--tt] [--tc] [--team]
  *     [--outcome] [--reason] [--deadline] [--available-teams]` — genera
  *     l'email dal contesto: output = SOGGETTO (subjectFor, forma UMANA
- *     "Round N · Turno di campionato M", ADR-011) + corpo RENDERIZZATO
- *     (header/box/CTA deterministici attorno alla narrativa LLM).
+ *     "Turno {TC} di Campionato - {etichetta}", ADR-013) + corpo RENDERIZZATO
+ *     (header "Round del torneo N · Turno di Campionato M"/box/CTA
+ *     deterministici attorno alla narrativa).
  *
  * Pattern CLI consolidato: il comando costruisce config → DB → provider e
  * inietta i parametri; i moduli LLM non accedono mai a DB/config (ADR-004).
