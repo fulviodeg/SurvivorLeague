@@ -32,6 +32,9 @@ coverage/
 note personali.txt
 note personali.md
 
+# --- Credenziali di accesso VPS (MAI committare) ---
+vps-access
+
 # --- OS ---
 .DS_Store
 Thumbs.db
