@@ -75,25 +75,44 @@ function header(ctx: EmailContext): string | null {
  *   - corretto → "✅ SEI ANCORA IN GARA!"
  *   - sbagliato → "❌ SEI STATO ELIMINATO!"
  *   - mancante → "❌ SEI STATO ELIMINATO!"
- * I dettagli (squadra/esito/punteggio) restano alla narrativa, non qui.
+ * In modalità `win_only` (ADR-016), per gli esiti CON pick (`round_result_correct`
+ * e `round_result_wrong`) subito dopo l'esito è mostrato il pick del giocatore
+ * ("⚽ il tuo Pick: {TEAM} ⚽", squadra in MAIUSCOLO): in win_only l'esito non
+ * distingue win/draw/lose, quindi mostrare il pick rende esplicita la scelta.
+ * `pick_missing_elimination` non ha un pick e non riceve questa riga.
  */
-function resultLine(ctx: EmailContext): string | null {
-  if (ctx.type === 'round_result_correct') return '✅ SEI ANCORA IN GARA!';
-  if (ctx.type === 'round_result_wrong') return '❌ SEI STATO ELIMINATO!';
-  if (ctx.type === 'pick_missing_elimination') return '❌ SEI STATO ELIMINATO!';
-  return null;
+function resultLine(ctx: EmailContext, winOnly: boolean): string | null {
+  let base: string | null;
+  if (ctx.type === 'round_result_correct') base = '✅ SEI ANCORA IN GARA!';
+  else if (ctx.type === 'round_result_wrong') base = '❌ SEI STATO ELIMINATO!';
+  else if (ctx.type === 'pick_missing_elimination') base = '❌ SEI STATO ELIMINATO!';
+  else return null;
+
+  const team = ctx.team;
+  if (
+    winOnly &&
+    (ctx.type === 'round_result_correct' || ctx.type === 'round_result_wrong') &&
+    team !== undefined &&
+    team !== ''
+  ) {
+    return `${base}\n⚽ il tuo Pick: ${team.toUpperCase()} ⚽`;
+  }
+  return base;
 }
 
 /**
  * Messaggio chiave deterministico per le mail di CONFERMA pick (email v3):
- * "PICK REGISTRATO → {TEAM} → {ESITO}" con squadra ed esito in MAIUSCOLO;
- * dati assenti → forma generica "PICK REGISTRATO" (mai inventare nulla).
+ * classica "PICK REGISTRATO → {TEAM} → {ESITO}" con squadra ed esito in
+ * MAIUSCOLO; win_only (ADR-016) "PICK REGISTRATO → {TEAM}" SENZA esito
+ * (l'outcome è sempre 'win', mostrarlo non aggiunge nulla). Dati assenti →
+ * forma generica "PICK REGISTRATO" (mai inventare nulla).
  */
-function pickConfirmedKey(ctx: EmailContext): string {
+function pickConfirmedKey(ctx: EmailContext, winOnly: boolean): string {
   const team = ctx.team;
-  const esito = outcomeItalian(ctx.outcome);
-  if (team !== undefined && team !== '' && esito !== null) {
-    return `PICK REGISTRATO → ${team.toUpperCase()} → ${esito.toUpperCase()}`;
+  if (team !== undefined && team !== '') {
+    if (winOnly) return `PICK REGISTRATO → ${team.toUpperCase()}`;
+    const esito = outcomeItalian(ctx.outcome);
+    if (esito !== null) return `PICK REGISTRATO → ${team.toUpperCase()} → ${esito.toUpperCase()}`;
   }
   return 'PICK REGISTRATO';
 }
@@ -103,7 +122,7 @@ function pickConfirmedKey(ctx: EmailContext): string {
  * l'equivalente plain-text del "grassetto +20%". Le mail di ESITO round
  * NON hanno `keyMessage`: usano l'esito ✅/❌ di `resultLine` (separato).
  */
-function keyMessage(ctx: EmailContext): string | null {
+function keyMessage(ctx: EmailContext, winOnly: boolean): string | null {
   switch (ctx.type) {
     case 'platform_registered':
       return 'ISCRIZIONE CONFERMATA: SEI IN PIATTAFORMA!';
@@ -118,7 +137,7 @@ function keyMessage(ctx: EmailContext): string | null {
     case 'pick_instructions':
       return 'ROUND APERTO: INVIA IL TUO PICK!';
     case 'pick_confirmed':
-      return pickConfirmedKey(ctx);
+      return pickConfirmedKey(ctx, winOnly);
     case 'pick_rejected':
       return `PICK NON REGISTRATO: ${ctx.reason ?? ''}`;
     case 'pick_postponed':
@@ -206,10 +225,17 @@ function matchesSection(ctx: EmailContext): string | null {
  * senza pick "{nome} — nessun pick — ❌ eliminato". Esito/eliminazione dai
  * DATI iniettati (mai inventati); l'esito è in italiano via `outcomeItalian`.
  */
-function playerResultRow(p: EmailPlayerResult): string {
-  const outcome = outcomeItalian(p.outcome);
-  if (p.team !== undefined && p.team !== '' && outcome !== null) {
-    return `${p.name} — ${p.team} · ${outcome} — ${p.eliminated ? '❌ eliminato' : '✅ ancora in gara'}`;
+function playerResultRow(p: EmailPlayerResult, winOnly: boolean): string {
+  const status = p.eliminated ? '❌ eliminato' : '✅ ancora in gara';
+  if (p.team !== undefined && p.team !== '') {
+    const outcome = outcomeItalian(p.outcome);
+    if (!winOnly && outcome !== null) {
+      return `${p.name} — ${p.team} · ${outcome} — ${status}`;
+    }
+    // ADR-016 (win_only): l'outcome è sempre 'win' — mostrare "· vittoria"
+    // accanto a "❌ eliminato" è fuorviante, quindi la riga omette l'esito.
+    // Vale anche per lo storico `tournament_closed` (riusa playerResultRow).
+    return `${p.name} — ${p.team} — ${status}`;
   }
   return `${p.name} — nessun pick — ❌ eliminato`;
 }
@@ -220,9 +246,9 @@ function playerResultRow(p: EmailPlayerResult): string {
  * e — riusata — per lo storico di `tournament_closed`). Le altre mail restano
  * sui soli conteggi aggregati di `stateSection` (convenzione 6).
  */
-function playersSection(ctx: EmailContext): string | null {
+function playersSection(ctx: EmailContext, winOnly: boolean): string | null {
   if (ctx.players === undefined || ctx.players.length === 0) return null;
-  return section('👥 GIOCATORI DEL ROUND', ctx.players.map(playerResultRow));
+  return section('👥 GIOCATORI DEL ROUND', ctx.players.map((p) => playerResultRow(p, winOnly)));
 }
 
 /**
@@ -241,13 +267,13 @@ function coWinnersSection(ctx: EmailContext): string | null {
  * righe giocatore (stesso formato di `playerResultRow`). Resa SOLO se
  * `ctx.tournamentHistory` è presente (`tournament_closed`).
  */
-function historySection(ctx: EmailContext): string | null {
+function historySection(ctx: EmailContext, winOnly: boolean): string | null {
   if (ctx.tournamentHistory === undefined || ctx.tournamentHistory.length === 0) return null;
   const blocks = ctx.tournamentHistory.map(
     (r) =>
       [
         `${roundHeaderLabel(r.round)} · ${championshipHeaderLabel(r.championshipRound)}`,
-        ...r.players.map(playerResultRow)
+        ...r.players.map((p) => playerResultRow(p, winOnly))
       ].join('\n')
   );
   return `📜 STORICO DEL TORNEO\n\n${blocks.join('\n\n')}`;
@@ -291,11 +317,14 @@ function eliminatedClosing(ctx: EmailContext): string | null {
 }
 
 /** CTA per tipo (deterministica, email v3): focus su eventi + prossimi passi. */
-function ctaFor(ctx: EmailContext): string | null {
+function ctaFor(ctx: EmailContext, winOnly: boolean): string | null {
   switch (ctx.type) {
     case 'pick_instructions':
+      // ADR-016 (win_only): la CTA chiede solo la squadra vincente.
       return section('➡️ COSA FARE ORA', [
-        'Rispondi a questa email con squadra + esito prima della scadenza.'
+        winOnly
+          ? 'Rispondi a questa email con il nome della squadra che vincerà prima della scadenza.'
+          : 'Rispondi a questa email con squadra + esito prima della scadenza.'
       ]);
     case 'round_result_correct':
     case 'round_closed_survived':
@@ -334,7 +363,7 @@ function ctaFor(ctx: EmailContext): string | null {
  * `narrative` è il testo dell'LLM/del generatore deterministico: se vuota
  * dopo il trim, il blocco è omesso (mai testo inventato).
  */
-export function renderEmailV2(ctx: EmailContext, narrative: string, timeZone: string): string {
+export function renderEmailV2(ctx: EmailContext, narrative: string, timeZone: string, winOnly = false): string {
   const segments: Array<{ text: string; blankBefore: boolean }> = [];
 
   // Saluto + header (righe consecutive, nessuna riga vuota interna).
@@ -347,13 +376,13 @@ export function renderEmailV2(ctx: EmailContext, narrative: string, timeZone: st
   if (greeting.length > 0) segments.push({ text: greeting.join('\n'), blankBefore: false });
 
   // Esito (mail di esito): riga vuota prima, poi l'esito.
-  const result = resultLine(ctx);
+  const result = resultLine(ctx, winOnly);
   if (result !== null) segments.push({ text: result, blankBefore: true });
 
   // Messaggio chiave + narrativa (righe consecutive; riga vuota prima SOLO per
   // i tipi di notifica autonoma — la deadline è in coda, non più qui).
   const message: string[] = [];
-  const key = keyMessage(ctx);
+  const key = keyMessage(ctx, winOnly);
   if (key !== null) message.push(key);
   const trimmedNarrative = narrative.trim();
   if (trimmedNarrative !== '') message.push(trimmedNarrative);
@@ -366,17 +395,17 @@ export function renderEmailV2(ctx: EmailContext, narrative: string, timeZone: st
 
   const matches = matchesSection(ctx);
   if (matches !== null) segments.push({ text: matches, blankBefore: true });
-  const players = playersSection(ctx);
+  const players = playersSection(ctx, winOnly);
   if (players !== null) segments.push({ text: players, blankBefore: true });
   const burned = burnedSection(ctx);
   if (burned !== null) segments.push({ text: burned, blankBefore: true });
   const state = stateSection(ctx);
   if (state !== null) segments.push({ text: state, blankBefore: true });
-  const history = historySection(ctx);
+  const history = historySection(ctx, winOnly);
   if (history !== null) segments.push({ text: history, blankBefore: true });
   const coWinners = coWinnersSection(ctx);
   if (coWinners !== null) segments.push({ text: coWinners, blankBefore: true });
-  const cta = ctaFor(ctx);
+  const cta = ctaFor(ctx, winOnly);
   if (cta !== null) segments.push({ text: cta, blankBefore: true });
   const count = platformCountLine(ctx);
   if (count !== null) segments.push({ text: count, blankBefore: true });

@@ -118,10 +118,33 @@ function findOutcome(normalized: string): { outcome: PickExtraction['outcome']; 
  * Riconosce la formula `<TEAM> <ESITO>`: l'esito delimita la fine, la squadra
  * è risolta per longest-match nel testo che PRECEDE l'esito (grammatica
  * team-prima). Esito assente o squadra non risolta → null.
+ *
+ * ADR-016 (win_only): quando `winOnly` è true il giocatore sceglie SOLO la
+ * squadra — (a) una squadra NUDA senza esito registra `{team, 'win'}`
+ * (decisione P1: nessuna formula esplicita richiesta); (b) l'esito `win`
+ * presente → `{team, 'win'}`; (c) un esito esplicito `draw`/`lose` rende il
+ * pick NON riconosciuto (null → chiarimento). In modalità classica il
+ * comportamento resta invariato (esito obbligatorio win|draw|lose).
  */
-function resolvePick(text: string, terms: TeamTerm[]): PickExtraction | null {
+function resolvePick(text: string, terms: TeamTerm[], winOnly = false): PickExtraction | null {
   const normalized = normalize(text);
   const outcome = findOutcome(normalized);
+
+  if (winOnly) {
+    // Esito draw/lose esplicito → non riconosciuto (il giocatore deve scegliere
+    // solo la squadra vincente). Il sinonimo scatta anche su negazioni
+    // ("Napoli non perde mai") — falso-negativo accettato, coerente con la
+    // natura a formule esatte del parser deterministico (→ chiarimento).
+    if (outcome !== null && outcome.outcome !== 'win') return null;
+    // 'win' esplicito → squadra PRIMA dell'esito; squadra nuda → 'win' implicito.
+    const team =
+      outcome === null
+        ? resolveTeam(normalized, terms)
+        : resolveTeam(normalized.slice(0, outcome.index), terms);
+    if (team === null) return null;
+    return { team, outcome: 'win' };
+  }
+
   if (outcome === null) return null;
   const team = resolveTeam(normalized.slice(0, outcome.index), terms);
   if (team === null) return null;
@@ -133,7 +156,7 @@ function resolvePick(text: string, terms: TeamTerm[]): PickExtraction | null {
  * univoche; null se nessuna formula è riconosciuta. L'ordine conta:
  * `disiscrizione` PRIMA di `iscrizione` (la prima contiene la seconda).
  */
-function classifyText(text: string, terms: TeamTerm[]): IntentClassification | null {
+function classifyText(text: string, terms: TeamTerm[], winOnly = false): IntentClassification | null {
   const normalized = normalize(text);
 
   if (normalized.includes('disiscrizione')) {
@@ -150,7 +173,7 @@ function classifyText(text: string, terms: TeamTerm[]): IntentClassification | n
     return { intent: 'subscribe', pick: null, name: name !== '' ? name : null };
   }
 
-  const pick = resolvePick(text, terms);
+  const pick = resolvePick(text, terms, winOnly);
   if (pick !== null) {
     return { intent: 'pick', pick, name: null };
   }
@@ -170,9 +193,10 @@ export class DeterministicIntentClassifier implements LLMIntentClassifier {
       return { intent: 'other', pick: null, name: null };
     }
     const terms = buildTeamTerms(opts.teams, opts.aliases);
+    const winOnly = opts.winOnly === true;
     for (const source of [opts.subject, body]) {
       if (source === undefined) continue;
-      const result = classifyText(source, terms);
+      const result = classifyText(source, terms, winOnly);
       if (result !== null) return result;
     }
     return { intent: 'other', pick: null, name: null };

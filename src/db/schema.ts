@@ -98,8 +98,11 @@ CREATE TABLE IF NOT EXISTS tournament_state (
   winner_notified   INTEGER NOT NULL DEFAULT 0,  -- ADR-011: 1 = torneo CHIUSO (vincitori notificati + export fatto);
                                                  -- inibisce lo scheduler e consente il riavvio (reset atomico)
   finished_at       TEXT,                        -- ADR-011: istante di chiusura del torneo (clock iniettato, ISO-8601)
-  export_path       TEXT                         -- ADR-011 (§1.3): path assoluto dell'export archiviato alla chiusura;
+  export_path       TEXT,                        -- ADR-011 (§1.3): path assoluto dell'export archiviato alla chiusura;
                                                  -- NULL = export NON archiviato → riavvio rifiutato (gate HIGH-1)
+  win_only          INTEGER NOT NULL DEFAULT 0   -- ADR-016: 1 = modalità win_only (pick = sola squadra, outcome 'win');
+                                                 -- fissata a tournament:start e coperta dalla guardia fatal di
+                                                 -- src/game/mode.ts (mismatch a torneo aperto → processo abortito)
 );
 `;
 
@@ -170,6 +173,13 @@ export function applyAdditiveMigrations(db: Database.Database): void {
   // con default NULL (export non archiviato → riavvio rifiutato dal gate).
   if (!stateColumns.includes('export_path')) {
     db.exec('ALTER TABLE tournament_state ADD COLUMN export_path TEXT');
+  }
+
+  // ADR-016 (modalità win_only): fissata a tournament:start e confrontata dalla
+  // guardia fatal di src/game/mode.ts a torneo aperto. Colonna additiva: un DB
+  // pre-esistente la guadagna con default 0 (modalità classica).
+  if (!stateColumns.includes('win_only')) {
+    db.exec('ALTER TABLE tournament_state ADD COLUMN win_only INTEGER NOT NULL DEFAULT 0');
   }
 }
 

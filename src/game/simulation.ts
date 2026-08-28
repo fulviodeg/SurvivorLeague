@@ -44,9 +44,6 @@ import { checkWinner } from './winner.js';
 
 const MINUTE_MS = 60_000;
 
-/** Esiti validi generati dai pick simulati (stessi valori della cascata). */
-const OUTCOMES = ['win', 'draw', 'lose'] as const;
-
 /** Email dei profili sintetici (deterministiche, ordinate per numero). */
 function simEmail(index: number): string {
   return `sim-${String(index).padStart(2, '0')}@survivor.test`;
@@ -198,6 +195,13 @@ async function simulateOneRound(
   const { db, dataProvider, config } = ctx;
   const startRound = getStartRound(db);
 
+  // ADR-016 (win_only): in modalità win_only i pick simulati usano SOLO
+  // 'win' (il giocatore sceglie la squadra vincente). Il resto della logica
+  // resta identico: il risultato REALE dai dati stagione determina comunque
+  // correct/wrong, quindi draw/lose nei dati eliminano i profili simulati
+  // (il percorso di eliminazione è esercitato anche in win_only).
+  const outcomes = config.WIN_ONLY ? (['win'] as const) : (['win', 'draw', 'lose'] as const);
+
   // Fase 1 — open: il round si apre a deadline − 1min (R2). `openRound`
   // calcola la stessa deadline (kickoff − anticipo, RF-14): la rileggiamo dal
   // DB come fonte autorevole (stessa semantica dello scheduler, LLD §1.4).
@@ -230,7 +234,7 @@ async function simulateOneRound(
         .get(email);
       if (hasProfile !== undefined) continue;
       const team = roundTeams[Math.floor(rng() * roundTeams.length)]!;
-      const outcome = OUTCOMES[Math.floor(rng() * OUTCOMES.length)]!;
+      const outcome = outcomes[Math.floor(rng() * outcomes.length)]!;
       const joined = await autoJoinFromPick(
         ctx,
         { channel: 'email', identifier: email },
@@ -261,7 +265,7 @@ async function simulateOneRound(
       }
       // Indici sempre in range: rng() ∈ [0, 1) → floor(rng() * n) ∈ [0, n-1].
       const team = available[Math.floor(rng() * available.length)]!;
-      const outcome = OUTCOMES[Math.floor(rng() * OUTCOMES.length)]!;
+      const outcome = outcomes[Math.floor(rng() * outcomes.length)]!;
       const res = await registerPick(ctx, {
         profileId: profile.id,
         round,
@@ -387,10 +391,13 @@ export async function simulateRound(
 
   // Allinea start_round al round simulato (RF-P5: auto-join = TT1); crea la
   // riga tournament_state se assente (pattern storico openRegistration, R3/D).
+  // ADR-016: scrive anche `win_only` (coerente con l'export, che dopo T2 include
+  // la colonna). NON imposta `season_started=1`, quindi la guardia fatal di
+  // mode.ts resta no-op. Il seed dipende SOLO da config.WIN_ONLY.
   db.prepare(
-    `INSERT INTO tournament_state (id, start_round) VALUES (1, ?)
-     ON CONFLICT(id) DO UPDATE SET start_round = excluded.start_round`
-  ).run(round);
+    `INSERT INTO tournament_state (id, start_round, win_only) VALUES (1, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET start_round = excluded.start_round, win_only = excluded.win_only`
+  ).run(round, config.WIN_ONLY ? 1 : 0);
 
   const kickoff = await dataProvider.getFirstMatchDateTime(round);
   const deadline = computeDeadline(kickoff, config.DEADLINE_ADVANCE_MIN);

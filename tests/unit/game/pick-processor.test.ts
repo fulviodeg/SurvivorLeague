@@ -39,7 +39,7 @@ const AFTER_DEADLINE = new Date('2026-09-12T15:35:00.000Z');
 const AFTER_KICKOFF = new Date('2026-09-12T16:10:00.000Z');
 
 /** Crea un contesto di gioco su DB in-memory migrato e con la mini-stagione. */
-function makeCtx(): { db: Database.Database; ctx: GameContext } {
+function makeCtx(winOnly = false): { db: Database.Database; ctx: GameContext } {
   const db = new Database(':memory:');
   migrate(db);
   loadBaseSeason(db);
@@ -50,7 +50,8 @@ function makeCtx(): { db: Database.Database; ctx: GameContext } {
     SMTP_USER: 'u',
     SMTP_PASS: 'p',
     LLM_API_KEY: 'k',
-    FOOTBALL_DATA_TOKEN: 't'
+    FOOTBALL_DATA_TOKEN: 't',
+    ...(winOnly ? { WIN_ONLY: 'true' } : { WIN_ONLY: 'false' })
   });
   const ctx: GameContext = {
     db,
@@ -301,5 +302,48 @@ describe('registerPick — atomicità e override (CS2/CL6/RF-31, US10)', () => {
       created_at: string;
     };
     expect(row.created_at).toBe(ctx.now.toISOString());
+  });
+});
+
+describe('win_only — cascata invalid_outcome mode-aware (ADR-016)', () => {
+  it('outcome win → valido in win_only', async () => {
+    const { db, ctx } = makeCtx(true);
+    const pid = insertProfile(db);
+    openRound1(db);
+    expect(await validatePick(ctx, baseInput({ profileId: pid, outcome: 'win' }))).toEqual({
+      valid: true
+    });
+  });
+
+  it('outcome draw → invalid_outcome in win_only (pareggio = pick sbagliato)', async () => {
+    const { db, ctx } = makeCtx(true);
+    const pid = insertProfile(db);
+    openRound1(db);
+    expect(await validatePick(ctx, baseInput({ profileId: pid, outcome: 'draw' }))).toEqual({
+      valid: false,
+      reason: 'invalid_outcome'
+    });
+  });
+
+  it('outcome lose → invalid_outcome in win_only (sconfitta = pick sbagliato)', async () => {
+    const { db, ctx } = makeCtx(true);
+    const pid = insertProfile(db);
+    openRound1(db);
+    expect(await validatePick(ctx, baseInput({ profileId: pid, outcome: 'lose' }))).toEqual({
+      valid: false,
+      reason: 'invalid_outcome'
+    });
+  });
+
+  it('in modalità classica draw/lose restano validi (nessuna regressione)', async () => {
+    const { db, ctx } = makeCtx(false);
+    const pid = insertProfile(db);
+    openRound1(db);
+    expect(await validatePick(ctx, baseInput({ profileId: pid, outcome: 'draw' }))).toEqual({
+      valid: true
+    });
+    expect(await validatePick(ctx, baseInput({ profileId: pid, outcome: 'lose' }))).toEqual({
+      valid: true
+    });
   });
 });

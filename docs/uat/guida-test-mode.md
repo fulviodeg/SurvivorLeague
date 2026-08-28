@@ -123,6 +123,8 @@ i seguenti componenti cambiano comportamento rispetto alla produzione:
 
 **Nota email v3 Parte B (parser deterministico, ADR-014).** Con `AI_EMAIL_PARSER=false` (default) l'intento NON è classificato dall'LLM ma da un parser deterministico che riconosce SOLO formule univoche nel subject o nel corpo: `ISCRIZIONE [NOME]` (iscrizione, nome dopo la keyword), `DISISCRIZIONE` (disiscrizione) e `<TEAM> <ESITO>` (pick: squadra — nome canonico o alias — + esito `win`/`draw`/`lose` o sinonimi italiani). Qualunque altra cosa → chiarimento (`other`). Le formule libere ("voglio iscrivermi", "mi iscrivo") NON sono riconosciute. Con `AI_EMAIL_PARSER=true` si usa l'LLM con fallback per-messaggio sul deterministico. Con `AI_EMAIL_GENERATOR=false` e `AI_EMAIL_PARSER=false` la `LLM_API_KEY` non è richiesta (run senza IA).
 
+**Nota modalità `win_only` (ADR-016).** Con `WIN_ONLY=true` (modalità di DEFAULT) il giocatore sceglie SOLO la squadra che vincerà: la formula pick cambia — nel parser deterministico una **squadra nuda** ("Napoli") è un pick valido `{Napoli, win}` (niente esito esplicito richiesto), mentre "Napoli pareggia"/"Napoli perde" NON sono riconosciuti (→ chiarimento, perché pareggio/sconfitta = eliminazione). `win_only` è la modalità di default (in `.env.uat` è già `WIN_ONLY=true`): per tornare alla classica impostare `WIN_ONLY=false` PRIMA di `tournament:start` e non modificarla a torneo aperto (una variazione fa abortire il processo con un errore fatale).
+
 Le **squadre del calendario sintetico** (dalla risorsa alias sintetica, rosa di
 Serie A 2025/26) sono venti:
 
@@ -1202,6 +1204,7 @@ test) e dal fatto che sono state inviate durante la sessione di test.
 | **Deadline** | L'istante ultimo entro cui un pick è accettato. È posta un po' prima del fischio d'inizio della prima partita del round (`DEADLINE_ADVANCE_MIN` minuti prima). |
 | **Kickoff (fischio d'inizio)** | L'orario di inizio effettivo della prima partita del round. È il riferimento per la guard anti-frode `after_kickoff`. |
 | **Pick (pronostico)** | La scelta di un giocatore: una squadra + un esito (vince/pareggia/perde). Si invia via email. |
+| **Modalità `win_only`** | Modalità di gioco di default (`WIN_ONLY=true`) in cui il pick è SOLO la squadra che vincerà: una vittoria tiene in gara, pareggio o sconfitta eliminano. Il parser accetta la squadra nuda ("Napoli"); "Napoli pareggia/perde" non è riconosciuto. |
 | **Seed** | L'operazione di "semina" del calendario: il comando `data:seed-synthetic` genera e carica le partite inventate (rosa di Serie A 2025/26) nel DB. |
 | **Commissioner** | L'operatore che conduce a mano le fasi del torneo con i comandi CLI (modalità manuale). Da qui "modalità commissioner". |
 | **Cron / Scheduler** | L'orchestrazione automatica: un job di sistema (cron) lancia `scheduler:tick` ogni minuto e il sistema apre/chiude/contabilizza le giornate da solo in base al calendario. |

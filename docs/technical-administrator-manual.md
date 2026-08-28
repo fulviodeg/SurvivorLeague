@@ -105,6 +105,17 @@ round — the **Turno del Torneo (TT)**.
   game submits a **Pick**: one team **plus** a predicted outcome for that
   team's match — *win*, *draw* or *lose*. The message is free-form natural
   language (e.g. "Roma, vince") and is interpreted by the system.
+- **`win_only` mode (default).** The default game mode, active when `WIN_ONLY=true`:
+  the player picks **only the team** that will win its match (the system
+  interprets the pick as `outcome = win`). A win → the pick is correct and the
+  profile stays in; a **draw or a loss → the pick is wrong → elimination**. In
+  `win_only`, a bare team name is enough ("Napoli"); an explicit "Napoli
+  pareggia"/"Napoli perde" is not recognized (the system asks for
+  clarification). All other rules (one team per girone, deadline, auto-join,
+  winners) are unchanged. The mode is **fixed in the database at
+  `tournament:start`**: set `WIN_ONLY` **before** `tournament:start` and do not
+  change it mid-tournament — a change while the tournament is open aborts the
+  process with a fatal error (see §6.8).
 - **Outcome of a Pick.** When the match's result becomes available, the Pick
   is evaluated. Correct → the profile **stays in the game**. Wrong → the
   profile is **eliminated**.
@@ -764,6 +775,14 @@ commissioner may face:
   actual kickoff (see §8.1).
 - **Postponements.** Handled by the Freeze mechanism (§8.3), no intervention
   required.
+- **Mode change mid-tournament (fatal).** `WIN_ONLY` is fixed in the database
+  at `tournament:start`. If `.env` changes `WIN_ONLY` while a tournament is
+  open, the next write path (`scheduler:tick`, `channel:email:process`,
+  `round:open`/`close`/`score`, `pick:register`) **aborts the process** with a
+  fatal error naming the persisted vs configured value, before any write or
+  email is sent (the database stays unchanged). To recover: restore `WIN_ONLY`
+  to the persisted value, or close the tournament and start a new one
+  (`tournament:start` re-writes the mode from the new `.env`).
 
 ---
 
@@ -788,6 +807,7 @@ here match `.env.example`.
 | `TC_CLOSE_SKEW_MIN` | minutes | `300` | The skew beyond the expected end of the last scheduled match (UPP) that defines the **TC close** — the boundary of the TC window used for postponement decisions (§8.1/§8.3). It is *not* the trigger of the accounting. |
 | `MATCH_DURATION_MIN` | minutes | `125` | The estimated duration of a match, used to compute the expected end of each match (`match_date + MATCH_DURATION_MIN`) and therefore the TC close. |
 | `MAX_PROFILES_PER_PLAYER` | number | `1` | Maximum profiles per player. POC: 1 — do not change. |
+| `WIN_ONLY` | `true` / `false` | `true` | **Game mode `win_only` (default):** `true` = the player picks only the team that will win its match (the system interprets the pick as `outcome = win`; a draw or loss eliminates). `false` = classic mode (explicit win/draw/lose). The mode is **fixed in the database at `tournament:start`** and a fatal guard aborts the process if `WIN_ONLY` changes while a tournament is open: set it **before** `tournament:start` and do not change it mid-tournament. |
 | `ENTRY_FEE_EUR` | EUR | `5` | Entry fee — **placeholder, not used in the POC**. |
 | `WINNER_SHARE_PCT` | percent (0–100) | `85` | Winner share of the prize pool — **placeholder, not used in the POC**. |
 
@@ -1006,6 +1026,7 @@ The domain terms used throughout the system's output, kept in Italian:
 | Term | Meaning |
 |---|---|
 | **Pick** | A player's prediction: one team + one outcome (win/draw/lose). |
+| **`win_only` (modalità)** | The default game mode (`WIN_ONLY=true`) where a Pick is just the team that will win: the system stores `outcome = win`, so a win keeps the profile in and a draw/loss eliminates it. |
 | **TC — Turno di Campionato** | The championship matchday (the real round number of the season). |
 | **TT — Turno del Torneo** | The tournament round; `TT = TC − start_round + 1`. |
 | **TTnTCm** | The compact double numbering of a turn (e.g. `TT2TC7`), used in the CLI and logs. In emails the body carries the extended form "Round del torneo N · Turno di Campionato M" and the subject only the championship round "Turno {TC} di Campionato". |

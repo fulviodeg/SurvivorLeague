@@ -242,6 +242,15 @@ CREATE TABLE tournament_state (
 );
 ```
 
+> **Nota `win_only` (ADR-016, emendamento).** La colonna additiva
+> `tournament_state.win_only INTEGER NOT NULL DEFAULT 0` è aggiunta da
+> `applyAdditiveMigrations` (idempotente, guardata da `PRAGMA table_info`):
+> `1` = modalità `win_only` (pick = sola squadra, outcome `win`). È scritta a
+> `tournament:start` e confrontata dalla guardia fatal `assertModeConsistent`
+> (`src/game/mode.ts`) a torneo aperto; l'export la include (determinismo RNF1).
+> Le colonne ADR-011/ADR-015 (`winner_notified`, `finished_at`, `export_path`)
+> seguono lo stesso pattern additivo e non sono ripetute qui per brevità.
+
 **DB piattaforma (storage separato, ADR-009, RF-P7).** Vive in `PLATFORM_DB_PATH` (default `./data/platform.db`, §4.2): **mai** nello stesso file di `DB_PATH`. Due connessioni separate, nessuna transazione cross-DB: la piattaforma è **solo letta** dai flussi di torneo (gate notifiche/pick). `register_id` su `player`/`profile` è un riferimento replicato **senza vincoli cross-DB** (RF-P7). Il DB piattaforma **non viene eliminato** col DB torneo e non partecipa alle migrazioni di `db:migrate` (`platform:migrate` dedicato).
 
 ```sql
@@ -299,6 +308,7 @@ Tutti i parametri modificabili vivono in variabili d'ambiente, validate con `zod
 | Scarto chiusura TC (minuti) | `TC_CLOSE_SKEW_MIN` | `300` | PRD §5.4. Chiusura TC = fine prevista UPP + scarto; usato dal life-cycle automatico e dalla simulazione |
 | Durata stimata partita (minuti) | `MATCH_DURATION_MIN` | `125` | PRD §5.4. Per calcolare la fine prevista di una partita |
 | Numero massimo profili per giocatore | `MAX_PROFILES_PER_PLAYER` | `1` | PoC: 1. Futuro: aumentabile (BRIEF §3.3) |
+| Modalità di gioco `win_only` (default) | `WIN_ONLY` | `true` | ADR-016. `true` (default) = il giocatore sceglie SOLO la squadra che vincerà (outcome sempre `win`); pareggio o sconfitta = pick sbagliato → eliminazione. `false` = modalità classica (win/draw/lose). Fissata nel DB a `tournament:start`; una guardia fatal abortisce il processo se cambia a torneo aperto |
 | Quota iscrizione (EUR) | `ENTRY_FEE_EUR` | `5` | BRIEF §3.6. Placeholder per la Fase 1: pagamenti e montepremi sono fuori scope nella POC (PRD §10, BRIEF §7.2). Non usato nella POC |
 | Ripartizione vincitore (%) | `WINNER_SHARE_PCT` | `85` | BRIEF §3.9. Placeholder per la Fase 1: payout fuori scope nella POC (PRD §10, BRIEF §7.2). Non usato nella POC |
 

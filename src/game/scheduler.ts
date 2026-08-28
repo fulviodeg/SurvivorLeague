@@ -39,6 +39,7 @@ import { closeRound, openRound, scoreRound } from './round-manager.js';
 import { computeTcClose } from './round-time.js';
 import { getTournamentState, isTournamentClosed } from './tournament.js';
 import { getStartRound, turnFor } from './turn.js';
+import { assertModeConsistent } from './mode.js';
 
 /** Un'azione pendente calcolata dallo stato (decisione pura, nessuna scrittura). */
 export type PendingAction =
@@ -228,6 +229,11 @@ export async function schedulerTick(
   ctx: GameContext,
   deps: SchedulerTickDeps = {}
 ): Promise<SchedulerTickResult> {
+  // ADR-016: guardia fatal PRIMA di qualsiasi lavoro (refresh/azioni) — un
+  // cambio di modalità a torneo aperto aborta il processo SENZA toccare stato
+  // né inviare email. Fuori dal loop per-azione: il throw non viene assorbito.
+  assertModeConsistent(ctx);
+
   const events: SchedulerEvent[] = [];
 
   if (deps.refresh !== undefined) {

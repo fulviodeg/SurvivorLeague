@@ -58,6 +58,7 @@ import { checkHalf, getAvailableTeams, halfWindow, pickOutcomeFor } from './rule
 import { getTournamentState, isTournamentClosed, tournamentExport } from './tournament.js';
 import { getStartRound, ttFor, turnFor } from './turn.js';
 import { checkWinner, type WinnerInfo } from './winner.js';
+import { assertModeConsistent } from './mode.js';
 
 /** Riga `round_state` letta dal DB. */
 interface RoundStateRow {
@@ -325,6 +326,11 @@ function getBurnedEmailTeams(
 export async function openRound(ctx: GameContext, round: number): Promise<RoundOpenResult> {
   const { db, dataProvider, config, now } = ctx;
 
+  // ADR-016: guardia fatal all'inizio (copre anche `round:open` manuale, che
+  // invia le istruzioni mode-aware): un cambio di modalità a torneo aperto
+  // aborta PRIMA di scrivere round_state o inviare email.
+  assertModeConsistent(ctx);
+
   // MEDIUM-1 (ADR-011 §5.5, emendamento post-revisione): a torneo CHIUSO
   // (winner_notified=1) non si apre più alcun round — il torneo è finito e
   // l'unica prosecuzione è il riavvio via `tournament:start`.
@@ -462,6 +468,10 @@ export async function closeRound(
 ): Promise<RoundCloseResult> {
   const { db, now } = ctx;
 
+  // ADR-016: guardia fatal all'inizio (copre `round:close` manuale, che scrive
+  // ed elimina SENZA passare dallo scheduler).
+  assertModeConsistent(ctx);
+
   if (opts.force === true && (opts.reason === undefined || opts.reason.trim() === '')) {
     throw new Error('La chiusura forzata richiede --reason (audit obbligatorio, RF-29)');
   }
@@ -566,6 +576,10 @@ export async function closeRound(
  */
 export async function scoreRound(ctx: GameContext, round: number): Promise<RoundScoreResult> {
   const { db, dataProvider, config, now } = ctx;
+
+  // ADR-016: guardia fatal all'inizio (copre `round:score` manuale, che scrive
+  // e invia email SENZA passare dallo scheduler).
+  assertModeConsistent(ctx);
 
   // MEDIUM-2 (emendamento post-revisione ADR-011): a torneo CHIUSO
   // (winner_notified=1) una ricontabilizzazione aggiorna comunque lo stato DB

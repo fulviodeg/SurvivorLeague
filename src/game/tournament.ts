@@ -213,10 +213,11 @@ export function getTournamentState(db: Database.Database): {
   winner_notified: number;
   finished_at: string | null;
   export_path: string | null;
+  win_only: number;
 } | undefined {
   return db
     .prepare(
-      'SELECT season_started, start_round, registration_open, winner_notified, finished_at, export_path FROM tournament_state WHERE id = 1'
+      'SELECT season_started, start_round, registration_open, winner_notified, finished_at, export_path, win_only FROM tournament_state WHERE id = 1'
     )
     .get() as
     | {
@@ -226,6 +227,7 @@ export function getTournamentState(db: Database.Database): {
         winner_notified: number;
         finished_at: string | null;
         export_path: string | null;
+        win_only: number;
       }
     | undefined;
 }
@@ -325,12 +327,16 @@ export async function startTournament(
       db.prepare('DELETE FROM player').run();
       db.prepare('DELETE FROM round_state').run();
     }
+    // ADR-016: `win_only` è FISSATA qui a `tournament:start` (UNICA istruzione
+    // UPSERT: copre sia l'avvio pulito sia il reset su torneo chiuso — in
+    // quest'ultimo caso la colonna è riscritta dal valore .env corrente, così
+    // un torneo nuovo può partire con una modalità diversa).
     db.prepare(
-      `INSERT INTO tournament_state (id, season_started, start_round, winner_notified, finished_at, export_path)
-       VALUES (1, 1, ?, 0, NULL, NULL)
+      `INSERT INTO tournament_state (id, season_started, start_round, winner_notified, finished_at, export_path, win_only)
+       VALUES (1, 1, ?, 0, NULL, NULL, ?)
        ON CONFLICT(id) DO UPDATE SET season_started = 1, start_round = excluded.start_round,
-         winner_notified = 0, finished_at = NULL, export_path = NULL`
-    ).run(startRound);
+         winner_notified = 0, finished_at = NULL, export_path = NULL, win_only = excluded.win_only`
+    ).run(startRound, config.WIN_ONLY ? 1 : 0);
     const insertPending = db.prepare(
       "INSERT INTO round_state (round, status) VALUES (?, 'pending')"
     );
@@ -558,7 +564,7 @@ export async function tournamentExport(ctx: GameContext): Promise<ExportResult> 
       // storia del torneo.
       tournament_state: db
         .prepare(
-          'SELECT id, season_started, registration_open, start_round, registration_notified, winner_notified, finished_at FROM tournament_state'
+          'SELECT id, season_started, registration_open, start_round, registration_notified, winner_notified, finished_at, win_only FROM tournament_state'
         )
         .all() as unknown[]
     }

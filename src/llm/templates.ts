@@ -188,6 +188,87 @@ export const DETERMINISTIC_NARRATIVES: Record<EmailType, string> = {
 };
 
 /**
+ * Overlay win_only della NARRATIVA DETERMINISTICA (ADR-016): in modalità
+ * `win_only` il pick è "solo la squadra che vincerà" — i soli testi fissi che
+ * citano "squadra + esito" sono `pick_instructions`, `pick_rejected` e
+ * `clarification`, qui sovrascritti. Gli altri tipi restano generici
+ * (`platform_registered`/`platform_already_registered`/`round_result_*` non
+ * citano l'esito e NON cambiano). `narrativeFor(type, winOnly)` è l'accesso
+ * unico: fallback alla narrativa base quando l'overlay non esiste per il tipo.
+ */
+export const WIN_ONLY_NARRATIVE_OVERRIDES: Partial<Record<EmailType, string>> = {
+  pick_instructions: 'Scegli la squadra che vincerà.',
+  pick_rejected: 'Riprova rispondendo con il nome della squadra che vincerà.',
+  clarification:
+    'Puoi:\n1. Iscriverti: scrivi "ISCRIZIONE [il tuo nome]" (es. "ISCRIZIONE Mario") nel subject o nel corpo.\n2. Disiscriverti: scrivi "DISISCRIZIONE".\n3. Inviare un pick: scrivi il nome della squadra che vincerà.'
+};
+
+/**
+ * Overlay win_only dei PROMPT LLM (ADR-016): i prompt che citano
+ * "squadra + esito"/"squadra ed esito" sono riscritti per chiedere SOLO la
+ * squadra vincente. `templateFor(type, winOnly)` è l'accesso unico con
+ * fallback al template base.
+ */
+export const WIN_ONLY_TEMPLATE_OVERRIDES: Partial<Record<EmailType, string>> = {
+  platform_registered: `${COMMON_HEADER}
+Argomento: CONFERMA DI ISCRIZIONE alla piattaforma. Dai il benvenuto al giocatore con entusiasmo:
+il torneo è alle porte e la sua partecipazione parte da qui. Accenna in breve al formato del pick
+(scegli la squadra che vincerà) e al prossimo passo (rispondere alla prima email di pick quando il
+round si aprirà).`,
+
+  platform_already_registered: `${COMMON_HEADER}
+Argomento: SEI GIÀ ISCRITTO ALLA PIATTAFORMA. Comunica con tono positivo che l'account è già
+attivo e non serve re-iscriversi; per partecipare al torneo basta inviare la prima scelta
+(il nome della squadra che vincerà) quando arriverà la mail di apertura del primo round.`,
+
+  pick_instructions: `${COMMON_HEADER}
+Argomento: ISTRUZIONI PER IL PICK. Il round è aperto: incoraggia il giocatore a scegliere UNA
+squadra tra quelle disponibili (campo "squadre disponibili" del contesto), quella che secondo lui
+vincerà la sua partita, e a inviarla prima della scadenza. Le squadre già bruciate e la deadline
+sono nei box del sistema: non elencarle di nuovo.`,
+
+  pick_confirmed: `${COMMON_HEADER}
+Argomento: CONFERMA DEL PICK REGISTRATO. Festeggia la mossa del giocatore (la squadra scelta è
+nel box del sistema).`,
+
+  pick_rejected: `${COMMON_HEADER}
+Argomento: PICK NON REGISTRATO. Spiega il motivo (campo "motivo" del contesto) in modo semplice,
+costruttivo e incoraggiante: il giocatore può riprovare con una nuova email, formulando il nome
+della squadra che vincerà in modo riconoscibile.`,
+
+  clarification: `${COMMON_HEADER}
+Argomento: CHIARIMENTO. Non hai capito la richiesta del giocatore: dillo con leggerezza e
+simpatica, poi elenca le tre cose che può fare: iscriversi, disiscriversi, o inviare un pick
+(il nome della squadra che vincerà). Se nel contesto c'è una scadenza attiva, accenna solo che
+il tempo stringe (senza date). Se non è iscritto, ricorda la formula: dire il proprio nome e
+scrivere "voglio iscrivermi".`
+};
+
+/**
+ * Accesso unico alla narrativa deterministica per tipo, win_only-aware
+ * (ADR-016): overlay se presente, altrimenti la narrativa base. MAI usare
+ * `DETERMINISTIC_NARRATIVES` direttamente nei generatori: passare da qui.
+ */
+export function narrativeFor(type: EmailType, winOnly: boolean): string {
+  if (winOnly && WIN_ONLY_NARRATIVE_OVERRIDES[type] !== undefined) {
+    return WIN_ONLY_NARRATIVE_OVERRIDES[type]!;
+  }
+  return DETERMINISTIC_NARRATIVES[type];
+}
+
+/**
+ * Accesso unico al prompt LLM per tipo, win_only-aware (ADR-016): overlay se
+ * presente, altrimenti il template base. MAI usare `EMAIL_TEMPLATES`
+ * direttamente nel generatore: passare da qui.
+ */
+export function templateFor(type: EmailType, winOnly: boolean): string {
+  if (winOnly && WIN_ONLY_TEMPLATE_OVERRIDES[type] !== undefined) {
+    return WIN_ONLY_TEMPLATE_OVERRIDES[type]!;
+  }
+  return EMAIL_TEMPLATES[type];
+}
+
+/**
  * Formatta una data in italiano nel FUSO richiesto (D9): le date di gioco
  * sono istanti UTC assoluti; il fuso (TIMEZONE di sistema, default
  * Europe/Rome) conta SOLO al momento della comunicazione verso l'esterno e

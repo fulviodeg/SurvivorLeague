@@ -23,6 +23,7 @@
 | [ADR-013](#adr-013-email-v3--restyle-plain-text-senza-riquadri-e-generatore-deterministico) | Email v3 — restyle plain-text senza riquadri e generatore deterministico | Accepted (2026-08-24) |
 | [ADR-014](#adr-014-email-v3-parte-b--parser-deterministico-dellinput-con-interruttore) | Email v3 Parte B — Parser deterministico dell'input con interruttore | Accepted (2026-08-24) |
 | [ADR-015](#adr-015-email-v4--riepilogo-con-elenco-giocatori-vittoria-condivisa-con-nomi-e-chiusura-torneo-con-storico) | Email v4 — riepilogo con elenco giocatori, vittoria condivisa con nomi, chiusura torneo con storico | Accepted (2026-08-25) |
+| [ADR-016](#adr-016-modalità-win_only-pick-con-la-sola-squadra-vincente) | Modalità `win_only` — pick con la sola squadra vincente | Accepted (2026-08-28) |
 
 ---
 
@@ -373,6 +374,33 @@
 - *Recap vincitori in coda allo storico* — scartato (default raccomandato): già nelle mail di vittoria.
 
 **Conseguenze.** Il renderer resta PURO e deterministico (nuove sezioni composte solo dai campi iniettati; nessun clock/DB nel renderer); `players`/`coWinners`/`tournamentHistory` sono campi canale-agnostici (un futuro WebAdapter li riusa); il 17° tipo forza l'esaustività dei `Record<EmailType, …>` (typecheck); la mail di chiusura è inviata una sola volta e non duplica l'export; i vincitori ricevono vittoria + chiusura (comportamento intenzionale). Documentazione allineata (LLD §6.2/§6.3/§6.4, guida test-mode, cli-reference, manuale).
+
+---
+
+## ADR-016: Modalità `win_only` — pick con la sola squadra vincente
+
+- **Status:** Accepted
+- **Date:** 2026-08-28
+- **Riferimenti:** ADR-004 (LLM confinato all'I/O), ADR-008 (aggancio TC), ADR-011/013/015 (email) · LLD §4 (config) · Piano `.kilo/plans/1787928380301-win-only-mode.md`
+
+**Contesto.** Il PO ha chiesto una modalità di gioco opzionale **`win_only`** in cui il giocatore sceglie **solo la squadra** che vincerà la partita: il sistema interpreta il pick come "squadra vincente" (`outcome = win`). Vittoria → pick corretto (il giocatore resta in gara); pareggio o sconfitta → pick sbagliato → eliminazione. In modalità classica il pareggio è invece un esito corretto (win/draw/lose). La modalità è attivata dalla variabile d'ambiente `WIN_ONLY` (`true`/`false`, default `true`): `win_only` è la modalità di DEFAULT, la modalità classica resta disponibile con `WIN_ONLY=false`. Nessuna regola di gioco duplicata; il Jolly (futuro) dipenderà da `win_only` e ne è il naturale secondo incremento.
+
+**Decisione.**
+
+1. **Nessuna modifica allo schema `pick`.** In win_only si memorizza sempre `outcome='win'`; il confronto `actual === pick.outcome` di `round:score` implementa già "win → corretto; draw/lose → sbagliato" (il motore calcola `actual = pickOutcomeFor(...)` = `'win'|'draw'|'lose'` PRIMA del confronto, distinzione draw/lose preservata per il futuro Jolly).
+2. **La modalità è FISSATA nel DB** (`tournament_state.win_only`, colonna additiva `INTEGER NOT NULL DEFAULT 0`) a `tournament:start` e riscritta al riavvio su torneo chiuso. Una **guardia fatale generica** `assertModeConsistent(ctx)` (`src/game/mode.ts`) confronta il valore persistito con `config.WIN_ONLY` a torneo APERTO e, su mismatch, logga `fatal` e **abortisce il processo** (throw non assorbito dai try/catch per-azione/per-messaggio): nessuno stato parziale, nessun invio con semantica mista. È agganciata all'INIZIO di tutti i percorsi di scrittura/invio (`schedulerTick`, `processEmailBatch`, `openRound`/`closeRound`/`scoreRound`, `validatePick`); i comandi read-only e `tournament:start` (il punto che SCRIVE la modalità) non sono guardati. Il nome è GENERICO: estensibile per chiave a futuri parametri di modalità (es. Jolly) senza una seconda guardia.
+3. **Motore mode-aware.** `validatePick` restringe la cascata `invalid_outcome` al solo `'win'` quando `WIN_ONLY=true` (difesa in profondità: il parser emette già solo `'win'`).
+4. **Confini I/O consapevoli della modalità (ADR-004).** `PickParseOptions.winOnly` è iniettato per chiamata (come `testMode`): il parser deterministico riconosce una **squadra nuda** (`{team, 'win'}`, decisione P1 — nessuna formula esplicita richiesta), rifiuta `draw`/`lose` espliciti (→ chiarimento); il classificatore LLM istruisce "solo la squadra vincente, outcome sempre 'win'" e azzera il pick su draw/lose. I testi email (narrative/prompt/CTA/key/righe giocatore) diventano win_only-aware via un **overlay** (`WIN_ONLY_NARRATIVE_OVERRIDES`/`WIN_ONLY_TEMPLATE_OVERRIDES` + `narrativeFor`/`templateFor`) senza riscrivere i 17 template; la riga giocatore in win_only omette "· esito" (sempre 'win', mostrare "· vittoria" accanto a "❌ eliminato" è fuorviante).
+5. **CLI e simulazione.** `pick:* --outcome` diventa opzionale con NESSUN default lato CLI (omesso → `invalid_outcome` dalla cascata, decisione P2: il CLI non decide la modalità); `llm:parse`/`llm:classify`/`llm:generate` iniettano `winOnly`. La simulazione genera pick con solo `win` in win_only (il risultato REALE dai dati determina comunque correct/wrong, quindi draw/lose nei dati eliminano i profili simulati).
+
+**Alternative considerate.**
+- *Default `'win'` lato CLI quando `--outcome` è omesso* — scartato (decisione P2): il CLI resterebbe un interprete della modalità; è il canale email/parser a decidere, il CLI passa solo l'esito fornito.
+- *Nuovo `pick.outcome='win_only'` o campo `mode` sul pick* — scartato: lo schema `pick` resta invariato, la semantica è determinata dalla modalità persistita in `tournament_state`, non da un marcatore per-pick.
+- *Guardia win_only-specifica (`assertWinOnlyConsistent`)* — scartato: il nome generico evita una seconda guardia quando arriverà il Jolly.
+- *Riscrivere i 17 template per win_only* — scartato: l'overlay minimale è meno invasivo e forward-compatible con un futuro oggetto `GameMode`.
+- *Mostrare "· vittoria" nella riga giocatore in win_only* — scartato: ridondante e fuorviante accanto a "❌ eliminato".
+
+**Conseguenze.** Il Game Engine resta l'unica fonte delle decisioni di gioco (la modalità restringe SOLO gli esiti validi; l'LLM resta confinato all'I/O). La colonna `tournament_state.win_only` è additiva (nessun rebuild della tabella); l'export la include (determinismo RNF1). Il toggle a metà torneo è impedito dalla guardia fatal; su torneo chiuso il riavvio via `tournament:start` riscrive la modalità dal nuovo `.env`. La squadra nuda come pick è comportamento VOLUTO (falso positivo accettato, mitigato dal classificatore LLM col prompt win_only). Il piano win_only è progettato forward-compatible per il Jolly (guardia generica, distinzione draw/lose preservata nello scoring, `PickExtraction` estensibile).
 
 ---
 

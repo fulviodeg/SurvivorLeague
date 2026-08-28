@@ -28,7 +28,7 @@ import { EMAIL_TEMPLATES, DETERMINISTIC_NARRATIVES } from '../../../src/llm/temp
 import { LLMError } from '../../../src/llm/errors.js';
 
 /** Generatore con fetch iniettato che registra i prompt (test ermetici). */
-function makeGenerator(fetchImpl: typeof fetch, timeZone?: string): {
+function makeGenerator(fetchImpl: typeof fetch, timeZone?: string, winOnly = false): {
   generator: OpenAIGenerator;
   requests: Array<{ system: string; user: string }>;
 } {
@@ -48,7 +48,7 @@ function makeGenerator(fetchImpl: typeof fetch, timeZone?: string): {
     retries: 1,
     fetchImpl: wrapper
   });
-  return { generator: new OpenAIGenerator(client, timeZone), requests };
+  return { generator: new OpenAIGenerator(client, timeZone, winOnly), requests };
 }
 
 /** Risposta 200 con un testo dell'LLM. */
@@ -244,5 +244,34 @@ describe('deterministicNarrative — guardia pura sull\'output LLM', () => {
     for (const type of EMAIL_TYPES) {
       expect(DETERMINISTIC_NARRATIVES[type], `narrativa per ${type}`).toBeDefined();
     }
+  });
+});
+
+describe('LLM Generator — win_only (ADR-016)', () => {
+  it('winOnly=true → il prompt usa l\'overlay (chiede solo la squadra che vincerà)', async () => {
+    const { generator, requests } = makeGenerator(
+      () => Promise.resolve(chatOk('ok')),
+      undefined,
+      true
+    );
+    await generator.generate(ctxFor('pick_instructions'));
+    expect(requests[0]?.system ?? '').toContain('vincerà la sua partita');
+    expect(requests[0]?.system ?? '').not.toContain('vittoria, pareggio o sconfitta');
+  });
+
+  it('winOnly=false → il prompt resta quello base (nessun overlay)', async () => {
+    const { generator, requests } = makeGenerator(() => Promise.resolve(chatOk('ok')));
+    await generator.generate(ctxFor('pick_instructions'));
+    expect(requests[0]?.system ?? '').toContain('vittoria, pareggio o sconfitta');
+  });
+
+  it('deterministicNarrative con winOnly → fallback all\'overlay win_only', () => {
+    const ctx: EmailContext = { type: 'pick_rejected' };
+    expect(deterministicNarrative(ctx, '   ', true)).toBe(
+      'Riprova rispondendo con il nome della squadra che vincerà.'
+    );
+    expect(deterministicNarrative(ctx, '   ', false)).toBe(
+      'Riprova rispondendo con squadra + esito (win, draw, lose).'
+    );
   });
 });

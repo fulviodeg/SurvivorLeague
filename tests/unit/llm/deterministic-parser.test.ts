@@ -44,7 +44,8 @@ function classify(body: string, opts: Partial<Parameters<DeterministicIntentClas
   return classifier.classify(body, {
     teams: opts.teams ?? PROD_TEAMS,
     aliases: opts.aliases ?? PROD_ALIASES,
-    ...(opts.subject !== undefined ? { subject: opts.subject } : {})
+    ...(opts.subject !== undefined ? { subject: opts.subject } : {}),
+    ...(opts.winOnly !== undefined ? { winOnly: opts.winOnly } : {})
   });
 }
 
@@ -192,6 +193,47 @@ describe('DeterministicIntentClassifier — ambiguità e casi limite', () => {
 
   it('corpo vuoto e subject vuoto → other', async () => {
     expect(await classify('', { subject: '' })).toMatchObject({ intent: 'other' });
+  });
+});
+
+describe('DeterministicIntentClassifier — win_only (ADR-016)', () => {
+  it('squadra nuda → pick {team, win} (decisione P1: nessuna formula esplicita richiesta)', async () => {
+    expect(await classify('Roma', { winOnly: true })).toMatchObject({
+      intent: 'pick',
+      pick: { team: 'AS Roma', outcome: 'win' }
+    });
+  });
+
+  it('esito win esplicito → pick {team, win}', async () => {
+    expect(await classify('roma vince', { winOnly: true })).toMatchObject({
+      intent: 'pick',
+      pick: { team: 'AS Roma', outcome: 'win' }
+    });
+  });
+
+  it('esito draw esplicito → NON riconosciuto (other)', async () => {
+    expect(await classify('roma pareggia', { winOnly: true })).toMatchObject({
+      intent: 'other',
+      pick: null
+    });
+  });
+
+  it('esito lose esplicito → NON riconosciuto (other)', async () => {
+    expect(await classify('roma perde', { winOnly: true })).toMatchObject({
+      intent: 'other',
+      pick: null
+    });
+  });
+
+  it('squadra nuda con alias → pick {team canonico, win}', async () => {
+    expect(await classify('juve', { winOnly: true })).toMatchObject({
+      intent: 'pick',
+      pick: { team: 'Juventus FC', outcome: 'win' }
+    });
+  });
+
+  it('senza win_only la squadra nuda resta other (nessuna regressione)', async () => {
+    expect(await classify('Roma')).toMatchObject({ intent: 'other' });
   });
 });
 

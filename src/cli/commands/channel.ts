@@ -172,7 +172,8 @@ export const channelEmailProcessCommand: CommandModule<object, JsonArg> = {
           channel,
           generator,
           classifier,
-          platform
+          platform,
+          logger
         },
         messages,
         { teams, aliases, markSeen: (m) => channel.markSeen(m), logger, testMode: config.testMode }

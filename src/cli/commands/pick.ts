@@ -68,7 +68,7 @@ interface ValidateArgs extends JsonArg {
   round: number;
   profileId: number;
   team: string;
-  outcome: string;
+  outcome?: string;
 }
 interface RegisterArgs extends ValidateArgs {
   reason?: string;
@@ -102,10 +102,13 @@ const pickBuilder = (yargs: Argv<object>) =>
     })
     .option('outcome', {
       type: 'string' as const,
-      demandOption: true,
       // Nessun vincolo qui: la validazione dell'esito (invalid_outcome) è nella
       // cascata del Pick Processor, così il CLI espone tutti i motivi (US2).
-      describe: 'Esito previsto: win | draw | lose'
+      // ADR-016: `--outcome` è OPZIONALE e NON ha default lato CLI — se omesso
+      // il pick è rifiutato con invalid_outcome (decisione P2: il CLI non decide
+      // la modalità; in win_only l'interprete è il canale email, non il CLI).
+      describe:
+        'Esito previsto: win | draw | lose (opzionale: se omesso → invalid_outcome; in win_only il pick è la sola squadra, con --outcome win)'
     });
 
 export const pickValidateCommand: CommandModule<object, ValidateArgs> = {
@@ -119,7 +122,7 @@ export const pickValidateCommand: CommandModule<object, ValidateArgs> = {
         profileId: argv.profileId,
         round: argv.round,
         team: argv.team,
-        outcome: argv.outcome,
+        outcome: argv.outcome ?? '',
         receivedAt: ctx.now
       });
       if (argv.json) {
@@ -176,7 +179,7 @@ export const pickRegisterCommand: CommandModule<object, RegisterArgs> = {
           profileId: argv.profileId,
           round: argv.round,
           team: argv.team,
-          outcome: argv.outcome,
+          outcome: argv.outcome ?? '',
           receivedAt: ctx.now
         },
         { reason: argv.reason }

@@ -32,7 +32,7 @@ import { loadBaseSeason, setScore } from '../fixtures/season.js';
  * DB PIATTAFORMA in-memory pulito con registry iniettato (ADR-009: il seed
  * crea account piattaforma, i profili nascono per auto-join al TT1).
  */
-function makeCtx(): {
+function makeCtx(winOnly = false): {
   db: Database.Database;
   platformDb: Database.Database;
   platform: DbPlatformRegistry;
@@ -53,7 +53,8 @@ function makeCtx(): {
       SMTP_USER: 'u',
       SMTP_PASS: 'p',
       LLM_API_KEY: 'k',
-      FOOTBALL_DATA_TOKEN: 't'
+      FOOTBALL_DATA_TOKEN: 't',
+      ...(winOnly ? { WIN_ONLY: 'true' } : { WIN_ONLY: 'false' })
     }),
     now: new Date('2026-09-01T10:00:00.000Z'),
     platform
@@ -215,5 +216,19 @@ describe('simulateRound (Task 7.1/10, ADR-009)', () => {
     const { platform, ctx } = makeCtx();
     platform.register('estraneo@test.it', null, new Date('2026-09-01T10:00:00.000Z'));
     await expect(simulateRound(ctx, 1)).rejects.toThrow(/pulito|pulita/);
+  });
+
+  it('ADR-016 win_only: pick simulati solo outcome win + tournament_state.win_only=1', async () => {
+    const { db, ctx } = makeCtx(true);
+    playAllMatches(db);
+
+    const report = await simulateRound(ctx, 1, { players: 2, seed: 42 });
+
+    expect(report.rounds[0]?.status).toBe('scored');
+    expect(db.prepare('SELECT win_only FROM tournament_state WHERE id = 1').get()).toEqual({
+      win_only: 1
+    });
+    const outcomes = db.prepare('SELECT DISTINCT outcome FROM pick').all() as Array<{ outcome: string }>;
+    expect(outcomes.map((o) => o.outcome)).toEqual(['win']);
   });
 });

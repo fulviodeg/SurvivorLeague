@@ -37,6 +37,7 @@ describe('parseConfig', () => {
     expect(config.MAX_PROFILES_PER_PLAYER).toBe(1);
     expect(config.ENTRY_FEE_EUR).toBe(5);
     expect(config.WINNER_SHARE_PCT).toBe(85);
+    expect(config.WIN_ONLY).toBe(true);
     // §4.2 parametri infrastruttura
     expect(config.IMAP_HOST).toBe('imap.gmail.com');
     expect(config.IMAP_PORT).toBe(993);
@@ -76,7 +77,8 @@ describe('parseConfig', () => {
       SIM_PLAYERS: '20',
       LLM_TIMEOUT_MS: '20000',
       LLM_RETRIES: '5',
-      AI_EMAIL_GENERATOR: 'true'
+      AI_EMAIL_GENERATOR: 'true',
+      WIN_ONLY: 'true'
     });
 
     expect(config.DEADLINE_ADVANCE_MIN).toBe(45);
@@ -88,6 +90,7 @@ describe('parseConfig', () => {
     expect(config.LLM_TIMEOUT_MS).toBe(20000);
     expect(config.LLM_RETRIES).toBe(5);
     expect(config.AI_EMAIL_GENERATOR).toBe(true);
+    expect(config.WIN_ONLY).toBe(true);
   });
 
   it('LLM_MODEL: lista separata da virgola → array (trim, scarto vuoti, dedup ordinato)', () => {

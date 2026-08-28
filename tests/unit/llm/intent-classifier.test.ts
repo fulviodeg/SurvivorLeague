@@ -258,3 +258,57 @@ describe('buildClassifySystemPrompt — contesto lega in test mode (D7)', () => 
     expect(prompt).toContain('"confermo", "sì", "si"');
   });
 });
+
+describe('Intent Classifier — win_only (ADR-016)', () => {
+  it('winOnly=true → il prompt istruisce la modalità (sola squadra, outcome sempre win)', () => {
+    const prompt = buildClassifySystemPrompt({ ...opts, winOnly: true });
+    expect(prompt).toContain('MODALITÀ WIN_ONLY');
+    expect(prompt).toContain('l\'outcome è SEMPRE "win"');
+    // Senza winOnly il prompt non contiene le istruzioni dedicate.
+    expect(buildClassifySystemPrompt(opts)).not.toContain('MODALITÀ WIN_ONLY');
+  });
+
+  it('win_only: outcome null (squadra nuda) → normalizzato a win', async () => {
+    const { classifier } = makeClassifier(() =>
+      Promise.resolve(jsonText('{"intent": "pick", "pick": {"team": "Juventus FC", "outcome": null}}'))
+    );
+    expect(await classifier.classify('juve', { ...opts, winOnly: true })).toEqual({
+      intent: 'pick',
+      pick: { team: 'Juventus FC', outcome: 'win' },
+      name: null
+    });
+  });
+
+  it('win_only: outcome win → conservato win', async () => {
+    const { classifier } = makeClassifier(() =>
+      Promise.resolve(jsonText('{"intent": "pick", "pick": {"team": "Juventus FC", "outcome": "win"}}'))
+    );
+    expect(await classifier.classify('juve vince', { ...opts, winOnly: true })).toEqual({
+      intent: 'pick',
+      pick: { team: 'Juventus FC', outcome: 'win' },
+      name: null
+    });
+  });
+
+  it('win_only: outcome draw esplicito → pick azzerato a null (pareggio = pick non valido)', async () => {
+    const { classifier } = makeClassifier(() =>
+      Promise.resolve(jsonText('{"intent": "pick", "pick": {"team": "Juventus FC", "outcome": "draw"}}'))
+    );
+    expect(await classifier.classify('juve pareggia', { ...opts, winOnly: true })).toEqual({
+      intent: 'pick',
+      pick: null,
+      name: null
+    });
+  });
+
+  it('win_only: outcome lose esplicito → pick azzerato a null (sconfitta = pick non valido)', async () => {
+    const { classifier } = makeClassifier(() =>
+      Promise.resolve(jsonText('{"intent": "pick", "pick": {"team": "Juventus FC", "outcome": "lose"}}'))
+    );
+    expect(await classifier.classify('juve perde', { ...opts, winOnly: true })).toEqual({
+      intent: 'pick',
+      pick: null,
+      name: null
+    });
+  });
+});

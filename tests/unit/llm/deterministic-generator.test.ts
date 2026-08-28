@@ -63,6 +63,21 @@ describe('DeterministicGenerator (email v3)', () => {
   });
 });
 
+describe('DeterministicGenerator — win_only (ADR-016)', () => {
+  it('pick_instructions usa la narrativa win_only (solo la squadra che vincerà)', async () => {
+    const gen = new DeterministicGenerator(ROME, true);
+    const body = await gen.generate({ type: 'pick_instructions', playerName: 'Mario' });
+    expect(body).toContain('Scegli la squadra che vincerà.');
+    expect(body).not.toContain('Scegli una squadra e l\'esito');
+  });
+
+  it('deterministico win_only: stesso input → stesso output (nessun clock/LLM)', async () => {
+    const gen = new DeterministicGenerator(ROME, true);
+    const ctx: EmailContext = { type: 'pick_instructions', playerName: 'Mario' };
+    expect(await gen.generate(ctx)).toBe(await gen.generate(ctx));
+  });
+});
+
 describe('FallbackGenerator (modalità llm, email v3)', () => {
   it('su LLMError → corpo deterministico + warn pino {reason, type}', async () => {
     const llm: LLMGenerator = {

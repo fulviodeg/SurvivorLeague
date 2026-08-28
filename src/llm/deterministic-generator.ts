@@ -17,7 +17,7 @@
  */
 import { LLMError } from './errors.js';
 import { renderEmailV2 } from './email-renderer.js';
-import { DETERMINISTIC_NARRATIVES } from './templates.js';
+import { narrativeFor } from './templates.js';
 import type { EmailContext, LLMGenerator } from './generator.js';
 
 /** Logger minimale per il fallback (warn pino con oggetto + messaggio). */
@@ -32,13 +32,15 @@ export interface WarnLogger {
  */
 export class DeterministicGenerator implements LLMGenerator {
   private readonly timeZone: string;
+  private readonly winOnly: boolean;
 
-  constructor(timeZone = 'Europe/Rome') {
+  constructor(timeZone = 'Europe/Rome', winOnly = false) {
     this.timeZone = timeZone;
+    this.winOnly = winOnly;
   }
 
   async generate(ctx: EmailContext): Promise<string> {
-    return renderEmailV2(ctx, DETERMINISTIC_NARRATIVES[ctx.type], this.timeZone);
+    return renderEmailV2(ctx, narrativeFor(ctx.type, this.winOnly), this.timeZone, this.winOnly);
   }
 }
 

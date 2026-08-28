@@ -69,7 +69,7 @@ export const llmParseCommand: CommandModule<object, JsonArg & { input: string; m
       const provider = new DbSeasonDataProvider(db);
       const teams = await provider.getTeams();
       const aliases = await loadTeamAliasesFor(config.testMode);
-      const opts = { teams, aliases, testMode: config.testMode };
+      const opts = { teams, aliases, testMode: config.testMode, winOnly: config.WIN_ONLY };
       // `--mode` esplicito prevale sulla config; senza --mode si segue la config
       // (default deterministico, email v3 Parte B).
       const useLlm = argv.mode === 'llm' || (argv.mode === undefined && config.AI_EMAIL_PARSER);
@@ -175,7 +175,12 @@ export const llmClassifyCommand: CommandModule<object, ClassifyArgs> = {
           )
         : new DeterministicIntentClassifier();
       const body = classifyInputBody(argv.input);
-      const result = await classifier.classify(body, { teams, aliases, testMode: config.testMode });
+      const result = await classifier.classify(body, {
+        teams,
+        aliases,
+        testMode: config.testMode,
+        winOnly: config.WIN_ONLY
+      });
       if (argv.json) {
         console.log(jsonWithTestMode(config, result));
       } else {
@@ -231,7 +236,7 @@ export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
       .option('outcome', {
         type: 'string' as const,
         choices: ['win', 'draw', 'lose'],
-        describe: 'Esito del pick'
+        describe: 'Esito del pick (in win_only è sempre win)'
       })
       .option('reason', { type: 'string' as const, describe: 'Motivo di rifiuto/eliminazione' })
       .option('deadline', {
@@ -274,9 +279,10 @@ export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
             timeoutMs: config.LLM_TIMEOUT_MS,
             retries: config.LLM_RETRIES
           }),
-          config.TIMEZONE
+          config.TIMEZONE,
+          config.WIN_ONLY
         )
-      : new DeterministicGenerator(config.TIMEZONE);
+      : new DeterministicGenerator(config.TIMEZONE, config.WIN_ONLY);
     const body = await generator.generate(emailCtx);
     const subject = subjectFor(emailCtx);
     if (argv.json) {

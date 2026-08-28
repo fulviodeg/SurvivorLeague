@@ -132,6 +132,15 @@ const configSchema = z.object({
   ENTRY_FEE_EUR: z.coerce.number().nonnegative().default(5),
   // Percentuale (0-100) del montepremi al vincitore — placeholder Fase 1, non usato nella POC.
   WINNER_SHARE_PCT: z.coerce.number().min(0).max(100).default(85),
+  // Modalità di gioco `win_only` (ADR-016): true (DEFAULT) = il giocatore
+  // sceglie SOLO la squadra che vincerà (outcome sempre 'win'); pareggio o
+  // sconfitta della squadra scelta = pick sbagliato → eliminazione. false =
+  // modalità classica con esito esplicito (win | draw | lose). La modalità è
+  // FISSATA nel DB a `tournament:start` e una guardia fatal (src/game/mode.ts)
+  // abortisce il processo se `WIN_ONLY` cambia a torneo aperto: impostarla
+  // PRIMA di `tournament:start` e non modificarla a torneo in corso. Non è una
+  // credenziale, nessun impatto su env-examples.test.ts.
+  WIN_ONLY: boolParam('true'),
 
   // --- §4.2 Parametri infrastruttura ---
   // Fuso orario di sistema (stringa IANA) per la comunicazione verso

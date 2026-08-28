@@ -33,7 +33,7 @@
  * chiamante (CLI/wiring); errori di trasporto → `LLMError` rilanciata (D3,
  * mai silenziosa: il chiamante decide se notificare).
  */
-import { DETERMINISTIC_NARRATIVES, EMAIL_TEMPLATES, serializeEmailContext } from './templates.js';
+import { narrativeFor, serializeEmailContext, templateFor } from './templates.js';
 import { renderEmailV2 } from './email-renderer.js';
 import { OpenAIClient } from './openai-client.js';
 
@@ -254,10 +254,10 @@ export const MAX_NARRATIVE_CHARS = 1000;
  * fallback è DETERMINISTICO (nessuna chiamata LLM di ripiego, nessuna
  * invenzione: il renderer compone comunque sezioni/CTA dai dati iniettati).
  */
-export function deterministicNarrative(ctx: EmailContext, raw: string): string {
+export function deterministicNarrative(ctx: EmailContext, raw: string, winOnly = false): string {
   const trimmed = raw.trim();
   if (trimmed === '' || trimmed.length > MAX_NARRATIVE_CHARS) {
-    return DETERMINISTIC_NARRATIVES[ctx.type];
+    return narrativeFor(ctx.type, winOnly);
   }
   return trimmed;
 }
@@ -273,29 +273,31 @@ export function deterministicNarrative(ctx: EmailContext, raw: string): string {
 export class OpenAIGenerator implements LLMGenerator {
   private readonly client: OpenAIClient;
   private readonly timeZone: string;
+  private readonly winOnly: boolean;
 
-  constructor(client: OpenAIClient, timeZone = 'Europe/Rome') {
+  constructor(client: OpenAIClient, timeZone = 'Europe/Rome', winOnly = false) {
     this.client = client;
     this.timeZone = timeZone;
+    this.winOnly = winOnly;
   }
 
   /**
-   * Genera il corpo dell'email: template di sistema per il tipo + contesto
-   * serializzato (senza numeri di turno — ADR-004/RF-25) → chiamata API per
-   * il SOLO testo narrativo → guardia `deterministicNarrative` (output
-   * degenerato/vuoto → fallback fisso per tipo, mai spazzatura) →
-   * composizione deterministica del renderer di canale `renderEmailV2`
-   * (header, box, sezioni dati, CTA; date nel fuso iniettato). Errori di
-   * trasporto/HTTP → LLMError rilanciata (D3).
+   * Genera il corpo dell'email: template di sistema per il tipo (win_only-aware
+   * via `templateFor`, ADR-016) + contesto serializzato (senza numeri di turno
+   * — ADR-004/RF-25) → chiamata API per il SOLO testo narrativo → guardia
+   * `deterministicNarrative` (output degenerato/vuoto → fallback fisso per
+   * tipo, mai spazzatura) → composizione deterministica del renderer di canale
+   * `renderEmailV2` (header, box, sezioni dati, CTA; date nel fuso iniettato).
+   * Errori di trasporto/HTTP → LLMError rilanciata (D3).
    */
   async generate(ctx: EmailContext): Promise<string> {
-    const template = EMAIL_TEMPLATES[ctx.type];
+    const template = templateFor(ctx.type, this.winOnly);
     const userMessage = serializeEmailContext(ctx, this.timeZone);
     const raw = await this.client.chatCompletion(
       { system: template, user: userMessage },
       'text'
     );
-    const narrative = deterministicNarrative(ctx, raw);
-    return renderEmailV2(ctx, narrative, this.timeZone);
+    const narrative = deterministicNarrative(ctx, raw, this.winOnly);
+    return renderEmailV2(ctx, narrative, this.timeZone, this.winOnly);
   }
 }

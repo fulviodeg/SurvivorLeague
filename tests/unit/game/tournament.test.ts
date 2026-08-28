@@ -83,10 +83,34 @@ describe('tournament:start (US6, RF-21, RF-20)', () => {
     expect(res.tt1Kickoff).toBe('2026-09-12T16:00:00.000Z');
     expect(res.tt1Deadline).toBe('2026-09-12T15:30:00.000Z');
     // registration_open resta 0: colonna DEPRECATA (ADR-009, B8a), mai scritta.
-    expect(db.prepare('SELECT season_started, start_round, registration_open FROM tournament_state WHERE id = 1').get())
-      .toEqual({ season_started: 1, start_round: 1, registration_open: 0 });
+    expect(db.prepare('SELECT season_started, start_round, registration_open, win_only FROM tournament_state WHERE id = 1').get())
+      .toEqual({ season_started: 1, start_round: 1, registration_open: 0, win_only: 1 });
     const pending = db.prepare("SELECT COUNT(*) AS n FROM round_state WHERE status = 'pending'").get() as { n: number };
     expect(pending.n).toBe(6);
+  });
+
+  it('ADR-016: WIN_ONLY=true → tournament_state.win_only=1 (fissata a start)', async () => {
+    const db = new Database(':memory:');
+    migrate(db);
+    loadBaseSeason(db);
+    const ctx: GameContext = {
+      db,
+      dataProvider: new DbSeasonDataProvider(db),
+      config: parseConfig({
+        IMAP_USER: 'u',
+        IMAP_PASS: 'p',
+        SMTP_USER: 'u',
+        SMTP_PASS: 'p',
+        LLM_API_KEY: 'k',
+        FOOTBALL_DATA_TOKEN: 't',
+        WIN_ONLY: 'true'
+      }),
+      now: NOW_BEFORE
+    };
+    await startTournament(ctx);
+    expect(db.prepare('SELECT win_only FROM tournament_state WHERE id = 1').get()).toEqual({
+      win_only: 1
+    });
   });
 
   it('aggancio --start-round 4: TT1 = TC 4, righe pending solo per la finestra', async () => {
@@ -242,6 +266,8 @@ describe('tournament:status / history / leaderboard / export', () => {
     expect(dump.tables.match.length).toBeGreaterThan(0);
     expect(dump.tables.player.length).toBe(1);
     expect(dump.tables.tournament_state).toHaveLength(1);
+    // ADR-016: l'export include la modalità win_only (determinismo RNF1).
+    expect(dump.tables.tournament_state[0]).toMatchObject({ win_only: 1 });
     // Rileggibile: round-trip JSON identico.
     expect(JSON.parse(JSON.stringify(dump))).toEqual(dump);
   });

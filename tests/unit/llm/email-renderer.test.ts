@@ -704,3 +704,129 @@ describe('renderEmailV2 (email v3) — vincoli strutturali', () => {
     }
   });
 });
+
+describe('renderEmailV2 — win_only (ADR-016)', () => {
+  it('pick_confirmed in win_only → "PICK REGISTRATO → ROMA" senza esito', () => {
+    const ctx: EmailContext = {
+      type: 'pick_confirmed',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      deadline: DEADLINE,
+      deadlineRemaining: '2 ore',
+      team: 'Roma',
+      outcome: 'win'
+    };
+    const body = renderEmailV2(ctx, '', ROME, true);
+    expect(body).toBe(
+      [
+        HEADER,
+        'Ciao Mario!',
+        'PICK REGISTRATO → ROMA',
+        '',
+        '⏰ DEADLINE PICK',
+        DEADLINE_LINE
+      ].join('\n')
+    );
+  });
+
+  it('pick_instructions in win_only → CTA "solo il nome della squadra che vincerà"', () => {
+    const ctx: EmailContext = {
+      type: 'pick_instructions',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      deadline: DEADLINE,
+      deadlineRemaining: '2 ore',
+      matches: UPCOMING_MATCHES
+    };
+    const body = renderEmailV2(ctx, 'Scegli la squadra che vincerà.', ROME, true);
+    expect(body).toContain(
+      'Rispondi a questa email con il nome della squadra che vincerà prima della scadenza.'
+    );
+    expect(body).not.toContain('squadra + esito');
+  });
+
+  it('elenco giocatori in win_only omette "· esito" (riga {nome} — {squadra} — esito)', () => {
+    const ctx: EmailContext = {
+      type: 'round_closed_survived',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      players: [
+        { name: 'Mario Rossi', team: 'Roma', outcome: 'win', eliminated: false },
+        { name: 'Sara Verdi', team: 'Inter', outcome: 'win', eliminated: true }
+      ],
+      inGameCount: 1,
+      eliminatedWrong: 1,
+      eliminatedMissing: 0
+    };
+    const body = renderEmailV2(ctx, '', ROME, true);
+    expect(body).toContain('Mario Rossi — Roma — ✅ ancora in gara');
+    expect(body).toContain('Sara Verdi — Inter — ❌ eliminato');
+    expect(body).not.toContain('· vittoria');
+  });
+
+  it('storico tournament_closed in win_only riusa la riga senza esito', () => {
+    const ctx: EmailContext = {
+      type: 'tournament_closed',
+      playerName: 'Mario',
+      tournamentHistory: [
+        {
+          round: 1,
+          championshipRound: 5,
+          players: [{ name: 'Mario Rossi', team: 'Roma', outcome: 'win', eliminated: false }]
+        }
+      ]
+    };
+    const body = renderEmailV2(ctx, '', ROME, true);
+    expect(body).toContain('Mario Rossi — Roma — ✅ ancora in gara');
+    expect(body).not.toContain('· vittoria');
+  });
+
+  it('esito round corretto in win_only → mostra il pick subito dopo l\'esito ✅', () => {
+    const ctx: EmailContext = {
+      type: 'round_result_correct',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      team: 'Roma',
+      outcome: 'win',
+      inGameCount: 13,
+      matches: RESULT_MATCHES
+    };
+    const body = renderEmailV2(ctx, `Hai indovinato: hai centrato l'esito previsto.`, ROME, true);
+    expect(body).toContain(
+      `✅ SEI ANCORA IN GARA!\n⚽ il tuo Pick: ROMA ⚽\nHai indovinato: hai centrato l'esito previsto.`
+    );
+  });
+
+  it(`esito round sbagliato in win_only → mostra il pick subito dopo l'esito ❌`, () => {
+    const ctx: EmailContext = {
+      type: 'round_result_wrong',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      team: 'Roma',
+      outcome: 'win',
+      inGameCount: 13
+    };
+    const body = renderEmailV2(ctx, `Il tuo pick non si è avverato: l'avventura si ferma qui.`, ROME, true);
+    expect(body).toContain(
+      `❌ SEI STATO ELIMINATO!\n⚽ il tuo Pick: ROMA ⚽\nIl tuo pick non si è avverato: l'avventura si ferma qui.`
+    );
+  });
+
+  it('pick_missing_elimination in win_only → nessuna riga pick (non c\'è un pick)', () => {
+    const ctx: EmailContext = {
+      type: 'pick_missing_elimination',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      inGameCount: 13
+    };
+    const body = renderEmailV2(ctx, 'Non è arrivato alcun pick entro la deadline.', ROME, true);
+    expect(body).toContain('❌ SEI STATO ELIMINATO!');
+    expect(body).not.toContain('il tuo Pick');
+  });
+});

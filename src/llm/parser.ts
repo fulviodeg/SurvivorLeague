@@ -58,6 +58,15 @@ export interface PickParseOptions {
    * il classificatore LLM NON lo inietta nel prompt (comportamento invariato).
    */
   subject?: string;
+  /**
+   * Modalità `win_only` (ADR-016): quando `true` il giocatore sceglie SOLO la
+   * squadra che vincerà (outcome sempre 'win'). Parser deterministico e
+   * classificatore LLM sono consapevoli della modalità: una squadra nuda
+   * registra `{team, 'win'}` (decisione P1), un esito esplicito draw/lose
+   * rende il pick NON riconosciuto (→ chiarimento). Iniettato per chiamata
+   * come `testMode`, mai letto da config qui.
+   */
+  winOnly?: boolean;
 }
 
 /** Contratto del Parser (LLD §6.2): mai eccezioni per il contenuto, LLMError per il trasporto. */

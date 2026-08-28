@@ -425,7 +425,7 @@ data (`floor(total/2) + 1`), never hardcoded. Read-only, diagnostic.
 ### `pick:validate`
 
 ```
-pick:validate --round <n> --profileId <id> --team <name> --outcome <win|draw|lose> [--json]
+pick:validate --round <n> --profileId <id> --team <name> [--outcome <win|draw|lose>] [--json]
 ```
 
 **Purpose.** Validates a pick **without registering it**, applying the same
@@ -442,7 +442,7 @@ Diagnostic/audit tool.
 | `--round` | number, **required** | Championship round (TC) of the pick. |
 | `--profileId` | number, **required** | ID of the profile. |
 | `--team` | string, **required** | Canonical team name (exact match with the data). |
-| `--outcome` | string, **required** | Predicted outcome: `win` \| `draw` \| `lose`. |
+| `--outcome` | string, **optional** | Predicted outcome: `win` \| `draw` \| `lose`. **Optional, no CLI default**: if omitted the pick is rejected with `invalid_outcome` by the cascade (the CLI does not decide the mode — in `win_only` the pick is a bare team, but the commissioner must still pass `--outcome win` explicitly). |
 | `--json` | boolean (default `false`) | JSON output `{"testMode":…, "valid":…, "reason":…}`. Text output: `Pick valido` or `Pick non valido: <reason>`. |
 
 ---
@@ -450,7 +450,7 @@ Diagnostic/audit tool.
 ### `pick:register`
 
 ```
-pick:register --round <n> --profileId <id> --team <name> --outcome <win|draw|lose>
+pick:register --round <n> --profileId <id> --team <name> [--outcome <win|draw|lose>]
               [--reason <motivo>] [--json]
 ```
 
@@ -468,7 +468,7 @@ with code `1` and a message naming the blocked account.
 | `--round` | number, **required** | Championship round (TC) of the pick. |
 | `--profileId` | number, **required** | ID of the profile. |
 | `--team` | string, **required** | Canonical team name (exact match). |
-| `--outcome` | string, **required** | Predicted outcome: `win` \| `draw` \| `lose`. |
+| `--outcome` | string, **optional** | Predicted outcome: `win` \| `draw` \| `lose`. **Optional, no CLI default**: if omitted the pick is rejected with `invalid_outcome` (the CLI does not decide the mode). |
 | `--reason` | string | Audited reason of the commissioner's override. Required in practice when registering outside the acceptance window. |
 | `--json` | boolean (default `false`) | JSON output `{"testMode":…, "id":…, "status":…}`. Text output: `Pick registrato: id <id> (<status>)`. |
 
@@ -1015,6 +1015,11 @@ is not recognizable or ambiguous.
 | `--mode` | string | Extraction mode: `llm` (LLM) or `deterministic` (unique formulas `<TEAM> <ESITO>`); default follows `AI_EMAIL_PARSER`. |
 | `--json` | boolean (default `false`) | JSON output `{"testMode":…, "team":…, "outcome":…}` (or `{"team": null}`). Text output: `{team: "<team>", outcome: "<outcome>"}` or `{team: null} — pick non riconosciuto o ambiguo` (or the empty-canonical-list message when the DB has no teams). |
 
+**Note (`win_only`, ADR-016).** When `WIN_ONLY=true`, the extraction is
+mode-aware: a bare team name yields `{team, "win"}` (no explicit formula
+required), an explicit "pareggia"/"perde" is **not** recognized (→
+`{team: null}`).
+
 ---
 
 ### `llm:classify`
@@ -1039,6 +1044,10 @@ registration message.
 | `--input` | string, **required** | The message body as plain text, or as JSON `{"body": "<text>"}` (the JSON form is convenient when the body contains quotes/newlines). |
 | `--mode` | string | Classification mode: `llm` (LLM) or `deterministic` (unique formulas); default follows `AI_EMAIL_PARSER`. |
 | `--json` | boolean (default `false`) | JSON output `{"testMode":…, "intent":…, "pick":…}`. Text output: `{intent: "pick", pick: {team: "<t>", outcome: "<o>"}}` or `{intent: "<intent>", pick: …}`. |
+
+**Note (`win_only`, ADR-016).** When `WIN_ONLY=true`, the classification is
+mode-aware: a bare team name is a valid pick `{team, "win"}`, an explicit
+"pareggia"/"perde" zeroes the pick (`pick: null`, intent stays `pick`).
 
 ---
 
@@ -1070,9 +1079,15 @@ deterministically. Diagnostic tool to preview any of the email types.
 | `--tt` | number | Tournament round (TT) shown in the body header. |
 | `--tc` | number | Championship round (TC) shown in the subject and body header. |
 | `--team` | string | Canonical team name of the pick. |
-| `--outcome` | string | Pick outcome: `win` \| `draw` \| `lose`. |
+| `--outcome` | string | Pick outcome: `win` \| `draw` \| `lose` (in `win_only` mode it is always `win`). |
 | `--reason` | string | Rejection/elimination reason to communicate. |
 | `--deadline` | string | Deadline in ISO-8601 format; displayed in Italian, in the system `TIMEZONE`. |
 | `--available-teams` | string | Comma-separated list of available teams (for `pick_instructions`). |
 | `--mode` | string | Generation mode: `llm` (LLM narrative) or `deterministic` (fixed texts); default follows `AI_EMAIL_GENERATOR`. |
 | `--json` | boolean (default `false`) | JSON output `{"testMode":…, "subject":…, "body":…}`. Text output: `Oggetto: <subject>` followed by the rendered body. |
+
+**Note (`win_only`, ADR-016).** When `WIN_ONLY=true`, the generator is
+mode-aware: the pick texts ask only for the team that will win, the
+`pick_confirmed` key is `PICK REGISTRATO → {TEAM}` (no outcome), and the
+player rows in `round_closed_survived`/`tournament_closed` omit the outcome
+(always `win`).

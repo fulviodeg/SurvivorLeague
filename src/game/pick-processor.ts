@@ -36,6 +36,7 @@ import type Database from 'better-sqlite3';
 import { isBurned } from './rules.js';
 import type { PickRejectReason, PickValidation } from './errors.js';
 import type { GameContext } from './context.js';
+import { assertModeConsistent } from './mode.js';
 
 /** Esiti validi di un pick (LLD §7.4): win | draw | lose. */
 const VALID_OUTCOMES = ['win', 'draw', 'lose'] as const;
@@ -80,7 +81,13 @@ export async function validatePick(
   ctx: GameContext,
   input: PickInput
 ): Promise<PickValidation> {
-  const { db, dataProvider } = ctx;
+  const { db, dataProvider, config } = ctx;
+
+  // ADR-016 (difesa in profondità): anche la registrazione di un pick è un
+  // percorso di scrittura — un cambio di modalità a torneo aperto aborta PRIMA
+  // di validare/registrare. La guardia è idempotente con gli hook dei
+  // chiamanti (scheduler/processor/round-manager): ri-eseguirla non fa danno.
+  assertModeConsistent(ctx);
 
   // 1. Registrazione/attivo: il profilo esiste ed è in gara.
   const profile = db
@@ -107,8 +114,12 @@ export async function validatePick(
     return { valid: false, reason: 'team_already_used' };
   }
 
-  // 5. Esito valido (fuori win|draw|lose → rifiuto).
-  if (!(VALID_OUTCOMES as readonly string[]).includes(input.outcome)) {
+  // 5. Esito valido (fuori win|draw|lose → rifiuto). ADR-016: in win_only
+  // l'unico esito valido è 'win' (il pick è "squadra vincente"); draw/lose
+  // sono rifiutati con invalid_outcome (difesa in profondità — in win_only il
+  // parser emette già solo 'win', decisione 5 del piano).
+  const validOutcomes = config.WIN_ONLY ? (['win'] as const) : VALID_OUTCOMES;
+  if (!(validOutcomes as readonly string[]).includes(input.outcome)) {
     return { valid: false, reason: 'invalid_outcome' };
   }
 

@@ -57,6 +57,7 @@ import { autoJoinFromPick } from '../game/registration.js';
 import { registerPick } from '../game/pick-processor.js';
 import { formatRemaining } from '../game/round-time.js';
 import { getStartRound, turnFor } from '../game/turn.js';
+import { assertModeConsistent } from '../game/mode.js';
 import { classify, type MessageKind } from './email-adapter/message-router.js';
 import { subjectFor, type EmailContext } from '../llm/generator.js';
 import { UNSUBSCRIBE_CONFIRM_WORDS } from '../llm/templates.js';
@@ -119,6 +120,16 @@ export interface ProcessBatchResult {
   /** true se il batch si è fermato su LLMError (retry al tick successivo). */
   stopped: boolean;
   messages: ProcessedMessage[];
+}
+
+/**
+ * Formula del pick nelle risposte di rifiuto/chiarimento (ADR-016): in
+ * modalità `win_only` il giocatore sceglie SOLO la squadra che vincerà, quindi
+ * il testo chiede "solo il nome della squadra che vincerà"; in modalità
+ * classica resta "squadra + esito (win, draw, lose)".
+ */
+function pickFormula(winOnly: boolean): string {
+  return winOnly ? 'solo il nome della squadra che vincerà' : 'squadra + esito (win, draw, lose)';
 }
 
 /**
@@ -235,7 +246,8 @@ async function processOne(
     teams: deps.teams,
     aliases: deps.aliases,
     testMode: deps.testMode,
-    subject: routed.subject
+    subject: routed.subject,
+    winOnly: ctx.config.WIN_ONLY
   });
 
   // Stato dell'account RIletto a ogni messaggio (HIGH-2: nessuno snapshot di
@@ -374,8 +386,7 @@ async function processOne(
         await sendReply(ctx, identity.identifier, {
           type: 'pick_rejected',
           ...roundCtx,
-          reason:
-            'non ho riconosciuto la tua scelta: per entrare nel torneo invia squadra + esito (win, draw, lose)'
+          reason: `non ho riconosciuto la tua scelta: per entrare nel torneo invia ${pickFormula(ctx.config.WIN_ONLY)}`
         });
         await deps.markSeen(message);
         return { from: message.from, kind, action: 'clarification', seen: true };
@@ -419,7 +430,7 @@ async function processOne(
       await sendReply(ctx, identity.identifier, {
         type: 'pick_rejected',
         ...roundCtx,
-        reason: 'formato non riconosciuto: invia squadra + esito (win, draw, lose)'
+        reason: `formato non riconosciuto: invia ${pickFormula(ctx.config.WIN_ONLY)}`
       });
       await deps.markSeen(message);
       return { from: message.from, kind, action: 'clarification', detail: 'unrecognized_format', seen: true };
@@ -481,8 +492,7 @@ async function processOne(
   await sendReply(ctx, identity.identifier, {
     type: 'clarification',
     ...(round === null ? {} : roundEmailContext(ctx, round)),
-    reason:
-      'non ho capito la tua richiesta: puoi iscriverti ("voglio iscrivermi"), disiscriverti ("voglio disiscrivermi") o inviare un pick (squadra + esito)'
+    reason: `non ho capito la tua richiesta: puoi iscriverti ("voglio iscrivermi"), disiscriverti ("voglio disiscrivermi") o inviare un pick (${pickFormula(ctx.config.WIN_ONLY)})`
   });
   await deps.markSeen(message);
   return { from: message.from, kind, action: 'clarification', seen: true };
@@ -509,6 +519,11 @@ export async function processEmailBatch(
       'channel:email:process richiede channel, generator, classificatore e platform nel contesto'
     );
   }
+
+  // ADR-016: guardia fatal PRIMA del loop messaggi (fuori dal try/catch
+  // per-messaggio): un cambio di modalità a torneo aperto aborta il batch
+  // SENZA processare né inviare nulla. Il throw propaga al comando CLI.
+  assertModeConsistent(ctx);
 
   const round = currentOpenRound(ctx.db);
   const results: ProcessedMessage[] = [];

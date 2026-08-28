@@ -32,9 +32,9 @@ flowchart TB
     end
 
     subgraph INFRA["INFRASTRUTTURA"]
-        cfg["Config (zod)<br/>parseConfig() · getConfig()<br/>parametri gioco, infra, API, scheduler,<br/>DB_PATH + PLATFORM_DB_PATH (ADR-009)"]
+        cfg["Config (zod)<br/>parseConfig() · getConfig()<br/>parametri gioco, infra, API, scheduler,<br/>DB_PATH + PLATFORM_DB_PATH (ADR-009)<br/>WIN_ONLY (ADR-016)"]
         logger["Logger (pino)<br/>createLogger()"]
-        sqlite["SQLite (DB torneo)<br/>createConnection() · migrate()<br/>tabelle: player · profile · pick<br/>match · round_state · tournament_state"]
+        sqlite["SQLite (DB torneo)<br/>createConnection() · migrate()<br/>tabelle: player · profile · pick<br/>match · round_state · tournament_state<br/>(tournament_state.win_only, ADR-016)"]
     end
 
     subgraph PLATFORM["PIATTAFORMA (src/platform) — ADR-009, storage separato"]
@@ -64,6 +64,7 @@ flowchart TB
         tourn["Tournament<br/>startTournament() (RF-20/21 + broadcast<br/>tournament_open RF-P6)<br/>status · history · leaderboard · export"]
         sim["Simulation<br/>simulateSeason() · simulateRound()<br/>mulberry32(seed) (RNF1)<br/>account piattaforma + auto-join TT1"]
         sched["Scheduler<br/>computeActions() · schedulerTick()<br/>schedulerStatus() (R5–R7)<br/>senza azioni finestra iscrizione (ADR-009)"]
+        mode["Mode Guard<br/>assertModeConsistent() (ADR-016)<br/>fatal su cambio WIN_ONLY a torneo aperto"]
     end
 
     subgraph LLM["LLM ADAPTER (src/llm) — confine I/O (ADR-004)"]
@@ -141,6 +142,11 @@ flowchart TB
     tourn -->|"activeEmails() broadcast (RF-P6)"| platIface
     sched -->|"open/close/score"| roundMgr
     sched -->|"deps.refresh iniettato (R6)"| fdClient
+    sched -->|"assertModeConsistent() (ADR-016)"| mode
+    roundMgr -->|"assertModeConsistent() (ADR-016)"| mode
+    pickProc -->|"assertModeConsistent() (ADR-016)"| mode
+    emailProc -->|"assertModeConsistent() (ADR-016)"| mode
+    mode -->|"getTournamentState()"| tourn
     sim -->|"startTournament() (seam RF-21)"| tourn
     sim -->|"register() account piattaforma"| platIface
     sim -->|"autoJoinFromPick() (RF-P5)"| reg
@@ -169,7 +175,7 @@ flowchart TB
     class cfg,logger,sqlite infra
     class platIface,dbPlat,platSqlite plat
     class sdpIface,dbProv,fdClient,importer data
-    class ctx,rules,rtime,turn,pickProc,reg,elig,elim,winner,roundMgr,tourn,sim,sched game
+    class ctx,rules,rtime,turn,pickProc,reg,elig,elim,winner,roundMgr,tourn,sim,sched,mode game
     class llmParser,openaiParser,llmClass,openaiClass,llmGen,openaiGen,llmClient,templates,aliases llm
     class chanIface,emailAdapter,router,imapClient,smtpClient,emailProc ch
     class sdpIface,ctx,llmParser,llmClass,llmGen,chanIface,platIface iface
@@ -198,7 +204,7 @@ Note architetturali (AGENTS.md §1.3, ADR-004/007/008/009):
 |---|---|---|---|---|
 | **CLI** | `src/cli/index.ts`, `src/cli/commands/*` | Contratto operativo del sistema (ADR-006); registra tutti i comandi yargs | `createCli()` — gruppi: `db`, `platform`, `data`, `rules`, `pick`, `elimination`, `winner`, `round`, `tournament`, `llm` (parse/classify/generate), `channel:email`, `simulate`, `scheduler` | Costruisce il `GameContext`; usa Config, DB torneo+piattaforma, FootballDataClient, Importer, moduli di gioco |
 | **Email Wiring** | `src/cli/email-wiring.ts` | Assemblea degli adapter/LLM reali e del registry piattaforma | `buildEmailComponents()`, `attachEmailToContext()`, `attachPlatformToContext()` (ADR-009) | Istanzia EmailAdapter, OpenAIGenerator, OpenAIIntentClassifier, DbPlatformRegistry |
-| **Config** | `src/config.ts` | Parametri di sistema validati con zod (LLD §4), incl. `PLATFORM_DB_PATH` | `parseConfig(env)`, `getConfig()`, `ConfigError` | Usata da CLI e logger; mai dai moduli di gioco (via contesto) |
+| **Config** | `src/config.ts` | Parametri di sistema validati con zod (LLD §4), incl. `PLATFORM_DB_PATH` e `WIN_ONLY` (ADR-016) | `parseConfig(env)`, `getConfig()`, `ConfigError` | Usata da CLI e logger; mai dai moduli di gioco (via contesto) |
 | **Logger** | `src/logger.ts` | Log strutturati pino | `createLogger()` | Usata dalla CLI |
 | **SQLite DB torneo** | `src/db/connection.ts`, `src/db/schema.ts` | Unico stato persistente del torneo (player, profile, pick, match, round_state, tournament_state; colonne additive `register_id`/`summary_sent`, ADR-009) | `createConnection(path)`, `migrate()`, `applyAdditiveMigrations()`, `SCHEMA_DDL` | Usato da DbSeasonDataProvider e da tutti i moduli (via `ctx.db`) |
 | **SQLite DB piattaforma** | `src/db/platform-schema.ts` | Storage SEPARATO degli account (ADR-009, RF-P7): `platform_account` (registerID, email, status, created_at, unsubscribed_at) | `migratePlatform(db)`, `PLATFORM_SCHEMA_DDL` | Usato da DbPlatformRegistry; mai dal DB torneo |
@@ -219,7 +225,8 @@ Note architetturali (AGENTS.md §1.3, ADR-004/007/008/009):
 | **Round Manager** | `src/game/round-manager.ts` | Ciclo di vita dei round (unico scrittore di `round_state`); notifiche filtrate su account `active` (RF-P6); riepilogo `round_closed_survived` ai soli sopravvissuti alla transizione `closed→scored` (guardia `summary_sent`) | `openRound()` (deadline fissa RF-14), `closeRound()`, `scoreRound()` (incrementale ADR-003, idempotente RF-17, Freeze CL1/CL8), `roundStatus()`, `roundDeadline()` | Usa Elimination, Rules, Round Time, Turn, ChannelAdapter, LLMGenerator, PlatformRegistry; usato da CLI, Scheduler, Simulation |
 | **Tournament** | `src/game/tournament.ts` | Avvio stagione (RF-20/21) + broadcast `tournament_open` (RF-P6) e viste aggregate | `startTournament()` (seam `allowPastDeadline`), `tournamentStatus()` (`platformSubscribers`), `tournamentHistory()`, `tournamentLeaderboard()`, `tournamentExport()` | Usa Winner, Rules, Turn, provider, PlatformRegistry; usato da CLI e Simulation |
 | **Simulation** | `src/game/simulation.ts` | Riproduzione full-season/round su dati storici (CS3, RNF1) con account piattaforma + auto-join | `simulateSeason()`, `simulateRound()`, `mulberry32(seed)`, guardie (R3, DB piattaforma pulito, registry obbligatorio) | Invoca Tournament, Registration (auto-join), Pick Processor, Rules, Round Manager, Round Time, Winner, PlatformRegistry; usato da `simulate:*` |
-| **Scheduler** | `src/game/scheduler.ts` | Orchestratore di produzione (nessuna logica di gioco); senza azioni finestra iscrizione (ADR-009) | `computeActions()` (pura), `schedulerTick()` (check-then-act, RNF9), `schedulerStatus()` (`platformSubscribers`) | Usa Round Manager, Round Time, Turn + refresh iniettato; usato da `scheduler:tick/status` e cron |
+| **Scheduler** | `src/game/scheduler.ts` | Orchestratore di produzione (nessuna logica di gioco); senza azioni finestra iscrizione (ADR-009) | `computeActions()` (pura), `schedulerTick()` (check-then-act, RNF9), `schedulerStatus()` (`platformSubscribers`) | Usa Round Manager, Round Time, Turn, Mode Guard + refresh iniettato; usato da `scheduler:tick/status` e cron |
+| **Mode Guard** | `src/game/mode.ts` | Guardia di consistenza della modalità di gioco (ADR-016, win_only): rileva un cambio di `WIN_ONLY` a torneo APERTO e abbatte il processo PRIMA di ogni scrittura/invio (throw fatale) | `assertModeConsistent(ctx)` — nome GENERICO (estendibile per chiave a futuri parametri di modalità, es. Jolly) | Usa `getTournamentState()` (Tournament); invocata all'inizio da Scheduler, Round Manager, Pick Processor, Email Processor |
 | **LLMParser** | `src/llm/parser.ts` | Estrazione `{team, outcome}` (confine I/O, ADR-004); delega al classificatore (ADR-009) | `extractPick(body, opts)` → `null` su ambiguo (CS7), `loadTeamAliases()`; impl `OpenAIParser` (riusa `OpenAIIntentClassifier`) | Usato da `llm:parse` |
 | **LLMIntentClassifier** | `src/llm/intent-classifier.ts` | Intento + pick in UNA chiamata LLM (ADR-009, RF-P1/P2) | `classify(body, opts)` → `{intent, pick}`; `other`/`pick:null` su contenuto (CS7), `LLMError` su trasporto; filtro esatto (D2/C); impl `OpenAIIntentClassifier` | Usa OpenAIClient e aliases; usato da Email Processor e `llm:classify` |
 | **LLMGenerator** | `src/llm/generator.ts` | Testi email in italiano per ogni `EmailType` (14 tipi, ADR-009) | `generate(ctx)`; `subjectFor()` (D1); impl `OpenAIGenerator` (placeholder TT/TC, D4/RF-25) | Usa OpenAIClient e Templates; usato da Round Manager, Email Processor, Tournament |

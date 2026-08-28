@@ -86,6 +86,21 @@ export function buildClassifySystemPrompt(opts: PickParseOptions): string {
   const league = opts.testMode
     ? 'un torneo privato di pronostici basato su un campionato sintetico (rosa di Serie A 2025/26, stagione fittizia di test, NON la stagione reale).'
     : 'un torneo privato di pronostici sulla Serie A.';
+  // ADR-016 (win_only): istruzioni dedicate quando la modalità è attiva — il
+  // giocatore sceglie SOLO la squadra vincente; una squadra nuda è sufficiente
+  // (outcome 'win' implicito), un pareggio/sconfitta esplicito invalida il pick.
+  const winOnlyRules =
+    opts.winOnly === true
+      ? [
+          '',
+          'MODALITÀ WIN_ONLY: il giocatore sceglie SOLO la squadra che vincerà;',
+          'l\'outcome è SEMPRE "win". Se il testo nomina solo una squadra senza esito,',
+          'imposta "outcome": "win".',
+          'Se il testo esprime esplicitamente un pareggio o una sconfitta della squadra',
+          '("pareggia"/"perde"), il pick NON è valido: rispondi con',
+          '"pick": {"team": null, "outcome": null} (l\'intent resta "pick").'
+        ]
+      : [];
   return [
     `Sei il classificatore di Survivor League, ${league}`,
     'Il giocatore scrive un\'email in italiano. Classifica l\'intento del messaggio:',
@@ -104,6 +119,7 @@ export function buildClassifySystemPrompt(opts: PickParseOptions): string {
     'Il campo "name" vale SOLO per "subscribe": è il NOME del giocatore dedotto dal testo',
     'di iscrizione (es. "mi chiamo Mario e voglio iscrivermi" → "name": "Mario").',
     'Se il testo di iscrizione non contiene un nome → "name": null. Per gli altri intenti → "name": null.',
+    ...winOnlyRules,
     '',
     'Lista canonica delle squadre (il campo "team" DEVE essere esattamente uno di questi nomi,',
     'nessuna variante, abbreviazione o traduzione):',
@@ -149,7 +165,7 @@ export class OpenAIIntentClassifier implements LLMIntentClassifier {
       'json_object'
     );
 
-    return this.parseClassification(raw, opts.teams);
+    return this.parseClassification(raw, opts.teams, opts.winOnly === true);
   }
 
   /**
@@ -159,7 +175,7 @@ export class OpenAIIntentClassifier implements LLMIntentClassifier {
    * (CS7); intento `pick` con squadra fuori lista o esito invalido → pick
    * azzerato a null (l'LLM propone, il check dispone — doppia barriera D2/C).
    */
-  private parseClassification(raw: string, teams: string[]): IntentClassification {
+  private parseClassification(raw: string, teams: string[], winOnly = false): IntentClassification {
     let data: unknown;
     try {
       data = JSON.parse(raw);
@@ -178,8 +194,18 @@ export class OpenAIIntentClassifier implements LLMIntentClassifier {
     if (pick === null) return { intent: 'pick', pick: null, name: null };
     const { team, outcome } = pick;
     // Filtro deterministico esatto (D2): solo nomi canonici ed esiti validi.
-    if (team === null || outcome === null) return { intent: 'pick', pick: null, name: null };
+    if (team === null) return { intent: 'pick', pick: null, name: null };
     if (!teams.includes(team)) return { intent: 'pick', pick: null, name: null };
+    // ADR-016 (win_only): l'unico esito ammesso è 'win' — un outcome
+    // draw/lose esplicito rende il pick non valido (→ pick null, chiarimento);
+    // outcome null o 'win' → 'win' (il giocatore sceglie solo la squadra).
+    if (winOnly) {
+      if (outcome === 'draw' || outcome === 'lose') {
+        return { intent: 'pick', pick: null, name: null };
+      }
+      return { intent: 'pick', pick: { team, outcome: 'win' }, name: null };
+    }
+    if (outcome === null) return { intent: 'pick', pick: null, name: null };
     return { intent: 'pick', pick: { team, outcome }, name: null };
   }
 }

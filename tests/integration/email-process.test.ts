@@ -103,7 +103,7 @@ function pick(team: string, outcome: 'win' | 'draw' | 'lose'): IntentClassificat
  * fissa 15:30, kickoff 16:00 − anticipo 30') + DB PIATTAFORMA in-memory
  * migrato con registry iniettato (ADR-009).
  */
-function makeHarness(opts: { startTournament?: boolean; testMode?: boolean; offsetDays?: number } = {}): Harness {
+function makeHarness(opts: { startTournament?: boolean; testMode?: boolean; offsetDays?: number; winOnly?: boolean } = {}): Harness {
   const db = new Database(':memory:');
   migrate(db);
   loadBaseSeason(db);
@@ -122,7 +122,8 @@ function makeHarness(opts: { startTournament?: boolean; testMode?: boolean; offs
     MATCH_DURATION_MIN: '105',
     TC_CLOSE_SKEW_MIN: '15',
     ...(opts.testMode === true ? { TEST_MODE: 'true' } : {}),
-    ...(opts.offsetDays !== undefined ? { TEST_OFFSET_DAYS: String(opts.offsetDays) } : {})
+    ...(opts.offsetDays !== undefined ? { TEST_OFFSET_DAYS: String(opts.offsetDays) } : {}),
+    ...(opts.winOnly === true ? { WIN_ONLY: 'true' } : { WIN_ONLY: 'false' })
   });
   const channel = new FakeChannel();
   const generator = new FakeGenerator();
@@ -139,9 +140,9 @@ function makeHarness(opts: { startTournament?: boolean; testMode?: boolean; offs
   };
   if (opts.startTournament !== false) {
     db.prepare(
-      `INSERT INTO tournament_state (id, season_started, start_round, registration_open)
-       VALUES (1, 1, 1, 1)`
-    ).run();
+      `INSERT INTO tournament_state (id, season_started, start_round, registration_open, win_only)
+       VALUES (1, 1, 1, 1, ?)`
+    ).run(opts.winOnly === true ? 1 : 0);
     db.prepare(
       `INSERT INTO round_state (round, status, deadline, opened_at)
        VALUES (1, 'open', '2026-09-12T15:30:00.000Z', ?)`
@@ -721,5 +722,34 @@ describe('channel:email:process — errori (D7/RNF9)', () => {
     expect(result.messages[0]).toMatchObject({ action: 'error_llm', seen: false });
     expect(result.processed).toBe(1);
     expect(seen).toEqual([]);
+  });
+});
+
+describe('channel:email:process — win_only (ADR-016)', () => {
+  it('il wiring passa winOnly al classificatore e registra il pick (email "AC Milan")', async () => {
+    const { db, ctx, platform, generator, deps } = makeHarness({ winOnly: true });
+    const account = platform.register('a@test.it', null, T_OPEN);
+    db.prepare('INSERT INTO player (email, name, register_id) VALUES (?, ?, ?)').run('a@test.it', 'Aldo', account.registerId);
+    db.prepare('INSERT INTO profile (player_id, register_id) VALUES ((SELECT id FROM player WHERE email = ?), ?)').run('a@test.it', account.registerId);
+    const classifier = useClassifier(ctx, new Map([[`vado di ${JU}`, pick(JU, 'win')]]));
+
+    await processEmailBatch(ctx, [incoming('a@test.it', `vado di ${JU}`, T_PICK, '1')], deps());
+
+    expect(classifier.calls[0]?.winOnly).toBe(true);
+    expect(generator.contexts[0]).toMatchObject({ type: 'pick_confirmed', team: JU });
+    expect(
+      db.prepare('SELECT team, outcome FROM pick').get()
+    ).toMatchObject({ team: JU, outcome: 'win' });
+  });
+
+  it('chiarimento win_only: il testo chiede "solo il nome della squadra che vincerà"', async () => {
+    const { ctx, platform, generator, deps } = makeHarness({ winOnly: true });
+    platform.register('a@test.it', null, T_OPEN);
+    useClassifier(ctx, new Map([['forse pareggia', { intent: 'other', pick: null, name: null }]]));
+
+    await processEmailBatch(ctx, [incoming('a@test.it', 'forse pareggia', T_PICK, '1')], deps());
+
+    expect(generator.contexts[0]).toMatchObject({ type: 'clarification' });
+    expect(generator.contexts[0]?.reason).toContain('solo il nome della squadra che vincerà');
   });
 });

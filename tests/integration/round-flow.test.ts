@@ -104,6 +104,8 @@ function makeHarness(): Harness {
     SMTP_PASS: 'p',
     LLM_API_KEY: 'k',
     FOOTBALL_DATA_TOKEN: 't',
+    // Test in modalità CLASSICA: l'esito `lose` è valido solo con WIN_ONLY=false.
+    WIN_ONLY: 'false',
     // Parametri temporali espliciti per un controllo deterministico dei tempi:
     // tcClose(R1) = 18:45 (UPP) + 105' + 15' = 20:45.
     DEADLINE_ADVANCE_MIN: '30',

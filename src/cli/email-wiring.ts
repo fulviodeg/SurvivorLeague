@@ -105,11 +105,11 @@ export function buildEmailComponents(config: AppConfig): EmailComponents {
     // Il fuso di sistema è iniettato in entrambi i generatori (ADR-011).
     generator: config.AI_EMAIL_GENERATOR
       ? new FallbackGenerator(
-          new OpenAIGenerator(client, config.TIMEZONE),
-          new DeterministicGenerator(config.TIMEZONE),
+          new OpenAIGenerator(client, config.TIMEZONE, config.WIN_ONLY),
+          new DeterministicGenerator(config.TIMEZONE, config.WIN_ONLY),
           logger
         )
-      : new DeterministicGenerator(config.TIMEZONE),
+      : new DeterministicGenerator(config.TIMEZONE, config.WIN_ONLY),
     parser: new OpenAIParser(client),
     // Email v3 Parte B: il classificatore di intento è deterministico di
     // default (AI_EMAIL_PARSER assente/false, MAI chiamate LLM per la
