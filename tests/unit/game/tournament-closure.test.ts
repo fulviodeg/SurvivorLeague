@@ -381,6 +381,70 @@ describe('chiusura automatica — mail tournament_closed (ADR-015 email v4)', ()
     const closingSent = h.channel.sent.filter((s) => s.subject === '⚽🏆SURVIVOR LEAGUE🏆⚽ - Chiusura Torneo');
     expect(closingSent.map((s) => s.to)).toEqual(['a@test.it']);
   });
+
+  it('storico PER-ROUND: eliminato al round 2 risulta ancora in gara al round 1 (esito del pick del round, non flag finale)', async () => {
+    const h = await makeHarness();
+    await startTournament(h.ctx);
+    await openRound(h.ctx, 1);
+    insertProfile(h.db, 'a@test.it', 'Aldo');
+    insertProfile(h.db, 'b@test.it', 'Beppe');
+    h.platform.register('a@test.it', 'Aldo', NOW);
+    h.platform.register('b@test.it', 'Beppe', NOW);
+
+    // Round 1: nessun eliminato — IM 2-0 AC e JU 2-0 MA → a (IM) e b (JU) corretti.
+    h.ctx.now = T_PICK;
+    await pickFor(h.ctx, 'a@test.it', IM, 'win');
+    await pickFor(h.ctx, 'b@test.it', JU, 'win');
+    setScore(h.db, 1, IM, AC, 2, 0);
+    setScore(h.db, 1, JU, MA, 2, 0);
+    h.ctx.now = T_CLOSE;
+    await closeRound(h.ctx, 1);
+    h.ctx.now = T_SCORE;
+    await scoreRound(h.ctx, 1);
+
+    // Round 2: a (AC win, ma AC perde 0-2 MA) sbagliato → eliminato;
+    // b (MA win) corretto → unico superstite → chiusura automatica (caso 1).
+    h.ctx.now = new Date('2026-09-19T08:00:00.000Z');
+    await openRound(h.ctx, 2);
+    h.ctx.now = new Date('2026-09-19T15:00:00.000Z');
+    const pickRound2 = async (email: string, team: string): Promise<void> => {
+      const profile = h.db
+        .prepare('SELECT id FROM profile WHERE player_id = (SELECT id FROM player WHERE email = ?)')
+        .get(email) as { id: number };
+      await registerPick(h.ctx, {
+        profileId: profile.id,
+        round: 2,
+        team,
+        outcome: 'win',
+        receivedAt: h.ctx.now
+      });
+    };
+    await pickRound2('a@test.it', AC);
+    await pickRound2('b@test.it', MA);
+    setScore(h.db, 2, IM, JU, 2, 0);
+    setScore(h.db, 2, AC, MA, 0, 2);
+    h.ctx.now = new Date('2026-09-19T15:31:00.000Z');
+    await closeRound(h.ctx, 2);
+    h.ctx.now = new Date('2026-09-19T21:00:00.000Z');
+    await scoreRound(h.ctx, 2);
+
+    const closed = h.generator.byType('tournament_closed');
+    expect(closed).toHaveLength(2);
+    const history = closed[0]?.tournamentHistory;
+    expect(history).toHaveLength(2);
+    // Round 1: a — eliminato SOLO al round 2 — era ancora in gara.
+    expect(history?.[0]).toMatchObject({ round: 1, championshipRound: 1 });
+    expect(history?.[0]?.players).toEqual([
+      { name: 'Aldo', team: IM, outcome: 'win', eliminated: false },
+      { name: 'Beppe', team: JU, outcome: 'win', eliminated: false }
+    ]);
+    // Round 2: a eliminato (pick sbagliato), b ancora in gara (vincitore).
+    expect(history?.[1]).toMatchObject({ round: 2, championshipRound: 2 });
+    expect(history?.[1]?.players).toEqual([
+      { name: 'Aldo', team: AC, outcome: 'win', eliminated: true },
+      { name: 'Beppe', team: MA, outcome: 'win', eliminated: false }
+    ]);
+  });
 });
 
 describe('scheduler fermo a torneo chiuso (ADR-011 §5.4)', () => {

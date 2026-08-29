@@ -123,16 +123,23 @@ function countInGame(db: Database.Database): number {
  * v4): partecipanti del round = profili in gara alla chiusura del round
  * (`eliminated = 0`) O eliminati IN QUESTO round (`eliminated_at >= opened_at`):
  * gli eliminati nei round PRECEDENTI restano esclusi. LEFT JOIN `pick` per
- * squadra/esito (mancante → nessun pick); `name` con fallback sull'email
+ * squadra/esito/status (mancante → nessun pick); `name` con fallback sull'email
  * quando vuoto. Sola lettura, computata UNA volta per round (stesso valore
  * per ogni destinatario, come `countInGame`). `openedAt` è la stringa ISO-8601
  * di apertura del round (mai il clock: il filtro è sullo snapshot di stato).
+ *
+ * Lo stato `eliminated` è PER-ROUND e deriva dall'esito del pick di QUEL round
+ * (`pk.status`), NON dal flag finale `p.eliminated`: quest'ultimo vale solo per
+ * l'ultimo round e farebbe risultare 'eliminato' un giocatore eliminato in un
+ * round SUCCESSIVO anche nei round precedenti (bug storico `tournament_closed`).
+ * Regola: pick `correct` → ancora in gara; `wrong` o nessun pick (missing_pick)
+ * → eliminato; `pending`/`frozen` (non ancora valutato) → ancora in gara.
  */
 function getRoundPlayers(db: Database.Database, round: number, openedAt: string): EmailPlayerResult[] {
   const rows = db
     .prepare(
       `SELECT COALESCE(pl.name, '') AS name, COALESCE(pl.email, '') AS email,
-              pk.team AS team, pk.outcome AS outcome, p.eliminated AS eliminated
+              pk.team AS team, pk.outcome AS outcome, pk.status AS pickStatus
        FROM profile p
        JOIN player pl ON pl.id = p.player_id
        LEFT JOIN pick pk ON pk.profile_id = p.id AND pk.round = ?
@@ -144,13 +151,13 @@ function getRoundPlayers(db: Database.Database, round: number, openedAt: string)
     email: string;
     team: string | null;
     outcome: string | null;
-    eliminated: number;
+    pickStatus: string | null;
   }>;
   return rows.map((r) => ({
     name: r.name !== '' ? r.name : r.email,
     ...(r.team !== null ? { team: r.team } : {}),
     ...(r.outcome !== null ? { outcome: r.outcome } : {}),
-    eliminated: r.eliminated === 1
+    eliminated: r.pickStatus === 'wrong' || r.pickStatus === null
   }));
 }
 
