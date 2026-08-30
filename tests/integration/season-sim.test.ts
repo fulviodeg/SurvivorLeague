@@ -32,7 +32,7 @@ import { loadBaseSeason, setScore } from '../fixtures/season.js';
  * DB PIATTAFORMA in-memory pulito con registry iniettato (ADR-009: il seed
  * crea account piattaforma, i profili nascono per auto-join al TT1).
  */
-function makeCtx(winOnly = false): {
+function makeCtx(winOnly = false, jolliesPerPlayer?: number): {
   db: Database.Database;
   platformDb: Database.Database;
   platform: DbPlatformRegistry;
@@ -54,7 +54,8 @@ function makeCtx(winOnly = false): {
       SMTP_PASS: 'p',
       LLM_API_KEY: 'k',
       FOOTBALL_DATA_TOKEN: 't',
-      ...(winOnly ? { WIN_ONLY: 'true' } : { WIN_ONLY: 'false' })
+      ...(winOnly ? { WIN_ONLY: 'true' } : { WIN_ONLY: 'false' }),
+      ...(jolliesPerPlayer !== undefined ? { JOLLIES_PER_PLAYER: String(jolliesPerPlayer) } : {})
     }),
     now: new Date('2026-09-01T10:00:00.000Z'),
     platform
@@ -230,5 +231,43 @@ describe('simulateRound (Task 7.1/10, ADR-009)', () => {
     });
     const outcomes = db.prepare('SELECT DISTINCT outcome FROM pick').all() as Array<{ outcome: string }>;
     expect(outcomes.map((o) => o.outcome)).toEqual(['win']);
+  });
+
+  it('feature JOLLY: simulateSeason con jolly attivi → jolly_used/contatore coerenti + export con jollies_per_player (D10)', async () => {
+    const { db, ctx } = makeCtx(true, 1);
+    playAllMatches(db);
+
+    const report = await simulateSeason(ctx, { players: 8, seed: 42 });
+
+    // Stagione completa scored (CS3) e jollies_per_player fissato a 1.
+    expect(report.rounds.every((r) => r.status === 'scored')).toBe(true);
+    const state = db.prepare('SELECT win_only, jollies_per_player FROM tournament_state WHERE id = 1').get() as {
+      win_only: number;
+      jollies_per_player: number;
+    };
+    expect(state).toEqual({ win_only: 1, jollies_per_player: 1 });
+    // Coerenza: ogni pick con jolly_used=1 ha decrementato il contatore del
+    // proprio profilo (nessun contatore negativo).
+    const negative = db
+      .prepare('SELECT COUNT(*) AS n FROM profile WHERE jollies_remaining < 0')
+      .get() as { n: number };
+    expect(negative.n).toBe(0);
+    const used = db.prepare('SELECT COUNT(*) AS n FROM pick WHERE jolly_used = 1').get() as { n: number };
+    // Con probabilità 0.25 per pick e 8 profili, con questa seed ALMENO un
+    // jolly è stato dichiarato (verifica dell'extra draw attivo).
+    expect(used.n).toBeGreaterThan(0);
+    // Export coerente (RNF1): jollies_per_player e jolly_used nel dump.
+    const dump = await tournamentExport(ctx);
+    expect(dump.tables.tournament_state[0]).toMatchObject({ jollies_per_player: 1 });
+  });
+
+  it('feature JOLLY off (0): NESSUN extra rng → sequenza classica invariata e nessun jolly (RNF1)', async () => {
+    const { db, ctx } = makeCtx(true, 0);
+    playAllMatches(db);
+    await simulateSeason(ctx, { players: 4, seed: 7 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM pick WHERE jolly_used = 1').get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT jollies_per_player FROM tournament_state WHERE id = 1').get()).toEqual({
+      jollies_per_player: 0
+    });
   });
 });

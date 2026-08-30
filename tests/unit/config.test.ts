@@ -39,6 +39,7 @@ describe('parseConfig', () => {
     expect(config.WINNER_SHARE_PCT).toBe(85);
     expect(config.WIN_ONLY).toBe(true);
     expect(config.AUTOPICK_ON_MISSING).toBe(false);
+    expect(config.JOLLIES_PER_PLAYER).toBe(1);
     // §4.2 parametri infrastruttura
     expect(config.IMAP_HOST).toBe('imap.gmail.com');
     expect(config.IMAP_PORT).toBe(993);
@@ -80,7 +81,8 @@ describe('parseConfig', () => {
       LLM_RETRIES: '5',
       AI_EMAIL_GENERATOR: 'true',
       WIN_ONLY: 'true',
-      AUTOPICK_ON_MISSING: 'true'
+      AUTOPICK_ON_MISSING: 'true',
+      JOLLIES_PER_PLAYER: '3'
     });
     expect(config.DEADLINE_ADVANCE_MIN).toBe(45);
     expect(config.IMAP_PORT).toBe(1993);
@@ -93,6 +95,32 @@ describe('parseConfig', () => {
     expect(config.AI_EMAIL_GENERATOR).toBe(true);
     expect(config.WIN_ONLY).toBe(true);
     expect(config.AUTOPICK_ON_MISSING).toBe(true);
+    expect(config.JOLLIES_PER_PLAYER).toBe(3);
+  });
+
+  describe('JOLLIES_PER_PLAYER (feature Jolly)', () => {
+    it('converte il valore intero dalla stringa env', () => {
+      expect(parseConfig({ ...requiredEnv, JOLLIES_PER_PLAYER: '2' }).JOLLIES_PER_PLAYER).toBe(2);
+    });
+
+    it('0 accettato (feature disattivata: il sistema si comporta come oggi)', () => {
+      expect(parseConfig({ ...requiredEnv, JOLLIES_PER_PLAYER: '0' }).JOLLIES_PER_PLAYER).toBe(0);
+    });
+
+    it('valore negativo → ConfigError che nomina la variabile', () => {
+      expect(() => parseConfig({ ...requiredEnv, JOLLIES_PER_PLAYER: '-1' })).toThrowError(
+        /JOLLIES_PER_PLAYER/
+      );
+    });
+
+    it('valore non intero → ConfigError che nomina la variabile', () => {
+      expect(() => parseConfig({ ...requiredEnv, JOLLIES_PER_PLAYER: '1.5' })).toThrowError(
+        /JOLLIES_PER_PLAYER/
+      );
+      expect(() => parseConfig({ ...requiredEnv, JOLLIES_PER_PLAYER: 'abc' })).toThrowError(
+        /JOLLIES_PER_PLAYER/
+      );
+    });
   });
 
   it('LLM_MODEL: lista separata da virgola → array (trim, scarto vuoti, dedup ordinato)', () => {

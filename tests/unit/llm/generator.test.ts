@@ -24,8 +24,9 @@ import {
   type EmailContext,
   type EmailType
 } from '../../../src/llm/generator.js';
-import { EMAIL_TEMPLATES, DETERMINISTIC_NARRATIVES } from '../../../src/llm/templates.js';
+import { EMAIL_TEMPLATES, DETERMINISTIC_NARRATIVES, serializeEmailContext, templateFor } from '../../../src/llm/templates.js';
 import { LLMError } from '../../../src/llm/errors.js';
+import { modeFor } from '../../../src/game/mode.js';
 
 /** Generatore con fetch iniettato che registra i prompt (test ermetici). */
 function makeGenerator(fetchImpl: typeof fetch, timeZone?: string, winOnly = false): {
@@ -48,7 +49,7 @@ function makeGenerator(fetchImpl: typeof fetch, timeZone?: string, winOnly = fal
     retries: 1,
     fetchImpl: wrapper
   });
-  return { generator: new OpenAIGenerator(client, timeZone, winOnly), requests };
+  return { generator: new OpenAIGenerator(client, timeZone, modeFor(winOnly, 0)), requests };
 }
 
 /** Risposta 200 con un testo dell'LLM. */
@@ -267,11 +268,74 @@ describe('LLM Generator — win_only (ADR-016)', () => {
 
   it('deterministicNarrative con winOnly → fallback all\'overlay win_only', () => {
     const ctx: EmailContext = { type: 'pick_rejected' };
-    expect(deterministicNarrative(ctx, '   ', true)).toBe(
+    expect(deterministicNarrative(ctx, '   ', modeFor(true, 0))).toBe(
       'Riprova rispondendo con il nome della squadra che vincerà.'
     );
-    expect(deterministicNarrative(ctx, '   ', false)).toBe(
+    expect(deterministicNarrative(ctx, '   ', modeFor(false, 0))).toBe(
       'Riprova rispondendo con squadra + esito (win, draw, lose).'
     );
+  });
+});
+
+describe('LLM Generator — jolly (feature JOLLY, D8/D9)', () => {
+  it('deterministicNarrative salvato dal jolly → narrativa dedicata (mai "hai indovinato")', () => {
+    const ctx: EmailContext = {
+      type: 'round_result_correct',
+      savedByJolly: true,
+      jollyUsed: true
+    };
+    expect(deterministicNarrative(ctx, '   ', modeFor(true, 1))).toBe(
+      'La tua squadra ha pareggiato, ma il tuo jolly ti ha salvato: resti in gara!'
+    );
+  });
+
+  it('deterministicNarrative con jolly disattivato → nessuna narrativa speciale', () => {
+    const ctx: EmailContext = { type: 'round_result_correct', savedByJolly: true };
+    expect(deterministicNarrative(ctx, '   ', modeFor(true, 0))).toBe(
+      'Hai indovinato: hai centrato l\'esito previsto.'
+    );
+  });
+
+  it('templateFor con jolly attivo → overlay jolly (istruzioni «SQUADRA Jolly») per pick_instructions', () => {
+    const jollyPrompt = templateFor('pick_instructions', modeFor(true, 1));
+    expect(jollyPrompt).toContain('«SQUADRA Jolly»');
+    // Con jolly disattivato prevale l'overlay win_only (senza jolly).
+    expect(templateFor('pick_instructions', modeFor(true, 0))).not.toContain('«SQUADRA Jolly»');
+    // In classica resta il template base (esito esplicito win/draw/lose).
+    expect(templateFor('pick_instructions', modeFor(false, 0))).toContain(
+      'vittoria, pareggio o sconfitta'
+    );
+  });
+
+  it('templateFor overlay jolly: round_result_correct cita il salvataggio dal pareggio', () => {
+    const prompt = templateFor('round_result_correct', modeFor(true, 1));
+    expect(prompt).toContain('Jolly: ha salvato dal pareggio');
+    expect(prompt).toContain('non dire che ha "indovinato"');
+  });
+
+  it('serializeEmailContext: jolly usato/salvato/rimasti serializzati per l\'LLM', () => {
+    const serialized = serializeEmailContext(
+      {
+        type: 'round_result_correct',
+        playerName: 'Mario',
+        team: 'Roma',
+        outcome: 'win',
+        jollyUsed: true,
+        savedByJolly: true,
+        jolliesRemaining: 2
+      },
+      'Europe/Rome'
+    );
+    expect(serialized).toContain('- Jolly usato: sì');
+    expect(serialized).toContain('- Jolly: ha salvato dal pareggio');
+    expect(serialized).toContain('- Jolly rimasti: 2');
+  });
+
+  it('serializeEmailContext: senza flag jolly nessuna riga jolly', () => {
+    const serialized = serializeEmailContext(
+      { type: 'pick_confirmed', playerName: 'Mario', team: 'Roma' },
+      'Europe/Rome'
+    );
+    expect(serialized).not.toContain('Jolly');
   });
 });

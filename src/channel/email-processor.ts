@@ -133,6 +133,24 @@ function pickFormula(winOnly: boolean): string {
 }
 
 /**
+ * Motivi di rifiuto jolly in forma UMANA (feature JOLLY, D11): i motivi
+ * `no_jollies_left` e `jolly_not_allowed` sono tradotti in italiano per le
+ * risposte `pick_rejected`/`auto_rejected` (la chiave del renderer è
+ * "PICK NON REGISTRATO: <motivo>"). Gli altri motivi restano invariati (null
+ * → il chiamante usa il motivo grezzo).
+ */
+function jollyReasonText(reason: string): string | null {
+  if (reason === 'no_jollies_left') return 'non hai più jolly disponibili';
+  if (reason === 'jolly_not_allowed') return 'il jolly non è ammesso in questa modalità';
+  return null;
+}
+
+/** Motivo di rifiuto leggibile: testo umano jolly se presente, altrimenti il motivo grezzo. */
+function readableReason(reason: string): string {
+  return jollyReasonText(reason) ?? reason;
+}
+
+/**
  * "Round corrente" del wiring (D8): il PRIMO `round_state` con status 'open'
  * (le righe esistono solo sulla finestra `[start_round..N]`, stessa semantica
  * di `tournament:status`). Nessun round aperto → null (rifiuto CL3 per il ramo
@@ -247,7 +265,10 @@ async function processOne(
     aliases: deps.aliases,
     testMode: deps.testMode,
     subject: routed.subject,
-    winOnly: ctx.config.WIN_ONLY
+    winOnly: ctx.config.WIN_ONLY,
+    // Feature JOLLY (D4): riconoscere la keyword "jolly" solo quando i jolly
+    // sono attivi (win_only && JOLLIES_PER_PLAYER >= 1).
+    jollyEnabled: ctx.config.WIN_ONLY && ctx.config.JOLLIES_PER_PLAYER >= 1
   });
 
   // Stato dell'account RIletto a ogni messaggio (HIGH-2: nessuno snapshot di
@@ -403,11 +424,19 @@ async function processOne(
       const joined = await autoJoinFromPick(ctx, identity, clazz.pick, round, message.receivedAt);
       if (joined.ok) {
         // RF-P5/D5: risposta UNICA `pick_confirmed` (nessuna conferma separata).
+        // Feature JOLLY: jolly dichiarato + contatore del nuovo profilo.
+        const jolliesRemaining = (
+          db.prepare('SELECT jollies_remaining FROM profile WHERE id = ?').get(joined.profileId) as {
+            jollies_remaining: number;
+          }
+        ).jollies_remaining;
         await sendReply(ctx, identity.identifier, {
           type: 'pick_confirmed',
           ...roundCtx,
           team: clazz.pick.team,
-          outcome: clazz.pick.outcome
+          outcome: clazz.pick.outcome,
+          jollyUsed: clazz.pick.jolly === true,
+          jolliesRemaining
         });
         await deps.markSeen(message);
         return { from: message.from, kind, action: 'auto_joined', seen: true };
@@ -419,7 +448,8 @@ async function processOne(
         ...roundCtx,
         team: clazz.pick.team,
         outcome: clazz.pick.outcome,
-        reason: detail
+        // Feature JOLLY (D11): i motivi jolly in italiano, gli altri invariati.
+        reason: readableReason(detail)
       });
       await deps.markSeen(message);
       return { from: message.from, kind, action: 'auto_rejected', detail, seen: true };
@@ -440,14 +470,23 @@ async function processOne(
       round,
       team: clazz.pick.team,
       outcome: clazz.pick.outcome,
+      jolly: clazz.pick.jolly === true,
       receivedAt: message.receivedAt
     });
     if (result.ok) {
+      // Feature JOLLY: conferma con jolly dichiarato + contatore aggiornato.
+      const jolliesRemaining = (
+        db.prepare('SELECT jollies_remaining FROM profile WHERE id = ?').get(profile.id) as {
+          jollies_remaining: number;
+        }
+      ).jollies_remaining;
       await sendReply(ctx, identity.identifier, {
         type: 'pick_confirmed',
         ...roundCtx,
         team: clazz.pick.team,
-        outcome: clazz.pick.outcome
+        outcome: clazz.pick.outcome,
+        jollyUsed: clazz.pick.jolly === true,
+        jolliesRemaining
       });
       await deps.markSeen(message);
       return { from: message.from, kind, action: 'pick_registered', seen: true };
@@ -457,7 +496,8 @@ async function processOne(
       ...roundCtx,
       team: clazz.pick.team,
       outcome: clazz.pick.outcome,
-      reason: result.reason
+      // Feature JOLLY (D11): i motivi jolly in italiano, gli altri invariati.
+      reason: readableReason(result.reason)
     });
     await deps.markSeen(message);
     return { from: message.from, kind, action: 'pick_rejected', detail: result.reason, seen: true };

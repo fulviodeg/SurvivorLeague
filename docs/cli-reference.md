@@ -451,13 +451,15 @@ misses the deadline, and the verification tool for the first real
 ### `pick:validate`
 
 ```
-pick:validate --round <n> --profileId <id> --team <name> [--outcome <win|draw|lose>] [--json]
+pick:validate --round <n> --profileId <id> --team <name> [--outcome <win|draw|lose>] [--jolly] [--json]
 ```
 
 **Purpose.** Validates a pick **without registering it**, applying the same
 rule cascade as automatic (email) picks: team playing in the round, team not
 burned in the girone, valid outcome, acceptance window (registered deadline
-and actual kickoff), no existing valid pick for the same round. The JSON
+and actual kickoff), no existing valid pick for the same round. With `--jolly`
+(feature Jolly) the jolly gates also apply: `jolly_not_allowed` in classic
+mode, `no_jollies_left` when the profile's counter is exhausted. The JSON
 output is `{valid, reason}` where `reason` is the specific rejection reason.
 Diagnostic/audit tool.
 
@@ -469,6 +471,7 @@ Diagnostic/audit tool.
 | `--profileId` | number, **required** | ID of the profile. |
 | `--team` | string, **required** | Canonical team name (exact match with the data). |
 | `--outcome` | string, **optional** | Predicted outcome: `win` \| `draw` \| `lose`. **Optional, no CLI default**: if omitted the pick is rejected with `invalid_outcome` by the cascade (the CLI does not decide the mode — in `win_only` the pick is a bare team, but the commissioner must still pass `--outcome win` explicitly). |
+| `--jolly` | boolean (default `false`) | Declare a jolly (feature Jolly): in `win_only` it saves from a draw; burned at declaration. Rejected in classic mode (`jolly_not_allowed`) or with an exhausted counter (`no_jollies_left`). |
 | `--json` | boolean (default `false`) | JSON output `{"testMode":…, "valid":…, "reason":…}`. Text output: `Pick valido` or `Pick non valido: <reason>`. |
 
 ---
@@ -477,7 +480,7 @@ Diagnostic/audit tool.
 
 ```
 pick:register --round <n> --profileId <id> --team <name> [--outcome <win|draw|lose>]
-              [--reason <motivo>] [--json]
+              [--jolly] [--reason <motivo>] [--json]
 ```
 
 **Purpose.** Validates a pick (same rules as automatic picks, always) and
@@ -485,7 +488,9 @@ registers it atomically — one valid pick per profile per round (enforced by
 database uniqueness). This is the commissioner's override tool: `--reason`
 bypasses **only** the time checks (acceptance window), never the other rules.
 The profile's platform account must be `active`: otherwise the command exits
-with code `1` and a message naming the blocked account.
+with code `1` and a message naming the blocked account. With `--jolly` the
+pick is registered with `jolly_used=1` and the profile's `jollies_remaining`
+is decremented in the same transaction (burned at declaration).
 
 **Parameters.**
 
@@ -495,6 +500,7 @@ with code `1` and a message naming the blocked account.
 | `--profileId` | number, **required** | ID of the profile. |
 | `--team` | string, **required** | Canonical team name (exact match). |
 | `--outcome` | string, **optional** | Predicted outcome: `win` \| `draw` \| `lose`. **Optional, no CLI default**: if omitted the pick is rejected with `invalid_outcome` (the CLI does not decide the mode). |
+| `--jolly` | boolean (default `false`) | Declare a jolly (feature Jolly): saves from a draw in `win_only`; burned at declaration (counter decremented atomically). |
 | `--reason` | string | Audited reason of the commissioner's override. Required in practice when registering outside the acceptance window. |
 | `--json` | boolean (default `false`) | JSON output `{"testMode":…, "id":…, "status":…}`. Text output: `Pick registrato: id <id> (<status>)`. |
 
@@ -1046,6 +1052,12 @@ mode-aware: a bare team name yields `{team, "win"}` (no explicit formula
 required), an explicit "pareggia"/"perde" is **not** recognized (→
 `{team: null}`).
 
+**Note (Jolly, ADR-018).** When the jolly is active (`WIN_ONLY=true` and
+`JOLLIES_PER_PLAYER ≥ 1`), the keyword "jolly" anywhere in the text (e.g.
+"Napoli Jolly") sets `jolly: true` in the extraction and is removed before
+resolving the team; with jolly disabled the keyword is noise (ignored). The
+output shows `, jolly: true` when present.
+
 ---
 
 ### `llm:classify`
@@ -1075,6 +1087,11 @@ registration message.
 mode-aware: a bare team name is a valid pick `{team, "win"}`, an explicit
 "pareggia"/"perde" zeroes the pick (`pick: null`, intent stays `pick`).
 
+**Note (Jolly, ADR-018).** When the jolly is active (`WIN_ONLY=true` and
+`JOLLIES_PER_PLAYER ≥ 1`), the keyword "jolly" sets `jolly: true` in the
+pick (the output shows `, jolly: true` when present); the keyword never
+changes the outcome (always `win` in `win_only`).
+
 ---
 
 ### `llm:generate`
@@ -1082,7 +1099,8 @@ mode-aware: a bare team name is a valid pick `{team, "win"}`, an explicit
 ```
 llm:generate --type <type> [--player-name <n>] [--tt <n>] [--tc <n>] [--team <t>]
              [--outcome <win|draw|lose>] [--reason <r>] [--deadline <ISO>]
-             [--available-teams <a,b,…>] [--mode <llm|deterministic>] [--json]
+             [--available-teams <a,b,…>] [--jolly-used] [--jollies-remaining <n>]
+             [--mode <llm|deterministic>] [--json]
 ```
 
 **Purpose.** Generates an email from a structured context: the deterministic
@@ -1109,6 +1127,8 @@ deterministically. Diagnostic tool to preview any of the email types.
 | `--reason` | string | Rejection/elimination reason to communicate. |
 | `--deadline` | string | Deadline in ISO-8601 format; displayed in Italian, in the system `TIMEZONE`. |
 | `--available-teams` | string | Comma-separated list of available teams (for `pick_instructions`). |
+| `--jolly-used` | boolean (default `false`) | Feature Jolly (manual smoke): the pick of this email was declared with a jolly. With jolly active, `pick_confirmed` shows `PICK REGISTRATO CON JOLLY → {TEAM}` and the outcome emails show the jolly line ("salvato dal pareggio" / "Jolly usato" / "non salva dalla sconfitta"). |
+| `--jollies-remaining` | number | Feature Jolly (manual smoke): jollies left for the recipient — renders the "🎯 Jolly rimasti: N." line in `pick_instructions`, `pick_confirmed` and `round_closed_survived`. |
 | `--mode` | string | Generation mode: `llm` (LLM narrative) or `deterministic` (fixed texts); default follows `AI_EMAIL_GENERATOR`. |
 | `--json` | boolean (default `false`) | JSON output `{"testMode":…, "subject":…, "body":…}`. Text output: `Oggetto: <subject>` followed by the rendered body. |
 
@@ -1117,3 +1137,8 @@ mode-aware: the pick texts ask only for the team that will win, the
 `pick_confirmed` key is `PICK REGISTRATO → {TEAM}` (no outcome), and the
 player rows in `round_closed_survived`/`tournament_closed` omit the outcome
 (always `win`).
+
+**Note (Jolly, ADR-018).** When the jolly is active (`WIN_ONLY=true` and
+`JOLLIES_PER_PLAYER ≥ 1`), the jolly texts are rendered automatically from
+`--jolly-used`/`--jollies-remaining` and the "🎯 Jolly" marker appears on the
+player rows of `round_closed_survived`/`tournament_closed`.

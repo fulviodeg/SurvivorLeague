@@ -60,7 +60,11 @@ const classificationSchema = z.object({
   pick: z
     .object({
       team: z.string().nullable(),
-      outcome: z.enum(['win', 'draw', 'lose']).nullable()
+      outcome: z.enum(['win', 'draw', 'lose']).nullable(),
+      // Feature JOLLY (D4): true se il testo dichiara la keyword "jolly" (il
+      // dato è emesso dall'I/O, la decisione vive nel Game Engine). Opzionale:
+      // assente/null → false (nessun flag spurio).
+      jolly: z.boolean().nullable().optional()
     })
     .nullable(),
   name: z.string().nullable().optional()
@@ -101,6 +105,23 @@ export function buildClassifySystemPrompt(opts: PickParseOptions): string {
           '"pick": {"team": null, "outcome": null} (l\'intent resta "pick").'
         ]
       : [];
+  // Feature JOLLY (D4): quando i jolly sono attivi, la keyword "jolly" nel
+  // testo dichiara il jolly — campo "jolly": true nel pick, SENZA cambiare
+  // l'outcome (sempre 'win' in win_only). Prompt aggiunto solo se jollyEnabled.
+  const jollyRules =
+    opts.jollyEnabled === true
+      ? [
+          '',
+          'JOLLY: se il testo contiene la keyword "jolly" (es. "Napoli Jolly"),',
+          'imposta "jolly": true nel pick. La keyword NON cambia l\'outcome',
+          '(in WIN_ONLY resta sempre "win"). Assente → "jolly": false.'
+        ]
+      : [];
+  // Formato JSON dichiarato: il campo "jolly" è annunciato SOLO quando i
+  // jolly sono attivi (jollyEnabled) — altrimenti l'output non lo nomina.
+  const jsonFormat = opts.jollyEnabled === true
+    ? '{"intent": "subscribe"|"unsubscribe"|"pick"|"other", "pick": {"team": "<nome canonico o null>", "outcome": "win"|"draw"|"lose"|null, "jolly": true|false|null} | null, "name": "<nome del giocatore o null>"}'
+    : '{"intent": "subscribe"|"unsubscribe"|"pick"|"other", "pick": {"team": "<nome canonico o null>", "outcome": "win"|"draw"|"lose"|null} | null, "name": "<nome del giocatore o null>"}';
   return [
     `Sei il classificatore di Survivor League, ${league}`,
     'Il giocatore scrive un\'email in italiano. Classifica l\'intento del messaggio:',
@@ -114,12 +135,13 @@ export function buildClassifySystemPrompt(opts: PickParseOptions): string {
     '- "other": qualunque altra cosa (chiarimenti, domande, saluti, testo non riconducibile).',
     '',
     'Rispondi SOLO con un oggetto JSON di questo formato esatto:',
-    '{"intent": "subscribe"|"unsubscribe"|"pick"|"other", "pick": {"team": "<nome canonico o null>", "outcome": "win"|"draw"|"lose"|null} | null, "name": "<nome del giocatore o null>"}',
+    jsonFormat,
     'Se intent non è "pick", il campo "pick" DEVE essere null.',
     'Il campo "name" vale SOLO per "subscribe": è il NOME del giocatore dedotto dal testo',
     'di iscrizione (es. "mi chiamo Mario e voglio iscrivermi" → "name": "Mario").',
     'Se il testo di iscrizione non contiene un nome → "name": null. Per gli altri intenti → "name": null.',
     ...winOnlyRules,
+    ...jollyRules,
     '',
     'Lista canonica delle squadre (il campo "team" DEVE essere esattamente uno di questi nomi,',
     'nessuna variante, abbreviazione o traduzione):',
@@ -165,7 +187,7 @@ export class OpenAIIntentClassifier implements LLMIntentClassifier {
       'json_object'
     );
 
-    return this.parseClassification(raw, opts.teams, opts.winOnly === true);
+    return this.parseClassification(raw, opts.teams, opts.winOnly === true, opts.jollyEnabled === true);
   }
 
   /**
@@ -175,7 +197,12 @@ export class OpenAIIntentClassifier implements LLMIntentClassifier {
    * (CS7); intento `pick` con squadra fuori lista o esito invalido → pick
    * azzerato a null (l'LLM propone, il check dispone — doppia barriera D2/C).
    */
-  private parseClassification(raw: string, teams: string[], winOnly = false): IntentClassification {
+  private parseClassification(
+    raw: string,
+    teams: string[],
+    winOnly = false,
+    jollyEnabled = false
+  ): IntentClassification {
     let data: unknown;
     try {
       data = JSON.parse(raw);
@@ -193,6 +220,9 @@ export class OpenAIIntentClassifier implements LLMIntentClassifier {
     }
     if (pick === null) return { intent: 'pick', pick: null, name: null };
     const { team, outcome } = pick;
+    // Feature JOLLY (D4): il flag viaggia dall'I/O al motore SOLO quando i
+    // jolly sono attivi (jollyEnabled); altrimenti è azzerato (rumore).
+    const jolly = jollyEnabled && pick.jolly === true;
     // Filtro deterministico esatto (D2): solo nomi canonici ed esiti validi.
     if (team === null) return { intent: 'pick', pick: null, name: null };
     if (!teams.includes(team)) return { intent: 'pick', pick: null, name: null };
@@ -203,9 +233,13 @@ export class OpenAIIntentClassifier implements LLMIntentClassifier {
       if (outcome === 'draw' || outcome === 'lose') {
         return { intent: 'pick', pick: null, name: null };
       }
-      return { intent: 'pick', pick: { team, outcome: 'win' }, name: null };
+      return { intent: 'pick', pick: jolly ? { team, outcome: 'win', jolly } : { team, outcome: 'win' }, name: null };
     }
     if (outcome === null) return { intent: 'pick', pick: null, name: null };
-    return { intent: 'pick', pick: { team, outcome }, name: null };
+    return {
+      intent: 'pick',
+      pick: jolly ? { team, outcome, jolly } : { team, outcome },
+      name: null
+    };
   }
 }

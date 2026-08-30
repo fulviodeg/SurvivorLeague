@@ -24,6 +24,7 @@ import { createConnection } from '../db/connection.js';
 import { migratePlatform } from '../db/platform-schema.js';
 import { DbPlatformRegistry } from '../platform/registry.js';
 import type { GameContext } from '../game/context.js';
+import { modeFor } from '../game/mode.js';
 import { OpenAIClient } from '../llm/openai-client.js';
 import { OpenAIIntentClassifier, type LLMIntentClassifier } from '../llm/intent-classifier.js';
 import { OpenAIParser } from '../llm/parser.js';
@@ -105,11 +106,11 @@ export function buildEmailComponents(config: AppConfig): EmailComponents {
     // Il fuso di sistema è iniettato in entrambi i generatori (ADR-011).
     generator: config.AI_EMAIL_GENERATOR
       ? new FallbackGenerator(
-          new OpenAIGenerator(client, config.TIMEZONE, config.WIN_ONLY),
-          new DeterministicGenerator(config.TIMEZONE, config.WIN_ONLY),
+          new OpenAIGenerator(client, config.TIMEZONE, modeFor(config.WIN_ONLY, config.JOLLIES_PER_PLAYER)),
+          new DeterministicGenerator(config.TIMEZONE, modeFor(config.WIN_ONLY, config.JOLLIES_PER_PLAYER)),
           logger
         )
-      : new DeterministicGenerator(config.TIMEZONE, config.WIN_ONLY),
+      : new DeterministicGenerator(config.TIMEZONE, modeFor(config.WIN_ONLY, config.JOLLIES_PER_PLAYER)),
     parser: new OpenAIParser(client),
     // Email v3 Parte B: il classificatore di intento è deterministico di
     // default (AI_EMAIL_PARSER assente/false, MAI chiamate LLM per la

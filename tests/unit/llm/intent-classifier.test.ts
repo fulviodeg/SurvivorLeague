@@ -312,3 +312,76 @@ describe('Intent Classifier — win_only (ADR-016)', () => {
     });
   });
 });
+
+describe('Intent Classifier — jolly (feature JOLLY, D4)', () => {
+  it('jollyEnabled=true → il prompt istruisce la keyword "jolly"', () => {
+    const prompt = buildClassifySystemPrompt({ ...opts, jollyEnabled: true });
+    expect(prompt).toContain('"jolly"');
+    expect(prompt).toContain('"jolly": true');
+    // Senza jollyEnabled il prompt NON contiene le istruzioni dedicate.
+    expect(buildClassifySystemPrompt(opts)).not.toContain('"jolly": true');
+  });
+
+  it('jolly=true dall\'LLM → propagato nel pick (con winOnly, outcome win)', async () => {
+    const { classifier } = makeClassifier(() =>
+      Promise.resolve(
+        jsonText('{"intent": "pick", "pick": {"team": "Juventus FC", "outcome": "win", "jolly": true}}')
+      )
+    );
+    expect(await classifier.classify('juve jolly', { ...opts, winOnly: true, jollyEnabled: true })).toEqual({
+      intent: 'pick',
+      pick: { team: 'Juventus FC', outcome: 'win', jolly: true },
+      name: null
+    });
+  });
+
+  it('jolly=true dall\'LLM ma jollyEnabled=false → flag azzerato (rumore, D4)', async () => {
+    const { classifier } = makeClassifier(() =>
+      Promise.resolve(
+        jsonText('{"intent": "pick", "pick": {"team": "Juventus FC", "outcome": "win", "jolly": true}}')
+      )
+    );
+    expect(await classifier.classify('juve jolly', { ...opts, winOnly: true })).toEqual({
+      intent: 'pick',
+      pick: { team: 'Juventus FC', outcome: 'win' },
+      name: null
+    });
+  });
+
+  it('jolly assente o null dall\'LLM → default false (nessun flag spurio)', async () => {
+    const { classifier } = makeClassifier(() =>
+      Promise.resolve(jsonText('{"intent": "pick", "pick": {"team": "Juventus FC", "outcome": "win"}}'))
+    );
+    expect(await classifier.classify('juve', { ...opts, winOnly: true })).toEqual({
+      intent: 'pick',
+      pick: { team: 'Juventus FC', outcome: 'win' },
+      name: null
+    });
+  });
+
+  it('jolly non booleano (stringa/numero) → other senza crash (violazione schema, CS7)', async () => {
+    const { classifier } = makeClassifier(() =>
+      Promise.resolve(
+        jsonText('{"intent": "pick", "pick": {"team": "Juventus FC", "outcome": "win", "jolly": "si"}}')
+      )
+    );
+    expect(await classifier.classify('juve jolly', { ...opts, winOnly: true })).toEqual({
+      intent: 'other',
+      pick: null,
+      name: null
+    });
+  });
+
+  it('jolly NON modifica il filtro win_only (draw/lose restano pick null anche con jolly)', async () => {
+    const { classifier } = makeClassifier(() =>
+      Promise.resolve(
+        jsonText('{"intent": "pick", "pick": {"team": "Juventus FC", "outcome": "draw", "jolly": true}}')
+      )
+    );
+    expect(await classifier.classify('juve pareggia jolly', { ...opts, winOnly: true })).toEqual({
+      intent: 'pick',
+      pick: null,
+      name: null
+    });
+  });
+});

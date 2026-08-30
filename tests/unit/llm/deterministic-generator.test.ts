@@ -11,6 +11,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { DeterministicGenerator, FallbackGenerator } from '../../../src/llm/deterministic-generator.js';
+import { modeFor } from '../../../src/game/mode.js';
 import { EMAIL_TYPES, type EmailContext, type LLMGenerator } from '../../../src/llm/generator.js';
 import { DETERMINISTIC_NARRATIVES } from '../../../src/llm/templates.js';
 import { LLMError } from '../../../src/llm/errors.js';
@@ -65,16 +66,67 @@ describe('DeterministicGenerator (email v3)', () => {
 
 describe('DeterministicGenerator — win_only (ADR-016)', () => {
   it('pick_instructions usa la narrativa win_only (solo la squadra che vincerà)', async () => {
-    const gen = new DeterministicGenerator(ROME, true);
+    const gen = new DeterministicGenerator(ROME, modeFor(true, 0));
     const body = await gen.generate({ type: 'pick_instructions', playerName: 'Mario' });
     expect(body).toContain('Scegli la squadra che vincerà.');
     expect(body).not.toContain('Scegli una squadra e l\'esito');
   });
 
   it('deterministico win_only: stesso input → stesso output (nessun clock/LLM)', async () => {
-    const gen = new DeterministicGenerator(ROME, true);
+    const gen = new DeterministicGenerator(ROME, modeFor(true, 0));
     const ctx: EmailContext = { type: 'pick_instructions', playerName: 'Mario' };
     expect(await gen.generate(ctx)).toBe(await gen.generate(ctx));
+  });
+});
+
+describe('DeterministicGenerator — jolly (feature JOLLY)', () => {
+  it('esito corretto SALVATO dal jolly → narrativa dedicata (mai "hai indovinato")', async () => {
+    const gen = new DeterministicGenerator(ROME, modeFor(true, 1));
+    const body = await gen.generate({
+      type: 'round_result_correct',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      team: 'Roma',
+      outcome: 'win',
+      jollyUsed: true,
+      savedByJolly: true,
+      inGameCount: 13
+    });
+    expect(body).toContain('La tua squadra ha pareggiato, ma il tuo jolly ti ha salvato: resti in gara!');
+    expect(body).toContain('🎯 Il tuo jolly ti ha salvato: ROMA ha pareggiato.');
+    expect(body).not.toContain('Hai indovinato');
+  });
+
+  it('esito corretto con jolly ma vittoria → narrativa standard (niente contraddizione)', async () => {
+    const gen = new DeterministicGenerator(ROME, modeFor(true, 1));
+    const body = await gen.generate({
+      type: 'round_result_correct',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      team: 'Roma',
+      outcome: 'win',
+      jollyUsed: true,
+      savedByJolly: false,
+      inGameCount: 13
+    });
+    expect(body).toContain('Hai indovinato: hai centrato l\'esito previsto.');
+    expect(body).toContain('🎯 Jolly usato');
+  });
+
+  it('pick_instructions con jolly attivo → narrativa win_only + sezione jolly del renderer', async () => {
+    const gen = new DeterministicGenerator(ROME, modeFor(true, 1));
+    const body = await gen.generate({
+      type: 'pick_instructions',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      jolliesRemaining: 1
+    });
+    expect(body).toContain('Scegli la squadra che vincerà.');
+    expect(body).toContain('🎯 Jolly: scrivi «SQUADRA Jolly» per usarlo');
+    expect(body).toContain('Jolly rimasti: 1.');
   });
 });
 

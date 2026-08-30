@@ -21,6 +21,8 @@ export const PICK_REJECT_REASONS = [
   'team_already_used', // squadra già bruciata nel girone (RF-10, CS5)
   'invalid_outcome', // esito fuori win|draw|lose
   'pick_already_exists', // già esiste un pick per profilo+round (CL6, RF-08)
+  'jolly_not_allowed', // jolly dichiarato in modalità classica (difensivo: il jolly è SOLO win_only, D5)
+  'no_jollies_left', // jolly dichiarato ma contatore per-profilo esaurito (D5, D3)
   'round_not_open', // il round non è aperto o round_state assente (CL3)
   'after_acceptance', // receivedAt > deadline registrata (CL3, CS4)
   'after_kickoff' // guard anti-frode: receivedAt > kickoff effettivo (RF-31, CL17/CL18)

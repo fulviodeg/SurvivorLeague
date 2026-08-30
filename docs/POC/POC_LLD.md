@@ -4,11 +4,12 @@
 
 **Stato:** Revisionato
 **Data:** 2026-08-30
-**Versione:** 0.6.0
+**Versione:** 0.6.1
 
 > Documento di dettaglio implementativo. Per l'architettura di alto livello vedi [POC_HLD.md](POC_HLD.md); per i requisiti di prodotto vedi [POC_PRD.md](POC_PRD.md). Cross-riferimenti aggiornati alla numerazione del PRD v0.6.0 e dell'HLD v0.5.0.
 
 **Changelog:**
+- **0.6.1** (2026-08-30) — Allineamento alla feature **JOLLY** (ADR-018, secondo incremento di `win_only`, piano `.kilo/plans/1788027046413-jolly-feature.md`): nuova env var `JOLLIES_PER_PLAYER` (§4.1, parser `.nonnegative()` perché `0` = feature off); colonne additive `tournament_state.jollies_per_player`/`profile.jollies_remaining`/`pick.jolly_used` (§3); nuovo oggetto estensibile `GameMode { winOnly, jollyEnabled }` + factory pura `modeFor` (`src/game/mode.ts`) iniettato a renderer/generatori/template (in sostituzione del booleano `winOnly`) e al parser (`PickParseOptions.jollyEnabled`); cascata pick con i motivi `jolly_not_allowed`/`no_jollies_left` + decremento atomico del contatore; scoring con salvataggio dal pareggio (`savedByJolly`, nessun nuovo `pick.status`); testi email jolly (chiave "PICK REGISTRATO CON JOLLY", righe 🎯, marcatore per giocatore, motivi in italiano); seed simulazione jolly gated su `jollyEnabled` (nessun extra `rng()` con jolly off); guardia `assertModeConsistent` estesa a `jollies_per_player`; casi di test §8 aggiornati.
 - **0.6.0** (2026-08-30) — Allineamento alla feature **AUTOPICK** (ADR-017, terzo incremento di `win_only`, piano `.kilo/plans/1788074961317-autopick-on-missing.md`): nuova env var `AUTOPICK_ON_MISSING` (§4.1); nuova tabella additiva `team (name TEXT PRIMARY KEY, short_name TEXT NOT NULL)` + colonne additive `tournament_state.autopick_on_missing`/`pick.auto_pick` (§3); `Match` esteso con `homeTeamShort`/`awayTeamShort` e nuova interfaccia `Team` + metodo `getTeamsOrderedByShortName()` (§6.1); nuovo `EmailType pick_auto_assigned` (§6.3); nuovo comando `rules:teams` (§7.5); auto-assign in `closeRound` con la regola "solo con `rs.deadline !== null`"; guardia `assertModeConsistent` estesa ad `autopick_on_missing`; casi di test §8 aggiornati.
 - **0.5.0** (2026-08-20) — Allineamento all'iscrizione a livello di piattaforma (ADR-009, PRD v0.6.0): nuova tabella `platform_account` su DB separato `PLATFORM_DB_PATH` (§3, §4.2) con soft-delete a due passi (`active`/`pending_unsubscribe`/`unsubscribed`); colonne additive `player.register_id`, `profile.register_id`, `round_state.summary_sent` (§3); vincoli applicativi riscritti: gate piattaforma `active`, auto-join al TT1 (RF-P5), riepilogo `round_closed_survived` alla transizione `closed→scored` con guardia `summary_sent` (§3.1); nuova interfaccia `PlatformRegistry` (§6.6) e `LLMIntentClassifier` (§6.2); `EmailType` aggiornati (`platform_registered`, `platform_unsubscribed`, `platform_unsubscribe_confirm`, `tournament_open`, `round_closed_survived`; rimossi `welcome`, `registration_open_invite`, `auto_registered`, `round_closed_eliminated`) (§6.3); nuovi comandi `platform:*` e modifiche `tournament:*`/`round:*`/`channel:email:process` (§7); `channel:email:process` migra entrambi i DB; casi di test §8 aggiornati (registry, classificatore, notifiche filtrate).
 - **0.4.0** (2026-08-14) — Allineamento all'aggancio asincrono del torneo (ADR-008, PRD v0.5.2): colonna `tournament_state.start_round INTEGER NULL` con strategia di migrazione **additiva** idempotente (`ALTER TABLE … ADD COLUMN` se manca — §3); nuovo vincolo applicativo di accettazione pick `min(deadline registrata, fischio d'inizio effettivo prima partita del TC)` (guard anti-frode, RF-31, §3.1); nota finestra `[start_round..N]` come filtro logico (§3.2); nuova interfaccia di **eligibilità** `checkEligibility(ExternalIdentity)` con implementazione POC vuota (ADR-008, §6.5); auto-iscrizione del mittente sconosciuto nel TT1 e iniezione deterministica della coppia TT/TC nei template (ADR-004, §1.1, §6.3); scheduler con chiusura di sicurezza allo scadere del TC se deadline NULL (log `safety_close`, §1.4); comandi CLI aggiornati (`tournament:start --start-round <n>`, `tournament:register --reason`, `pick:register --reason`, `tournament:register:close --reason`, `round:close --force --reason`, output con coppia TT/TC — §7.3, §7.10); casi di test §8 aggiornati.
@@ -277,6 +278,23 @@ CREATE TABLE tournament_state (
 > guadagna vuota e la popola al primo `data:import`/`data:seed-synthetic` — il
 > motore tratta lo shortName assente come "ordine canonico" (fallback sicuro).
 
+> **Nota JOLLY (ADR-018, emendamento).** Tre colonne additive, stesse regole
+> del pattern additivo (`applyAdditiveMigrations`, idempotente, guardate da
+> `PRAGMA table_info`):
+> - `tournament_state.jollies_per_player INTEGER NOT NULL DEFAULT 1` — numero di
+>   jolly per giocatore (`config.JOLLIES_PER_PLAYER`), FISSATO a
+>   `tournament:start` nella STESSA UPSERT di `win_only`/`autopick_on_missing` e
+>   coperto dalla STESSA guardia fatal `assertModeConsistent` (mismatch a torneo
+>   aperto → processo abortito);
+> - `profile.jollies_remaining INTEGER NOT NULL DEFAULT 1` — contatore per-profilo
+>   (inizializzato a `JOLLIES_PER_PLAYER` alla creazione del profilo, decrementato
+>   alla dichiarazione di un jolly; il motore legge SOLO il contatore per decidere
+>   `no_jollies_left`);
+> - `pick.jolly_used INTEGER NOT NULL DEFAULT 0` — flag per-pick del jolly
+>   dichiarato (bruciato alla dichiarazione; nessun nuovo `pick.status`).
+> Su un DB legacy i profili esistenti guadagnano `jollies_remaining=1` (un jolly,
+> accettato pre-lancio e documentato).
+
 **DB piattaforma (storage separato, ADR-009, RF-P7).** Vive in `PLATFORM_DB_PATH` (default `./data/platform.db`, §4.2): **mai** nello stesso file di `DB_PATH`. Due connessioni separate, nessuna transazione cross-DB: la piattaforma è **solo letta** dai flussi di torneo (gate notifiche/pick). `register_id` su `player`/`profile` è un riferimento replicato **senza vincoli cross-DB** (RF-P7). Il DB piattaforma **non viene eliminato** col DB torneo e non partecipa alle migrazioni di `db:migrate` (`platform:migrate` dedicato).
 
 ```sql
@@ -336,6 +354,7 @@ Tutti i parametri modificabili vivono in variabili d'ambiente, validate con `zod
 | Numero massimo profili per giocatore | `MAX_PROFILES_PER_PLAYER` | `1` | PoC: 1. Futuro: aumentabile (BRIEF §3.3) |
 | Modalità di gioco `win_only` (default) | `WIN_ONLY` | `true` | ADR-016. `true` (default) = il giocatore sceglie SOLO la squadra che vincerà (outcome sempre `win`); pareggio o sconfitta = pick sbagliato → eliminazione. `false` = modalità classica (win/draw/lose). Fissata nel DB a `tournament:start`; una guardia fatal abortisce il processo se cambia a torneo aperto |
 | Auto-pick al mancato invio | `AUTOPICK_ON_MISSING` | `false` | ADR-017 (terzo incremento di `win_only`). `true` = alla CHIUSURA di un round con deadline reale (`round_state.deadline !== null`) il motore assegna a ogni profilo in gara senza pick la prima squadra disponibile in ordine alfabetico per `short_name` (tabella `team`), escludendo bruciate e non in giornata, con `pick.auto_pick=1` e `outcome='win'`; il pick segue poi il normale scoring. Attiva SOLO con `WIN_ONLY=true` (gating silenzioso: con `WIN_ONLY=false` è ignorata, nessun errore). FISSATA nel DB a `tournament:start` (`tournament_state.autopick_on_missing`) e coperta dalla stessa guardia fatal di `WIN_ONLY` (`src/game/mode.ts`). Default `false` = comportamento invariato (i mancanti restano eliminati `missing_pick`) |
+| Jolly per giocatore | `JOLLIES_PER_PLAYER` | `1` | ADR-018 (secondo incremento di `win_only`). Int ≥ 0: `0` = feature DISATTIVATA (il sistema si comporta esattamente come oggi, la keyword "jolly" è ignorata); `≥1` = ogni profilo nasce con quel numero di jolly (`profile.jollies_remaining`), dichiarati nel pick email con la keyword "jolly" (es. "Napoli Jolly", ovunque nel testo, case/accenti-insensibile) e BRUCIATI alla dichiarazione. Effetto in `win_only`: pareggio → salvato dall'eliminazione; sconfitta → eliminato (il jolly non salva); vittoria → resta in gara (jolly comunque consumato). Contatore esaurito → pick rifiutato `no_jollies_left`. FISSATO nel DB a `tournament:start` (`tournament_state.jollies_per_player`) e coperto dalla stessa guardia fatal di `WIN_ONLY` (`src/game/mode.ts`). NOTA: `intParam()` usa `.positive()` e rifiuterebbe 0 — il parser usa `.nonnegative()` |
 | Quota iscrizione (EUR) | `ENTRY_FEE_EUR` | `5` | BRIEF §3.6. Placeholder per la Fase 1: pagamenti e montepremi sono fuori scope nella POC (PRD §10, BRIEF §7.2). Non usato nella POC |
 | Ripartizione vincitore (%) | `WINNER_SHARE_PCT` | `85` | BRIEF §3.9. Placeholder per la Fase 1: payout fuori scope nella POC (PRD §10, BRIEF §7.2). Non usato nella POC |
 

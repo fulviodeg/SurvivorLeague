@@ -209,7 +209,14 @@ describe('AUTOPICK — auto-assign alla chiusura (feature AUTOPICK, D3/D4/D5)', 
     setScore(db, 1, IM, AC, 0, 2);
     const scored = await scoreRound(ctxAt(T_SCORE), 1);
 
-    expect(scored.evaluated).toContainEqual({ profileId: b, team: IM, outcome: 'win', result: 'wrong' });
+    expect(scored.evaluated).toContainEqual({
+      profileId: b,
+      team: IM,
+      outcome: 'win',
+      result: 'wrong',
+      jollyUsed: false,
+      savedByJolly: false
+    });
     expect(checkElimination(db, b)).toMatchObject({ eliminated: true, reason: 'wrong_pick' });
   });
 });

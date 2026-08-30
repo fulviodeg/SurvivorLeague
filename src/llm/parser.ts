@@ -36,6 +36,14 @@ import { OpenAIClient } from './openai-client.js';
 export interface PickExtraction {
   team: string;
   outcome: 'win' | 'draw' | 'lose';
+  /**
+   * Jolly dichiarato (feature JOLLY, D4): true se il testo contiene la keyword
+   * "jolly" e i jolly sono attivi (`PickParseOptions.jollyEnabled`). Emesso
+   * dall'I/O (parser/classificatore) come DATO: la decisione
+   * (jolly_not_allowed/no_jollies_left/salvataggio dal pareggio) vive SOLO nel
+   * Game Engine. Assente/false = nessun jolly.
+   */
+  jolly?: boolean;
 }
 
 /** Dati iniettati per chiamata: lista canonica + risorsa alias (D2/E). */
@@ -67,6 +75,16 @@ export interface PickParseOptions {
    * come `testMode`, mai letto da config qui.
    */
   winOnly?: boolean;
+  /**
+   * Jolly attivi (feature JOLLY, D4): quando `true` il parser riconosce la
+   * keyword "jolly" (word boundary, case/accenti-insensibile) OVUNQUE nel
+   * testo e la propaga come `PickExtraction.jolly = true`; la keyword viene
+   * rimossa prima di risolvere squadra+esito (la risoluzione resta quella
+   * win_only). Quando assente/false la keyword "jolly" è RUMORE ignorato
+   * (pick normale, identico a oggi). Iniettato per chiamata, mai letto da
+   * config qui.
+   */
+  jollyEnabled?: boolean;
 }
 
 /** Contratto del Parser (LLD §6.2): mai eccezioni per il contenuto, LLMError per il trasporto. */

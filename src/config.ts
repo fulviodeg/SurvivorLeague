@@ -156,6 +156,20 @@ const configSchema = z.object({
   // comportamento invariato (i mancanti restano eliminati `missing_pick`).
   // Non è una credenziale, nessun impatto su env-examples.test.ts.
   AUTOPICK_ON_MISSING: boolParam('false'),
+  // Numero di JOLLY per giocatore (feature JOLLY, secondo incremento di
+  // win_only): token spendibile che in modalità `win_only` salva
+  // dall'eliminazione in caso di PAREAGGIO (NON dalla sconfitta). Valori:
+  // 0 = feature disattivata (il sistema si comporta esattamente come oggi, la
+  // keyword "jolly" è ignorata); ≥1 = ogni profilo nasce con quel numero di
+  // jolly (`profile.jollies_remaining`), dichiarati nel pick email con la
+  // keyword "jolly" e BRUCIATI alla dichiarazione. NOTA: `intParam()` usa
+  // `.positive()` e rifiuterebbe 0 — qui serve `.nonnegative()` perché
+  // 0 = feature off. FISSATO nel DB a `tournament:start`
+  // (tournament_state.jollies_per_player) e coperto dalla stessa guardia
+  // fatal di WIN_ONLY (src/game/mode.ts): impostarlo PRIMA di
+  // `tournament:start` e non modificarlo a torneo in corso. Non è una
+  // credenziale, nessun impatto su env-examples.test.ts.
+  JOLLIES_PER_PLAYER: z.coerce.number().int().nonnegative().default(1),
 
   // --- §4.2 Parametri infrastruttura ---
   // Fuso orario di sistema (stringa IANA) per la comunicazione verso

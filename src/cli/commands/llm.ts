@@ -33,6 +33,7 @@ import { DeterministicIntentClassifier } from '../../llm/deterministic-parser.js
 import { OpenAIIntentClassifier } from '../../llm/intent-classifier.js';
 import { OpenAIClient } from '../../llm/openai-client.js';
 import { loadTeamAliasesFor, OpenAIParser } from '../../llm/parser.js';
+import { modeFor } from '../../game/mode.js';
 import { jsonWithTestMode, printTestModeBanner } from '../output.js';
 
 interface JsonArg {
@@ -69,7 +70,14 @@ export const llmParseCommand: CommandModule<object, JsonArg & { input: string; m
       const provider = new DbSeasonDataProvider(db);
       const teams = await provider.getTeams();
       const aliases = await loadTeamAliasesFor(config.testMode);
-      const opts = { teams, aliases, testMode: config.testMode, winOnly: config.WIN_ONLY };
+      // Feature JOLLY: riconoscere la keyword "jolly" solo quando attiva.
+      const opts = {
+        teams,
+        aliases,
+        testMode: config.testMode,
+        winOnly: config.WIN_ONLY,
+        jollyEnabled: config.WIN_ONLY && config.JOLLIES_PER_PLAYER >= 1
+      };
       // `--mode` esplicito prevale sulla config; senza --mode si segue la config
       // (default deterministico, email v3 Parte B).
       const useLlm = argv.mode === 'llm' || (argv.mode === undefined && config.AI_EMAIL_PARSER);
@@ -95,7 +103,9 @@ export const llmParseCommand: CommandModule<object, JsonArg & { input: string; m
         console.log('{team: null} — pick non riconosciuto o ambiguo (CS7)');
       } else {
         printTestModeBanner(config);
-        console.log(`{team: "${result.team}", outcome: "${result.outcome}"}`);
+        // Feature JOLLY: il flag jolly è mostrato quando presente.
+        const jollyText = result.jolly === true ? ', jolly: true' : '';
+        console.log(`{team: "${result.team}", outcome: "${result.outcome}"${jollyText}}`);
       }
     } finally {
       db.close();
@@ -179,15 +189,19 @@ export const llmClassifyCommand: CommandModule<object, ClassifyArgs> = {
         teams,
         aliases,
         testMode: config.testMode,
-        winOnly: config.WIN_ONLY
+        winOnly: config.WIN_ONLY,
+        // Feature JOLLY: riconoscere la keyword "jolly" solo quando attiva.
+        jollyEnabled: config.WIN_ONLY && config.JOLLIES_PER_PLAYER >= 1
       });
       if (argv.json) {
         console.log(jsonWithTestMode(config, result));
       } else {
         printTestModeBanner(config);
         if (result.intent === 'pick' && result.pick !== null) {
+          // Feature JOLLY: il flag jolly è mostrato quando presente.
+          const jollyText = result.pick.jolly === true ? ', jolly: true' : '';
           console.log(
-            `{intent: "pick", pick: {team: "${result.pick.team}", outcome: "${result.pick.outcome}"}}`
+            `{intent: "pick", pick: {team: "${result.pick.team}", outcome: "${result.pick.outcome}"${jollyText}}}`
           );
         } else {
           console.log(`{intent: "${result.intent}", pick: ${JSON.stringify(result.pick)}}`);
@@ -210,6 +224,8 @@ interface GenerateArgs extends JsonArg {
   deadline?: string;
   availableTeams?: string;
   mode?: string;
+  jollyUsed?: boolean;
+  jolliesRemaining?: number;
 }
 
 export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
@@ -247,6 +263,17 @@ export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
         type: 'string' as const,
         describe: 'Squadre disponibili separate da virgola'
       })
+      .option('jollyUsed', {
+        type: 'boolean' as const,
+        default: false,
+        describe:
+          'Feature JOLLY (smoke manuale): il pick di questa mail è stato dichiarato con jolly'
+      })
+      .option('jolliesRemaining', {
+        type: 'number' as const,
+        describe:
+          'Feature JOLLY (smoke manuale): jolly rimasti al destinatario (riga "Jolly rimasti: N")'
+      })
       .option('mode', {
         type: 'string' as const,
         choices: ['llm', 'deterministic'],
@@ -264,7 +291,10 @@ export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
       outcome: argv.outcome,
       reason: argv.reason,
       deadline: argv.deadline !== undefined ? new Date(argv.deadline) : undefined,
-      availableTeams: argv.availableTeams?.split(',').map((t) => t.trim()).filter((t) => t !== '')
+      availableTeams: argv.availableTeams?.split(',').map((t) => t.trim()).filter((t) => t !== ''),
+      // Feature JOLLY (smoke manuale): flag runtime per esercitare il renderer.
+      ...(argv.jollyUsed === true ? { jollyUsed: true } : {}),
+      ...(argv.jolliesRemaining !== undefined ? { jolliesRemaining: argv.jolliesRemaining } : {})
     };
     // `--mode` esplicito prevale sulla config (confronto delle due strade sullo
     // stesso input senza toccare AI_EMAIL_GENERATOR); senza --mode si segue la
@@ -280,9 +310,9 @@ export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
             retries: config.LLM_RETRIES
           }),
           config.TIMEZONE,
-          config.WIN_ONLY
+          modeFor(config.WIN_ONLY, config.JOLLIES_PER_PLAYER)
         )
-      : new DeterministicGenerator(config.TIMEZONE, config.WIN_ONLY);
+      : new DeterministicGenerator(config.TIMEZONE, modeFor(config.WIN_ONLY, config.JOLLIES_PER_PLAYER));
     const body = await generator.generate(emailCtx);
     const subject = subjectFor(emailCtx);
     if (argv.json) {

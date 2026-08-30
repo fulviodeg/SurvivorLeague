@@ -42,7 +42,11 @@ CREATE TABLE IF NOT EXISTS profile (
   eliminated        INTEGER NOT NULL DEFAULT 0,
   eliminated_at     TEXT,  -- timestamp dell'eliminazione (ISO 8601), NULL se in gara
   eliminated_reason TEXT CHECK (eliminated_reason IN ('missing_pick', 'wrong_pick')),
-  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Feature JOLLY: contatore di jolly RIMASTI per questo profilo (inizializzato
+  -- a JOLLIES_PER_PLAYER alla creazione, decrementato alla dichiarazione di un
+  -- jolly). Il motore legge SOLO questo contatore per decidere 'no_jollies_left'.
+  jollies_remaining INTEGER NOT NULL DEFAULT 1
 );
 -- eliminated_at / eliminated_reason sono esposte da elimination:list (LLD §7.6)
 
@@ -60,6 +64,10 @@ CREATE TABLE IF NOT EXISTS pick (
   -- un pick manuale (nessuno stato dedicato); il flag serve solo al marcatore
   -- storico "🤖 Auto-assegnato" nelle mail retrospettive.
   auto_pick  INTEGER NOT NULL DEFAULT 0,
+  -- Feature JOLLY: 1 = pick dichiarato con jolly (bruciato alla dichiarazione,
+  -- a prescindere dall'esito). Nessun nuovo pick.status: un pick salvato dal
+  -- pareggio resta 'correct' (D1), la distinzione vive nel flag e nel runtime.
+  jolly_used INTEGER NOT NULL DEFAULT 0,
   UNIQUE(profile_id, round)
 );
 
@@ -120,6 +128,10 @@ CREATE TABLE IF NOT EXISTS tournament_state (
   autopick_on_missing INTEGER NOT NULL DEFAULT 0 -- Feature AUTOPICK: 1 = auto-pick attivo (WIN_ONLY + AUTOPICK_ON_MISSING);
                                                  -- fissata a tournament:start e coperta dalla STESSA guardia fatal
                                                  -- di src/game/mode.ts (mismatch a torneo aperto → processo abortito)
+  ,
+  jollies_per_player INTEGER NOT NULL DEFAULT 1 -- Feature JOLLY: numero di jolly per giocatore (config.JOLLIES_PER_PLAYER),
+                                                -- fissata a tournament:start e coperta dalla STESSA guardia fatal
+                                                -- di src/game/mode.ts (mismatch a torneo aperto → processo abortito)
 );
 `;
 
@@ -216,6 +228,27 @@ export function applyAdditiveMigrations(db: Database.Database): void {
   }>).map((c) => c.name);
   if (!pickColumns.includes('auto_pick')) {
     db.exec('ALTER TABLE pick ADD COLUMN auto_pick INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // Feature JOLLY: jolly per giocatore FISSATI a tournament:start e confrontati
+  // dalla STESSA guardia fatal di src/game/mode.ts a torneo aperto. Colonna
+  // additiva: un DB pre-esistente la guadagna con default 1 (feature attiva di
+  // default, allineato a config.JOLLIES_PER_PLAYER).
+  if (!stateColumns.includes('jollies_per_player')) {
+    db.exec('ALTER TABLE tournament_state ADD COLUMN jollies_per_player INTEGER NOT NULL DEFAULT 1');
+  }
+
+  // Feature JOLLY: contatore per-profilo inizializzato a JOLLIES_PER_PLAYER
+  // alla creazione del profilo (auto-join). Colonna additiva: un DB
+  // pre-esistente la guadagna con default 1 (un jolly per i profili legacy).
+  if (!profileColumns.includes('jollies_remaining')) {
+    db.exec('ALTER TABLE profile ADD COLUMN jollies_remaining INTEGER NOT NULL DEFAULT 1');
+  }
+
+  // Feature JOLLY: flag per-pick jolly_used (bruciato alla dichiarazione).
+  // Colonna additiva: un DB pre-esistente la guadagna con default 0.
+  if (!pickColumns.includes('jolly_used')) {
+    db.exec('ALTER TABLE pick ADD COLUMN jolly_used INTEGER NOT NULL DEFAULT 0');
   }
 }
 

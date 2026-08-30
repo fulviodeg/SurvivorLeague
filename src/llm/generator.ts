@@ -36,6 +36,8 @@
 import { narrativeFor, serializeEmailContext, templateFor } from './templates.js';
 import { renderEmailV2 } from './email-renderer.js';
 import { OpenAIClient } from './openai-client.js';
+import type { GameMode } from '../game/mode.js';
+import { modeFor } from '../game/mode.js';
 
 /** Tutti i tipi di email previsti dal POC, nell'ordine di enum. */
 export const EMAIL_TYPES = [
@@ -101,6 +103,12 @@ export interface EmailPlayerResult {
    * (il renderer aggiunge il marcatore "🤖 Auto-assegnato" alla riga).
    */
   autoPick?: boolean;
+  /**
+   * Feature JOLLY (D9): true = pick dichiarato con jolly (il renderer aggiunge
+   * il marcatore "🎯 Jolly" alla riga). Valido per `round_closed_survived` e
+   * `tournament_closed` (riusano entrambe playerResultRow).
+   */
+  jolly?: boolean;
 }
 
 /** Storico per-round del torneo per `tournament_closed` (ADR-015 email v4). */
@@ -179,6 +187,28 @@ export interface EmailContext {
    * il renderer produce la sezione `📜 STORICO DEL TORNEO`. Assente → omessa.
    */
   tournamentHistory?: EmailTournamentRound[];
+  /**
+   * Feature JOLLY (D9): true = il pick di QUESTA mail è stato dichiarato con
+   * un jolly (flag runtime iniettato dal Game Engine da `pick.jolly_used`,
+   * mai ricostruito nei renderer). Usato dalle mail di esito
+   * (`round_result_correct`/`round_result_wrong`) e di conferma
+   * (`pick_confirmed`).
+   */
+  jollyUsed?: boolean;
+  /**
+   * Feature JOLLY (D1/D9): true = il giocatore è stato SALVATO dall'eliminazione
+   * dal jolly (pick sbagliato su un pareggio della squadra scelta, trasformato
+   * in `correct` dallo scoring). Valido SOLO per `round_result_correct`; dato
+   * runtime iniettato dal Game Engine, mai ricostruito.
+   */
+  savedByJolly?: boolean;
+  /**
+   * Feature JOLLY (D9): jolly RIMASTI al destinatario
+   * (`profile.jollies_remaining`, letto dal Game Engine al momento della
+   * notifica). Mostrato nelle mail con istruzioni/conferme/riepiloghi;
+   * assente → riga omessa (es. registrati senza profilo).
+   */
+  jolliesRemaining?: number;
   /**
    * Oggetto esplicito opzionale (D1): se presente, `subjectFor(ctx)` lo usa
    * al posto dell'etichetta composta; chi non lo imposta ottiene il soggetto
@@ -261,10 +291,12 @@ export const MAX_NARRATIVE_CHARS = 1000;
  * fallback è DETERMINISTICO (nessuna chiamata LLM di ripiego, nessuna
  * invenzione: il renderer compone comunque sezioni/CTA dai dati iniettati).
  */
-export function deterministicNarrative(ctx: EmailContext, raw: string, winOnly = false): string {
+export function deterministicNarrative(ctx: EmailContext, raw: string, mode: GameMode = { winOnly: false, jollyEnabled: false }): string {
   const trimmed = raw.trim();
   if (trimmed === '' || trimmed.length > MAX_NARRATIVE_CHARS) {
-    return narrativeFor(ctx.type, winOnly);
+    // Feature JOLLY: il flag runtime savedByJolly evita la narrativa
+    // contraddittoria "hai indovinato" sul pick salvato dal pareggio.
+    return narrativeFor(ctx.type, mode, ctx.savedByJolly === true);
   }
   return trimmed;
 }
@@ -280,12 +312,12 @@ export function deterministicNarrative(ctx: EmailContext, raw: string, winOnly =
 export class OpenAIGenerator implements LLMGenerator {
   private readonly client: OpenAIClient;
   private readonly timeZone: string;
-  private readonly winOnly: boolean;
+  private readonly mode: GameMode;
 
-  constructor(client: OpenAIClient, timeZone = 'Europe/Rome', winOnly = false) {
+  constructor(client: OpenAIClient, timeZone = 'Europe/Rome', mode: GameMode = modeFor(false, 0)) {
     this.client = client;
     this.timeZone = timeZone;
-    this.winOnly = winOnly;
+    this.mode = mode;
   }
 
   /**
@@ -298,13 +330,13 @@ export class OpenAIGenerator implements LLMGenerator {
    * Errori di trasporto/HTTP → LLMError rilanciata (D3).
    */
   async generate(ctx: EmailContext): Promise<string> {
-    const template = templateFor(ctx.type, this.winOnly);
+    const template = templateFor(ctx.type, this.mode);
     const userMessage = serializeEmailContext(ctx, this.timeZone);
     const raw = await this.client.chatCompletion(
       { system: template, user: userMessage },
       'text'
     );
-    const narrative = deterministicNarrative(ctx, raw, this.winOnly);
-    return renderEmailV2(ctx, narrative, this.timeZone, this.winOnly);
+    const narrative = deterministicNarrative(ctx, raw, this.mode);
+    return renderEmailV2(ctx, narrative, this.timeZone, this.mode);
   }
 }

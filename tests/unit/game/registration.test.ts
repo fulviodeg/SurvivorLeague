@@ -139,6 +139,73 @@ describe('auto-join RF-P5 (ADR-009) — eligibilità piattaforma + profilo+pick 
     }
   });
 
+  it('auto-join con jolly: profilo inizializzato a JOLLIES_PER_PLAYER e contatore decrementato nella stessa transazione (D6)', async () => {
+    const { db, ctx, platform } = await makePlatformHarness();
+    await openTT1({ db, ctx });
+    platform.register('jolly@test.it', null, NOW);
+
+    const res = await autoJoinFromPick(
+      ctx,
+      { channel: 'email', identifier: 'jolly@test.it' },
+      { team: IM, outcome: 'win', jolly: true },
+      1,
+      T_PICK
+    );
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      // Profilo nato con JOLLIES_PER_PLAYER (default config = 1) e contatore
+      // decrementato a 0 atomicamente; pick con jolly_used=1.
+      expect(db.prepare('SELECT jollies_remaining FROM profile WHERE id = ?').get(res.profileId)).toEqual({
+        jollies_remaining: 0
+      });
+      expect(db.prepare('SELECT jolly_used FROM pick WHERE id = ?').get(res.pickId)).toEqual({
+        jolly_used: 1
+      });
+    }
+  });
+
+  it('auto-join con JOLLIES_PER_PLAYER=0: profilo a contatore 0 e pick con jolly → ROLLBACK senza profilo', async () => {
+    const db = new Database(':memory:');
+    migrate(db);
+    loadBaseSeason(db);
+    const platformDb = new Database(':memory:');
+    migratePlatform(platformDb);
+    const platform = new DbPlatformRegistry(platformDb);
+    const ctx: GameContext = {
+      db,
+      dataProvider: new DbSeasonDataProvider(db),
+      config: parseConfig({
+        IMAP_USER: 'u',
+        IMAP_PASS: 'p',
+        SMTP_USER: 'u',
+        SMTP_PASS: 'p',
+        LLM_API_KEY: 'k',
+        FOOTBALL_DATA_TOKEN: 't',
+        WIN_ONLY: 'true',
+        JOLLIES_PER_PLAYER: '0'
+      }),
+      now: NOW,
+      platform
+    };
+    await startTournament(ctx);
+    await openRound(ctx, 1);
+    platform.register('zero@test.it', null, NOW);
+
+    const res = await autoJoinFromPick(
+      ctx,
+      { channel: 'email', identifier: 'zero@test.it' },
+      { team: IM, outcome: 'win', jolly: true },
+      1,
+      T_PICK
+    );
+
+    // Il pick con jolly è rifiutato (no_jollies_left) → ROLLBACK: nessun profilo.
+    expect(res).toMatchObject({ ok: false, reason: 'pick_rejected', pickReason: 'no_jollies_left' });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM pick').get()).toEqual({ n: 0 });
+  });
+
   it('auto-join: il nome del player nasce dall\'account piattaforma; assente → email (ADR-011, RF-P1)', async () => {
     const { db, ctx, platform } = await makePlatformHarness();
     await openTT1({ db, ctx });

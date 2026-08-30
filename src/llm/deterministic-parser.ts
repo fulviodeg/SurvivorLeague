@@ -125,10 +125,31 @@ function findOutcome(normalized: string): { outcome: PickExtraction['outcome']; 
  * presente → `{team, 'win'}`; (c) un esito esplicito `draw`/`lose` rende il
  * pick NON riconosciuto (null → chiarimento). In modalità classica il
  * comportamento resta invariato (esito obbligatorio win|draw|lose).
+ *
+ * Feature JOLLY (D4): quando `jollyEnabled` è true (win_only con jolly attivi)
+ * la keyword "jolly" è riconosciuta OVUNQUE nel testo (word boundary,
+ * case/accenti-insensibile), rimossa prima di risolvere squadra+esito, e
+ * propagata come `PickExtraction.jolly = true`. Con `jollyEnabled` assente la
+ * keyword è rumore ignorato (pick normale, identico a oggi).
  */
-function resolvePick(text: string, terms: TeamTerm[], winOnly = false): PickExtraction | null {
+function resolvePick(
+  text: string,
+  terms: TeamTerm[],
+  winOnly = false,
+  jollyEnabled = false
+): PickExtraction | null {
   const normalized = normalize(text);
-  const outcome = findOutcome(normalized);
+  // Keyword "jolly": word boundary + case/accenti-insensibile (normalize
+  // rimuove gli accenti e porta a minuscolo). "jollywood" NON matcha (nessun
+  // boundary dopo "jolly"). La variante "jolli" è la forma italianizzata/
+  // accentata di "jolly" dopo la normalizzazione ("jollì" → "jolli"): la
+  // accettiamo perché il requisito è "case/accenti-insensibile". La keyword è
+  // RIMOSSA dal testo di lavoro: la risoluzione squadra+esito resta quella
+  // win_only (squadra nuda → win, draw/lose esplicito → null) — il jolly non
+  // cambia MAI l'outcome.
+  const jolly = jollyEnabled === true && /\bjoll[yi]\b/.test(normalized);
+  const working = jolly ? normalized.replace(/\bjoll[yi]\b/, ' ').trim() : normalized;
+  const outcome = findOutcome(working);
 
   if (winOnly) {
     // Esito draw/lose esplicito → non riconosciuto (il giocatore deve scegliere
@@ -139,16 +160,18 @@ function resolvePick(text: string, terms: TeamTerm[], winOnly = false): PickExtr
     // 'win' esplicito → squadra PRIMA dell'esito; squadra nuda → 'win' implicito.
     const team =
       outcome === null
-        ? resolveTeam(normalized, terms)
-        : resolveTeam(normalized.slice(0, outcome.index), terms);
+        ? resolveTeam(working, terms)
+        : resolveTeam(working.slice(0, outcome.index), terms);
     if (team === null) return null;
-    return { team, outcome: 'win' };
+    return jolly ? { team, outcome: 'win', jolly: true } : { team, outcome: 'win' };
   }
 
   if (outcome === null) return null;
-  const team = resolveTeam(normalized.slice(0, outcome.index), terms);
+  const team = resolveTeam(working.slice(0, outcome.index), terms);
   if (team === null) return null;
-  return { team, outcome: outcome.outcome };
+  return jolly
+    ? { team, outcome: outcome.outcome, jolly: true }
+    : { team, outcome: outcome.outcome };
 }
 
 /**
@@ -156,7 +179,12 @@ function resolvePick(text: string, terms: TeamTerm[], winOnly = false): PickExtr
  * univoche; null se nessuna formula è riconosciuta. L'ordine conta:
  * `disiscrizione` PRIMA di `iscrizione` (la prima contiene la seconda).
  */
-function classifyText(text: string, terms: TeamTerm[], winOnly = false): IntentClassification | null {
+function classifyText(
+  text: string,
+  terms: TeamTerm[],
+  winOnly = false,
+  jollyEnabled = false
+): IntentClassification | null {
   const normalized = normalize(text);
 
   if (normalized.includes('disiscrizione')) {
@@ -173,7 +201,7 @@ function classifyText(text: string, terms: TeamTerm[], winOnly = false): IntentC
     return { intent: 'subscribe', pick: null, name: name !== '' ? name : null };
   }
 
-  const pick = resolvePick(text, terms, winOnly);
+  const pick = resolvePick(text, terms, winOnly, jollyEnabled);
   if (pick !== null) {
     return { intent: 'pick', pick, name: null };
   }
@@ -194,9 +222,10 @@ export class DeterministicIntentClassifier implements LLMIntentClassifier {
     }
     const terms = buildTeamTerms(opts.teams, opts.aliases);
     const winOnly = opts.winOnly === true;
+    const jollyEnabled = opts.jollyEnabled === true;
     for (const source of [opts.subject, body]) {
       if (source === undefined) continue;
-      const result = classifyText(source, terms, winOnly);
+      const result = classifyText(source, terms, winOnly, jollyEnabled);
       if (result !== null) return result;
     }
     return { intent: 'other', pick: null, name: null };

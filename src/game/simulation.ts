@@ -202,6 +202,14 @@ async function simulateOneRound(
   // (il percorso di eliminazione è esercitato anche in win_only).
   const outcomes = config.WIN_ONLY ? (['win'] as const) : (['win', 'draw', 'lose'] as const);
 
+  // Feature JOLLY (D10): quando i jolly sono attivi (win_only &&
+  // JOLLIES_PER_PLAYER >= 1), ogni pick simulato dichiara il jolly con una
+  // probabilità fissa (un singolo rng() DOPO la scelta squadra/esito) SOLO se
+  // il profilo ha jollies_remaining > 0. Con jolly off NESSUN extra rng():
+  // la sequenza classica (squadre/esiti) resta identica a prima (RNF1).
+  const jollyActive = config.WIN_ONLY && config.JOLLIES_PER_PLAYER >= 1;
+  const JOLLY_PROBABILITY = 0.25;
+
   // Fase 1 — open: il round si apre a deadline − 1min (R2). `openRound`
   // calcola la stessa deadline (kickoff − anticipo, RF-14): la rileggiamo dal
   // DB come fonte autorevole (stessa semantica dello scheduler, LLD §1.4).
@@ -235,16 +243,20 @@ async function simulateOneRound(
       if (hasProfile !== undefined) continue;
       const team = roundTeams[Math.floor(rng() * roundTeams.length)]!;
       const outcome = outcomes[Math.floor(rng() * outcomes.length)]!;
+      // Feature JOLLY (D10): il profilo nasce per auto-join con
+      // jollies_remaining = JOLLIES_PER_PLAYER (>= 1 se jollyActive), quindi
+      // l'extra draw è valido; la sequenza classica è preservata quando off.
+      const jolly = jollyActive && rng() < JOLLY_PROBABILITY;
       const joined = await autoJoinFromPick(
         ctx,
         { channel: 'email', identifier: email },
-        { team, outcome },
+        jolly ? { team, outcome, jolly: true } : { team, outcome },
         round,
         ctx.now
       );
       if (!joined.ok) {
         throw new Error(
-          `Auto-join simulato rifiutato (round ${round}, ${email}, ${team}/${outcome}): ${joined.reason}${
+          `Auto-join simulato rifiutato (round ${round}, ${email}, ${team}/${outcome}${jolly ? ' jolly' : ''}): ${joined.reason}${
             joined.reason === 'pick_rejected' ? ` (${joined.pickReason ?? '?'})` : ''
           }`
         );
@@ -254,8 +266,8 @@ async function simulateOneRound(
   } else {
     // Dal TT2: cascata attuale sui profili attivi.
     const active = db
-      .prepare('SELECT id FROM profile WHERE eliminated = 0 ORDER BY id')
-      .all() as Array<{ id: number }>;
+      .prepare('SELECT id, jollies_remaining FROM profile WHERE eliminated = 0 ORDER BY id')
+      .all() as Array<{ id: number; jollies_remaining: number }>;
     for (const profile of active) {
       const available = await getAvailableTeams(db, dataProvider, profile.id, round);
       if (available.length === 0) {
@@ -266,16 +278,21 @@ async function simulateOneRound(
       // Indici sempre in range: rng() ∈ [0, 1) → floor(rng() * n) ∈ [0, n-1].
       const team = available[Math.floor(rng() * available.length)]!;
       const outcome = outcomes[Math.floor(rng() * outcomes.length)]!;
+      // Feature JOLLY (D10): un solo extra rng() per pick, SOLO se il profilo
+      // ha jollies_remaining > 0 (il motore rifiuterebbe no_jollies_left).
+      const jolly =
+        jollyActive && profile.jollies_remaining > 0 && rng() < JOLLY_PROBABILITY;
       const res = await registerPick(ctx, {
         profileId: profile.id,
         round,
         team,
         outcome,
+        jolly,
         receivedAt: ctx.now
       });
       if (!res.ok) {
         throw new Error(
-          `Pick simulato rifiutato (round ${round}, profilo ${profile.id}, ${team}/${outcome}): ${res.reason}`
+          `Pick simulato rifiutato (round ${round}, profilo ${profile.id}, ${team}/${outcome}${jolly ? ' jolly' : ''}): ${res.reason}`
         );
       }
       picks += 1;
@@ -392,12 +409,16 @@ export async function simulateRound(
   // Allinea start_round al round simulato (RF-P5: auto-join = TT1); crea la
   // riga tournament_state se assente (pattern storico openRegistration, R3/D).
   // ADR-016: scrive anche `win_only` (coerente con l'export, che dopo T2 include
-  // la colonna). NON imposta `season_started=1`, quindi la guardia fatal di
-  // mode.ts resta no-op. Il seed dipende SOLO da config.WIN_ONLY.
+  // la colonna). Feature JOLLY: scrive anche `jollies_per_player` (stessa
+  // coerenza export). NON imposta `season_started=1`, quindi la guardia fatal di
+  // mode.ts resta no-op. Il seed dipende da config.WIN_ONLY e, quando i jolly
+  // sono attivi, dall'extra draw jolly (config.JOLLIES_PER_PLAYER >= 1); con
+  // jolly off la sequenza classica resta invariata (nessun rng() extra).
   db.prepare(
-    `INSERT INTO tournament_state (id, start_round, win_only) VALUES (1, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET start_round = excluded.start_round, win_only = excluded.win_only`
-  ).run(round, config.WIN_ONLY ? 1 : 0);
+    `INSERT INTO tournament_state (id, start_round, win_only, jollies_per_player) VALUES (1, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET start_round = excluded.start_round, win_only = excluded.win_only,
+       jollies_per_player = excluded.jollies_per_player`
+  ).run(round, config.WIN_ONLY ? 1 : 0, config.JOLLIES_PER_PLAYER);
 
   const kickoff = await dataProvider.getFirstMatchDateTime(round);
   const deadline = computeDeadline(kickoff, config.DEADLINE_ADVANCE_MIN);

@@ -13,6 +13,10 @@
  *   4. non bruciata nel girone → team_already_used (RF-10/CS5)
  *   5. esito valido          → invalid_outcome (win|draw|lose)
  *   6. non già pick          → pick_already_exists (CL6, RF-08)
+ *   6bis. jolly (feature JOLLY, D5) → jolly_not_allowed (jolly in modalità
+ *                                classica, difensivo) | no_jollies_left
+ *                                (contatore per-profilo esaurito) — DOPO
+ *                                pick_already_exists e PRIMA dei check temporali
  *   7. accettazione temporale → round_not_open (CL3) | after_acceptance (CS4)
  *                            | after_kickoff (guard anti-frode RF-31, CL17/CL18)
  *
@@ -51,6 +55,15 @@ export interface PickInput {
   team: string;
   /** Esito previsto: win | draw | lose. */
   outcome: string;
+  /**
+   * Jolly dichiarato (feature JOLLY, D4): true = il pick usa un jolly — in
+   * `win_only` salva dall'eliminazione in caso di PAREAGGIO (non dalla
+   * sconfitta) ed è BRUCIATO alla dichiarazione (jolly_used=1 + decremento di
+   * `profile.jollies_remaining` nella stessa transazione). Il jolly è SOLO
+   * win_only (`jolly_not_allowed` in classica) e richiede un contatore > 0
+   * (`no_jollies_left`). Assente/false = nessun jolly.
+   */
+  jolly?: boolean;
   /** Timestamp di RICEZIONE sul server (ADR-001) — mai l'header Date. */
   receivedAt: Date;
 }
@@ -91,8 +104,8 @@ export async function validatePick(
 
   // 1. Registrazione/attivo: il profilo esiste ed è in gara.
   const profile = db
-    .prepare('SELECT id, eliminated FROM profile WHERE id = ?')
-    .get(input.profileId) as { id: number; eliminated: number } | undefined;
+    .prepare('SELECT id, eliminated, jollies_remaining FROM profile WHERE id = ?')
+    .get(input.profileId) as { id: number; eliminated: number; jollies_remaining: number } | undefined;
   if (profile === undefined) return { valid: false, reason: 'profile_not_registered' };
   if (profile.eliminated === 1) return { valid: false, reason: 'profile_eliminated' };
 
@@ -130,6 +143,18 @@ export async function validatePick(
     .get(input.profileId, input.round);
   if (existing !== undefined) {
     return { valid: false, reason: 'pick_already_exists' };
+  }
+
+  // 6bis. Feature JOLLY (D5): DOPO pick_already_exists e PRIMA dei check
+  // temporali. Il jolly è SOLO win_only (in classica il pareggio è già esito
+  // corretto, dichiararlo è un errore → jolly_not_allowed, difensivo e
+  // raggiungibile via CLI) e richiede un contatore per-profilo > 0 (il motore
+  // legge SOLO il contatore, mai la config, D3 → no_jollies_left).
+  if (input.jolly === true && !config.WIN_ONLY) {
+    return { valid: false, reason: 'jolly_not_allowed' };
+  }
+  if (input.jolly === true && profile.jollies_remaining === 0) {
+    return { valid: false, reason: 'no_jollies_left' };
   }
 
   // 7. Accettazione temporale (round aperto, deadline, guard RF-31).
@@ -190,6 +215,12 @@ export async function checkAcceptance(
  * chiusura del round (colonna additiva `pick.auto_pick`, default 0 = manuale).
  * Il flag NON altera lo scoring: serve solo al marcatore storico
  * "🤖 Auto-assegnato" nelle mail retrospettive.
+ *
+ * `jollyUsed` (feature JOLLY, D6): 1 = pick dichiarato con jolly (colonna
+ * additiva `pick.jolly_used`, default 0). Il flag NON altera lo scoring:
+ * trasporta ai renderer il fatto che il pick aveva un jolly (marcatore e
+ * testi "🎯 Jolly"); il consumo del contatore è gestito dal chiamante
+ * (registerPick/autoJoinFromPick) nella stessa transazione.
  */
 export function insertPendingPick(
   db: Database.Database,
@@ -198,13 +229,23 @@ export function insertPendingPick(
   team: string,
   outcome: string,
   createdAt: string,
-  autoPick = 0
+  autoPick = 0,
+  jollyUsed = 0
 ): number {
   const info = db
     .prepare(
-      'INSERT INTO pick (profile_id, round, team, outcome, status, created_at, auto_pick) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO pick (profile_id, round, team, outcome, status, created_at, auto_pick, jolly_used) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
     )
-    .run(profileId, round, team, outcome, PICK_STATUS_PENDING, createdAt, autoPick ? 1 : 0);
+    .run(
+      profileId,
+      round,
+      team,
+      outcome,
+      PICK_STATUS_PENDING,
+      createdAt,
+      autoPick ? 1 : 0,
+      jollyUsed ? 1 : 0
+    );
   return Number(info.lastInsertRowid);
 }
 
@@ -212,6 +253,12 @@ export function insertPendingPick(
  * Registra un pick: valida SEMPRE (stesse regole dei pick automatici, decisione
  * 9) e, se valido o coperto dall'override temporale, inserisce atomicamente.
  * Su violazione UNIQUE (invii concorrenti) → motivo pick_already_exists.
+ *
+ * Feature JOLLY (D6): l'inserimento e il decremento di
+ * `profile.jollies_remaining` avvengono nella STESSA transazione
+ * (`db.transaction`): mai un pick con jolly senza consumo del contatore e mai
+ * un consumo senza pick (atomicità; SQLite single-writer + UNIQUE rendono il
+ * doppio invio concorrente sicuro).
  */
 export async function registerPick(
   ctx: GameContext,
@@ -226,14 +273,24 @@ export async function registerPick(
   }
 
   try {
-    const id = insertPendingPick(
-      db,
-      input.profileId,
-      input.round,
-      input.team,
-      input.outcome,
-      now.toISOString()
-    );
+    const id = db.transaction(() => {
+      const insertedId = insertPendingPick(
+        db,
+        input.profileId,
+        input.round,
+        input.team,
+        input.outcome,
+        now.toISOString(),
+        0,
+        input.jolly === true ? 1 : 0
+      );
+      if (input.jolly === true) {
+        db.prepare('UPDATE profile SET jollies_remaining = jollies_remaining - 1 WHERE id = ?').run(
+          input.profileId
+        );
+      }
+      return insertedId;
+    })();
     return { ok: true, id, status: PICK_STATUS_PENDING };
   } catch (error) {
     if (isUniqueViolation(error)) return { ok: false, reason: 'pick_already_exists' };

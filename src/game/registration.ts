@@ -81,7 +81,7 @@ export async function autoJoinFromPick(
   round: number,
   receivedAt: Date
 ): Promise<AutoJoinResult> {
-  const { db, now } = ctx;
+  const { db, now, config } = ctx;
 
   // CL5: contenuto non interpretabile → chiarimento senza profilo.
   if (parsed === null) return { ok: false, reason: 'not_interpretable' };
@@ -106,10 +106,13 @@ export async function autoJoinFromPick(
   const account = ctx.platform?.find(identity.identifier) ?? null;
   if (account === null) return { ok: false, reason: 'not_eligible' };
 
-  // Profilo + pick atomici: BEGIN ... COMMIT / ROLLBACK (validazione async).
-  // created_at esplicito dal clock iniettato (Decisione A, RNF1);
-  // register_id replicato dall'account piattaforma (RF-P7).
-  db.prepare('BEGIN').run();
+    // Profilo + pick atomici: BEGIN ... COMMIT / ROLLBACK (validazione async).
+    // created_at esplicito dal clock iniettato (Decisione A, RNF1);
+    // register_id replicato dall'account piattaforma (RF-P7).
+    // Feature JOLLY: `jollies_remaining` è inizializzato a
+    // config.JOLLIES_PER_PLAYER alla CREAZIONE del profilo (D3) — il motore
+    // poi legge SOLO il contatore per decidere no_jollies_left.
+    db.prepare('BEGIN').run();
   try {
     // Riuso di player legacy (decisione (g)/B7): se per l'email esiste già
     // una riga player SENZA profile, si RIUSA il player_id (UNIQUE email mai
@@ -147,14 +150,18 @@ export async function autoJoinFromPick(
     }
 
     const profileId = db
-      .prepare('INSERT INTO profile (player_id, register_id, created_at) VALUES (?, ?, ?)')
-      .run(playerId, account.registerId, now.toISOString()).lastInsertRowid as number;
+      .prepare(
+        'INSERT INTO profile (player_id, register_id, created_at, jollies_remaining) VALUES (?, ?, ?, ?)'
+      )
+      .run(playerId, account.registerId, now.toISOString(), config.JOLLIES_PER_PLAYER)
+      .lastInsertRowid as number;
 
     const validation = await validatePick(ctx, {
       profileId,
       round,
       team: parsed.team,
       outcome: parsed.outcome,
+      jolly: parsed.jolly === true,
       receivedAt
     });
     if (!validation.valid) {
@@ -170,8 +177,17 @@ export async function autoJoinFromPick(
         round,
         parsed.team,
         parsed.outcome,
-        now.toISOString()
+        now.toISOString(),
+        0,
+        parsed.jolly === true ? 1 : 0
       );
+      // Feature JOLLY (D6): il decremento del contatore avviene nella STESSA
+      // transazione dell'inserimento del pick (atomicità come registerPick).
+      if (parsed.jolly === true) {
+        db.prepare('UPDATE profile SET jollies_remaining = jollies_remaining - 1 WHERE id = ?').run(
+          profileId
+        );
+      }
     } catch {
       db.prepare('ROLLBACK').run();
       return { ok: false, reason: 'pick_rejected', pickReason: 'pick_already_exists' };

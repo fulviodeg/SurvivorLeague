@@ -46,6 +46,7 @@
  */
 import { formatItDate } from './templates.js';
 import { championshipHeaderLabel, roundHeaderLabel, roundLabel } from '../game/turn.js';
+import type { GameMode } from '../game/mode.js';
 import type { EmailContext, EmailPlayerResult, EmailType } from './generator.js';
 
 /** Esito pick in italiano (dati iniettati, mai generati). */
@@ -81,7 +82,7 @@ function header(ctx: EmailContext): string | null {
  * distingue win/draw/lose, quindi mostrare il pick rende esplicita la scelta.
  * `pick_missing_elimination` non ha un pick e non riceve questa riga.
  */
-function resultLine(ctx: EmailContext, winOnly: boolean): string | null {
+function resultLine(ctx: EmailContext, mode: GameMode): string | null {
   let base: string | null;
   if (ctx.type === 'round_result_correct') base = '✅ SEI ANCORA IN GARA!';
   else if (ctx.type === 'round_result_wrong') base = '❌ SEI STATO ELIMINATO!';
@@ -89,14 +90,29 @@ function resultLine(ctx: EmailContext, winOnly: boolean): string | null {
   else return null;
 
   const team = ctx.team;
-  if (
-    winOnly &&
+  // Feature JOLLY (D8/D9): riga esplicativa del jolly — SOLO quando i jolly
+  // sono attivi e SOLO per gli esiti CON pick e CON jolly dichiarato. Il
+  // salvataggio dal pareggio è un flag runtime del Game Engine (savedByJolly,
+  // mai ricostruito qui); "sconfitta" e "vittoria" derivano dal tipo.
+  const jollyLine =
+    mode.jollyEnabled && ctx.jollyUsed === true && team !== undefined && team !== ''
+      ? ctx.savedByJolly === true
+        ? `🎯 Il tuo jolly ti ha salvato: ${team.toUpperCase()} ha pareggiato.`
+        : ctx.type === 'round_result_wrong'
+          ? '🎯 Il jolly non salva dalla sconfitta.'
+          : '🎯 Jolly usato'
+      : null;
+
+  const pickLine =
+    mode.winOnly &&
     (ctx.type === 'round_result_correct' || ctx.type === 'round_result_wrong') &&
     team !== undefined &&
     team !== ''
-  ) {
-    return `${base}\n⚽ il tuo Pick: ${team.toUpperCase()} ⚽`;
-  }
+      ? `⚽ il tuo Pick: ${team.toUpperCase()} ⚽`
+      : null;
+
+  if (pickLine !== null) base = `${base}\n${pickLine}`;
+  if (jollyLine !== null) base = `${base}\n${jollyLine}`;
   return base;
 }
 
@@ -107,10 +123,15 @@ function resultLine(ctx: EmailContext, winOnly: boolean): string | null {
  * (l'outcome è sempre 'win', mostrarlo non aggiunge nulla). Dati assenti →
  * forma generica "PICK REGISTRATO" (mai inventare nulla).
  */
-function pickConfirmedKey(ctx: EmailContext, winOnly: boolean): string {
+function pickConfirmedKey(ctx: EmailContext, mode: GameMode): string {
   const team = ctx.team;
   if (team !== undefined && team !== '') {
-    if (winOnly) return `PICK REGISTRATO → ${team.toUpperCase()}`;
+    // Feature JOLLY (D8): chiave dedicata quando il pick è stato dichiarato
+    // con jolly e i jolly sono attivi.
+    if (mode.jollyEnabled && ctx.jollyUsed === true) {
+      return `PICK REGISTRATO CON JOLLY → ${team.toUpperCase()}`;
+    }
+    if (mode.winOnly) return `PICK REGISTRATO → ${team.toUpperCase()}`;
     const esito = outcomeItalian(ctx.outcome);
     if (esito !== null) return `PICK REGISTRATO → ${team.toUpperCase()} → ${esito.toUpperCase()}`;
   }
@@ -122,7 +143,7 @@ function pickConfirmedKey(ctx: EmailContext, winOnly: boolean): string {
  * l'equivalente plain-text del "grassetto +20%". Le mail di ESITO round
  * NON hanno `keyMessage`: usano l'esito ✅/❌ di `resultLine` (separato).
  */
-function keyMessage(ctx: EmailContext, winOnly: boolean): string | null {
+function keyMessage(ctx: EmailContext, mode: GameMode): string | null {
   switch (ctx.type) {
     case 'platform_registered':
       return 'ISCRIZIONE CONFERMATA: SEI IN PIATTAFORMA!';
@@ -137,7 +158,7 @@ function keyMessage(ctx: EmailContext, winOnly: boolean): string | null {
     case 'pick_instructions':
       return 'ROUND APERTO: INVIA IL TUO PICK!';
     case 'pick_confirmed':
-      return pickConfirmedKey(ctx, winOnly);
+      return pickConfirmedKey(ctx, mode);
     case 'pick_rejected':
       return `PICK NON REGISTRATO: ${ctx.reason ?? ''}`;
     case 'pick_auto_assigned':
@@ -231,21 +252,24 @@ function matchesSection(ctx: EmailContext): string | null {
  * senza pick "{nome} — nessun pick — ❌ eliminato". Esito/eliminazione dai
  * DATI iniettati (mai inventati); l'esito è in italiano via `outcomeItalian`.
  */
-function playerResultRow(p: EmailPlayerResult, winOnly: boolean): string {
+function playerResultRow(p: EmailPlayerResult, mode: GameMode): string {
   const status = p.eliminated ? '❌ eliminato' : '✅ ancora in gara';
   // Feature AUTOPICK (D9): marcatore in CODA alla riga quando il pick è stato
   // auto-assegnato — vale per `round_closed_survived` e `tournament_closed`
   // (riusano entrambe playerResultRow), senza parametro per distinguerle.
   const autoMarker = p.autoPick === true ? ' · 🤖 Auto-assegnato' : '';
+  // Feature JOLLY (D9): marcatore "🎯 Jolly" quando il pick del giocatore è
+  // stato dichiarato con jolly (stesse mail retrospettive di autoPick).
+  const jollyMarker = p.jolly === true ? ' · 🎯 Jolly' : '';
   if (p.team !== undefined && p.team !== '') {
     const outcome = outcomeItalian(p.outcome);
-    if (!winOnly && outcome !== null) {
-      return `${p.name} — ${p.team} · ${outcome} — ${status}${autoMarker}`;
+    if (!mode.winOnly && outcome !== null) {
+      return `${p.name} — ${p.team} · ${outcome} — ${status}${autoMarker}${jollyMarker}`;
     }
     // ADR-016 (win_only): l'outcome è sempre 'win' — mostrare "· vittoria"
     // accanto a "❌ eliminato" è fuorviante, quindi la riga omette l'esito.
     // Vale anche per lo storico `tournament_closed` (riusa playerResultRow).
-    return `${p.name} — ${p.team} — ${status}${autoMarker}`;
+    return `${p.name} — ${p.team} — ${status}${autoMarker}${jollyMarker}`;
   }
   return `${p.name} — nessun pick — ❌ eliminato`;
 }
@@ -256,9 +280,9 @@ function playerResultRow(p: EmailPlayerResult, winOnly: boolean): string {
  * e — riusata — per lo storico di `tournament_closed`). Le altre mail restano
  * sui soli conteggi aggregati di `stateSection` (convenzione 6).
  */
-function playersSection(ctx: EmailContext, winOnly: boolean): string | null {
+function playersSection(ctx: EmailContext, mode: GameMode): string | null {
   if (ctx.players === undefined || ctx.players.length === 0) return null;
-  return section('👥 GIOCATORI DEL ROUND', ctx.players.map((p) => playerResultRow(p, winOnly)));
+  return section('👥 GIOCATORI DEL ROUND', ctx.players.map((p) => playerResultRow(p, mode)));
 }
 
 /**
@@ -277,13 +301,13 @@ function coWinnersSection(ctx: EmailContext): string | null {
  * righe giocatore (stesso formato di `playerResultRow`). Resa SOLO se
  * `ctx.tournamentHistory` è presente (`tournament_closed`).
  */
-function historySection(ctx: EmailContext, winOnly: boolean): string | null {
+function historySection(ctx: EmailContext, mode: GameMode): string | null {
   if (ctx.tournamentHistory === undefined || ctx.tournamentHistory.length === 0) return null;
   const blocks = ctx.tournamentHistory.map(
     (r) =>
       [
         `${roundHeaderLabel(r.round)} · ${championshipHeaderLabel(r.championshipRound)}`,
-        ...r.players.map((p) => playerResultRow(p, winOnly))
+        ...r.players.map((p) => playerResultRow(p, mode))
       ].join('\n')
   );
   return `📜 STORICO DEL TORNEO\n\n${blocks.join('\n\n')}`;
@@ -316,6 +340,36 @@ function platformCountLine(ctx: EmailContext): string | null {
 }
 
 /**
+ * Righe jolly (feature JOLLY, D8/D9): testo guidato dalla tabella dei testi —
+ * mostrato SOLO quando i jolly sono attivi (`mode.jollyEnabled`) e per i tipi
+ * che lo prevedono:
+ *   - `pick_instructions`: riga di istruzione "🎯 Jolly: scrivi «SQUADRA
+ *     Jolly» per usarlo — un pareggio non ti eliminerà (la sconfitta sì)."
+ *     + riga "Jolly rimasti: N." (solo se `jolliesRemaining` è definito);
+ *   - `pick_confirmed` e `round_closed_survived`: riga "🎯 Jolly rimasti: N."
+ *     (solo se `jolliesRemaining` è definito).
+ * L'esito salvato/vittoria/sconfitta con jolly è già reso in `resultLine`;
+ * il marcatore per giocatore vive in `playerResultRow`.
+ */
+function jollyLines(ctx: EmailContext, mode: GameMode): string | null {
+  if (!mode.jollyEnabled) return null;
+  if (ctx.type === 'pick_instructions') {
+    const lines = [
+      '🎯 Jolly: scrivi «SQUADRA Jolly» per usarlo — un pareggio non ti eliminerà (la sconfitta sì).'
+    ];
+    if (ctx.jolliesRemaining !== undefined) lines.push(`Jolly rimasti: ${ctx.jolliesRemaining}.`);
+    return lines.join('\n');
+  }
+  if (
+    (ctx.type === 'pick_confirmed' || ctx.type === 'round_closed_survived') &&
+    ctx.jolliesRemaining !== undefined
+  ) {
+    return `🎯 Jolly rimasti: ${ctx.jolliesRemaining}.`;
+  }
+  return null;
+}
+
+/**
  * Chiusura fissa dell'eliminato (convenzione 10): "Il torneo continua con N
  * giocatori in gara. Grazie per essere stato con noi!" — MAI "grazie per
  * averci giocato" (vincolo PO) né riferimenti a canali inesistenti.
@@ -327,12 +381,12 @@ function eliminatedClosing(ctx: EmailContext): string | null {
 }
 
 /** CTA per tipo (deterministica, email v3): focus su eventi + prossimi passi. */
-function ctaFor(ctx: EmailContext, winOnly: boolean): string | null {
+function ctaFor(ctx: EmailContext, mode: GameMode): string | null {
   switch (ctx.type) {
     case 'pick_instructions':
       // ADR-016 (win_only): la CTA chiede solo la squadra vincente.
       return section('➡️ COSA FARE ORA', [
-        winOnly
+        mode.winOnly
           ? 'Rispondi a questa email con il nome della squadra che vincerà prima della scadenza.'
           : 'Rispondi a questa email con squadra + esito prima della scadenza.'
       ]);
@@ -373,7 +427,7 @@ function ctaFor(ctx: EmailContext, winOnly: boolean): string | null {
  * `narrative` è il testo dell'LLM/del generatore deterministico: se vuota
  * dopo il trim, il blocco è omesso (mai testo inventato).
  */
-export function renderEmailV2(ctx: EmailContext, narrative: string, timeZone: string, winOnly = false): string {
+export function renderEmailV2(ctx: EmailContext, narrative: string, timeZone: string, mode: GameMode = { winOnly: false, jollyEnabled: false }): string {
   const segments: Array<{ text: string; blankBefore: boolean }> = [];
 
   // Saluto + header (righe consecutive, nessuna riga vuota interna).
@@ -386,13 +440,13 @@ export function renderEmailV2(ctx: EmailContext, narrative: string, timeZone: st
   if (greeting.length > 0) segments.push({ text: greeting.join('\n'), blankBefore: false });
 
   // Esito (mail di esito): riga vuota prima, poi l'esito.
-  const result = resultLine(ctx, winOnly);
+  const result = resultLine(ctx, mode);
   if (result !== null) segments.push({ text: result, blankBefore: true });
 
   // Messaggio chiave + narrativa (righe consecutive; riga vuota prima SOLO per
   // i tipi di notifica autonoma — la deadline è in coda, non più qui).
   const message: string[] = [];
-  const key = keyMessage(ctx, winOnly);
+  const key = keyMessage(ctx, mode);
   if (key !== null) message.push(key);
   const trimmedNarrative = narrative.trim();
   if (trimmedNarrative !== '') message.push(trimmedNarrative);
@@ -405,17 +459,19 @@ export function renderEmailV2(ctx: EmailContext, narrative: string, timeZone: st
 
   const matches = matchesSection(ctx);
   if (matches !== null) segments.push({ text: matches, blankBefore: true });
-  const players = playersSection(ctx, winOnly);
+  const players = playersSection(ctx, mode);
   if (players !== null) segments.push({ text: players, blankBefore: true });
   const burned = burnedSection(ctx);
   if (burned !== null) segments.push({ text: burned, blankBefore: true });
   const state = stateSection(ctx);
   if (state !== null) segments.push({ text: state, blankBefore: true });
-  const history = historySection(ctx, winOnly);
+  const jolly = jollyLines(ctx, mode);
+  if (jolly !== null) segments.push({ text: jolly, blankBefore: true });
+  const history = historySection(ctx, mode);
   if (history !== null) segments.push({ text: history, blankBefore: true });
   const coWinners = coWinnersSection(ctx);
   if (coWinners !== null) segments.push({ text: coWinners, blankBefore: true });
-  const cta = ctaFor(ctx, winOnly);
+  const cta = ctaFor(ctx, mode);
   if (cta !== null) segments.push({ text: cta, blankBefore: true });
   const count = platformCountLine(ctx);
   if (count !== null) segments.push({ text: count, blankBefore: true });

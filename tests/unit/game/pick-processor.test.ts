@@ -347,3 +347,96 @@ describe('win_only — cascata invalid_outcome mode-aware (ADR-016)', () => {
     });
   });
 });
+
+describe('jolly — cascata e decremento del contatore (feature JOLLY)', () => {
+  it('jolly dichiarato in modalità classica → jolly_not_allowed (il jolly è solo win_only)', async () => {
+    const { db, ctx } = makeCtx(false);
+    const pid = insertProfile(db);
+    openRound1(db);
+    expect(await validatePick(ctx, baseInput({ profileId: pid, jolly: true }))).toEqual({
+      valid: false,
+      reason: 'jolly_not_allowed'
+    });
+  });
+
+  it('jolly dichiarato con contatore a 0 → no_jollies_left (motivo dedicato)', async () => {
+    const { db, ctx } = makeCtx(true);
+    const pid = insertProfile(db);
+    db.prepare('UPDATE profile SET jollies_remaining = 0 WHERE id = ?').run(pid);
+    openRound1(db);
+    expect(await validatePick(ctx, baseInput({ profileId: pid, jolly: true }))).toEqual({
+      valid: false,
+      reason: 'no_jollies_left'
+    });
+  });
+
+  it('jolly dichiarato con contatore > 0 → valido; senza jolly non scatta alcun gate', async () => {
+    const { db, ctx } = makeCtx(true);
+    const pid = insertProfile(db);
+    openRound1(db);
+    expect(await validatePick(ctx, baseInput({ profileId: pid, jolly: true }))).toEqual({
+      valid: true
+    });
+    // Contatore a 0 ma NESSUN jolly dichiarato: il pick resta valido (il gate
+    // scatta solo su jolly:true, il motore non rifiuta mai per la sola assenza).
+    db.prepare('UPDATE profile SET jollies_remaining = 0 WHERE id = ?').run(pid);
+    expect(await validatePick(ctx, baseInput({ profileId: pid }))).toEqual({ valid: true });
+  });
+
+  it('ordine di cascata: pick già esistente resta pick_already_exists anche con jolly', async () => {
+    const { db, ctx } = makeCtx(true);
+    const pid = insertProfile(db);
+    openRound1(db);
+    await registerPick(ctx, baseInput({ profileId: pid }));
+    // Squadra DIVERSA (non bruciata): così il gate che scatta è
+    // pick_already_exists (dopo team_already_used), con il jolly già applicato.
+    expect(await validatePick(ctx, baseInput({ profileId: pid, team: AC, jolly: true }))).toEqual({
+      valid: false,
+      reason: 'pick_already_exists'
+    });
+  });
+
+  it('registerPick con jolly: inserisce jolly_used=1 e decrementa il contatore nella stessa transazione', async () => {
+    const { db, ctx } = makeCtx(true);
+    const pid = insertProfile(db);
+    db.prepare('UPDATE profile SET jollies_remaining = 2 WHERE id = ?').run(pid);
+    openRound1(db);
+    const res = await registerPick(ctx, baseInput({ profileId: pid, jolly: true }));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(db.prepare('SELECT jolly_used FROM pick WHERE id = ?').get(res.id)).toEqual({
+      jolly_used: 1
+    });
+    expect(db.prepare('SELECT jollies_remaining FROM profile WHERE id = ?').get(pid)).toEqual({
+      jollies_remaining: 1
+    });
+  });
+
+  it('registerPick SENZA jolly: jolly_used=0 e contatore invariato', async () => {
+    const { db, ctx } = makeCtx(true);
+    const pid = insertProfile(db);
+    openRound1(db);
+    const res = await registerPick(ctx, baseInput({ profileId: pid }));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(db.prepare('SELECT jolly_used FROM pick WHERE id = ?').get(res.id)).toEqual({
+      jolly_used: 0
+    });
+    expect(db.prepare('SELECT jollies_remaining FROM profile WHERE id = ?').get(pid)).toEqual({
+      jollies_remaining: 1
+    });
+  });
+
+  it('pick rifiutato per no_jollies_left NON decrementa il contatore (nessun rimborso/consumo)', async () => {
+    const { db, ctx } = makeCtx(true);
+    const pid = insertProfile(db);
+    db.prepare('UPDATE profile SET jollies_remaining = 0 WHERE id = ?').run(pid);
+    openRound1(db);
+    const res = await registerPick(ctx, baseInput({ profileId: pid, jolly: true }));
+    expect(res).toEqual({ ok: false, reason: 'no_jollies_left' });
+    expect(db.prepare('SELECT jollies_remaining FROM profile WHERE id = ?').get(pid)).toEqual({
+      jollies_remaining: 0
+    });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM pick').get()).toEqual({ n: 0 });
+  });
+});

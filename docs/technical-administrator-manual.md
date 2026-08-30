@@ -132,6 +132,21 @@ round — the **Turno del Torneo (TT)**.
   case), the profile is eliminated `missing_pick` with a warning log. The flag
   is **fixed in the database at `tournament:start`** (same fatal guard as
   `WIN_ONLY`, see §6.8).
+- **Jolly (`JOLLIES_PER_PLAYER`, default `1`).** A spendable token, **active
+  only in `win_only`** (`WIN_ONLY=true`). The player declares it in the pick
+  email with the keyword "jolly" (e.g. "Napoli Jolly"; case/accent-insensitive,
+  before or after the team). A **draw** of the picked team → the jolly **saves
+  the profile from elimination** (the pick counts as correct); a **loss** →
+  the jolly does **not** save (elimination as usual); a **win** → the profile
+  stays in. The jolly is **burned at declaration** (the moment the pick is
+  registered, regardless of the outcome): `pick.jolly_used=1` and
+  `profile.jollies_remaining` decreases by one, atomically. When the counter
+  reaches `0`, a pick declaring a jolly is rejected with "non hai più jolly
+  disponibili". `JOLLIES_PER_PLAYER=0` disables the feature completely (the
+  system behaves exactly as today and the "jolly" keyword is ignored). The
+  value is **fixed in the database at `tournament:start`** (same fatal guard
+  as `WIN_ONLY`, see §6.8): set it **before** `tournament:start` and do not
+  change it mid-tournament.
 - **Outcome of a Pick.** When the match's result becomes available, the Pick
   is evaluated. Correct → the profile **stays in the game**. Wrong → the
   profile is **eliminated**.
@@ -231,12 +246,12 @@ confirmation flow itself.
 | Event | Recipients |
 |---|---|
 | Tournament opening (`tournament_open`) | **All active subscribers** of the platform. Announcement only: the round 1 will start soon, be ready — no dates (the round opening is a separate event). |
-| Round opening (`pick_instructions`) | **Active participants** (profiles in the game), each with their available teams, the deadline and the response format. At the opening of the **TT 1**, also the **active subscribers without a profile**. |
-| Pick confirmation (`pick_confirmed`) / rejection (`pick_rejected`) | The sender, with the reason of a rejection. |
+| Round opening (`pick_instructions`) | **Active participants** (profiles in the game), each with their available teams, the deadline and the response format. At the opening of the **TT 1**, also the **active subscribers without a profile**. With jolly active (`JOLLIES_PER_PLAYER ≥ 1`), each participant also receives the jolly instructions ("🎯 Jolly: scrivi «SQUADRA Jolly»…") and the "Jolly rimasti: N" line. |
+| Pick confirmation (`pick_confirmed`) / rejection (`pick_rejected`) | The sender, with the reason of a rejection. With jolly active: `pick_confirmed` shows "PICK REGISTRATO CON JOLLY → {SQUADRA}" when a jolly was declared, plus "Jolly rimasti: N"; `pick_rejected` translates the jolly reasons in Italian ("non hai più jolly disponibili", "il jolly non è ammesso in questa modalità"). |
 | Round closing — elimination for missing Pick (`pick_missing_elimination`) | Each eliminated profile, at `round:close`. |
 | Round closing — auto-pick assigned (`pick_auto_assigned`) | Each profile that received an **auto-assigned pick** at `round:close` (`AUTOPICK_ON_MISSING=true` with a real deadline): confirmation *after the fact*, no deadline section. |
-| Accounting results (`round_result_correct` / `round_result_wrong`) | Each evaluated profile, at `round:score`. `wrong` is the elimination notice. |
-| Round-closing summary (`round_closed_survived`) | **Survivors only**, sent exactly once when the round reaches the accounted state. Eliminated profiles never receive it. Includes the **players list** of the round (ADR-015). |
+| Accounting results (`round_result_correct` / `round_result_wrong`) | Each evaluated profile, at `round:score`. `wrong` is the elimination notice. With jolly active and a jolly declared: saved-by-draw → "🎯 Il tuo jolly ti ha salvato: {SQUADRA} ha pareggiato."; win → "🎯 Jolly usato"; loss → "🎯 Il jolly non salva dalla sconfitta." |
+| Round-closing summary (`round_closed_survived`) | **Survivors only**, sent exactly once when the round reaches the accounted state. Eliminated profiles never receive it. Includes the **players list** of the round (ADR-015) and, with jolly active, the "🎯 Jolly rimasti: N" line for the recipient plus the "🎯 Jolly" marker on players who declared a jolly. |
 | Postponement notice (`pick_postponed`) | Profiles whose Pick entered Freeze. |
 | Victory (`tournament_won` / `tournament_shared_win`) | The winner(s), at the automatic tournament closure. `tournament_shared_win` lists the **other co-winners** (ADR-015). |
 | Tournament closing (`tournament_closed`) | **All participants** (profiles with at least one Pick, winners included), once at the automatic closure, with the per-round history (ADR-015). |
@@ -796,15 +811,15 @@ commissioner may face:
   actual kickoff (see §8.1).
 - **Postponements.** Handled by the Freeze mechanism (§8.3), no intervention
   required.
-- **Mode change mid-tournament (fatal).** `WIN_ONLY` and `AUTOPICK_ON_MISSING`
-  are fixed in the database at `tournament:start`. If `.env` changes either of
-  them while a tournament is open, the next write path (`scheduler:tick`,
-  `channel:email:process`, `round:open`/`close`/`score`, `pick:register`)
-  **aborts the process** with a fatal error naming the persisted vs configured
-  value(s), before any write or email is sent (the database stays unchanged).
-  To recover: restore the changed variable to the persisted value, or close
-  the tournament and start a new one (`tournament:start` re-writes the mode
-  from the new `.env`).
+- **Mode change mid-tournament (fatal).** `WIN_ONLY`, `AUTOPICK_ON_MISSING` and
+  `JOLLIES_PER_PLAYER` are fixed in the database at `tournament:start`. If
+  `.env` changes any of them while a tournament is open, the next write path
+  (`scheduler:tick`, `channel:email:process`,
+  `round:open`/`close`/`score`, `pick:register`) **aborts the process** with a
+  fatal error naming the persisted vs configured value(s), before any write or
+  email is sent (the database stays unchanged). To recover: restore the changed
+  variable to the persisted value, or close the tournament and start a new one
+  (`tournament:start` re-writes the mode from the new `.env`).
 
 ---
 
@@ -831,6 +846,7 @@ here match `.env.example`.
 | `MAX_PROFILES_PER_PLAYER` | number | `1` | Maximum profiles per player. POC: 1 — do not change. |
 | `WIN_ONLY` | `true` / `false` | `true` | **Game mode `win_only` (default):** `true` = the player picks only the team that will win its match (the system interprets the pick as `outcome = win`; a draw or loss eliminates). `false` = classic mode (explicit win/draw/lose). The mode is **fixed in the database at `tournament:start`** and a fatal guard aborts the process if `WIN_ONLY` changes while a tournament is open: set it **before** `tournament:start` and do not change it mid-tournament. |
 | `AUTOPICK_ON_MISSING` | `true` / `false` | `false` | **Auto-pick on a missing pick** (active **only** in `win_only`, i.e. with `WIN_ONLY=true`; otherwise ignored with no error). `true` = at the close of a round with a **real deadline** (`round_state.deadline !== null`), each profile in the game without a pick receives the **first available team by `shortName`** (alphabetical order, `team` table) — no elimination, `pick_auto_assigned` notification; the pick is then scored normally. A safety closure (deadline NULL) always eliminates `missing_pick`. Also **fixed in the database at `tournament:start`** and covered by the same fatal guard as `WIN_ONLY`: set it before `tournament:start`, do not change it mid-tournament. |
+| `JOLLIES_PER_PLAYER` | integer ≥ 0 | `1` | **Jolly per player** (feature Jolly, active **only** in `win_only`): `0` = feature **disabled** (the system behaves exactly as today, the "jolly" keyword is ignored); `≥1` = every profile is created with that many jollies (`profile.jollies_remaining`), declared in the pick email with the keyword "jolly" (e.g. "Napoli Jolly") and **burned at declaration**. A draw saves the profile from elimination; a loss does not. Also **fixed in the database at `tournament:start`** (`tournament_state.jollies_per_player`) and covered by the same fatal guard as `WIN_ONLY`: set it before `tournament:start`, do not change it mid-tournament. |
 | `ENTRY_FEE_EUR` | EUR | `5` | Entry fee — **placeholder, not used in the POC**. |
 | `WINNER_SHARE_PCT` | percent (0–100) | `85` | Winner share of the prize pool — **placeholder, not used in the POC**. |
 

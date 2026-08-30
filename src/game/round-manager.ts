@@ -89,6 +89,7 @@ interface PickRow {
   team: string;
   outcome: string;
   status: string;
+  jolly_used: number;
 }
 
 /** Profilo attivo con email e nome (per le notifiche). */
@@ -96,6 +97,8 @@ interface ActiveProfile {
   id: number;
   email: string;
   playerName: string;
+  /** Feature JOLLY: contatore di jolly rimasti (per le righe "Jolly rimasti: N"). */
+  jollies_remaining: number;
 }
 
 /**
@@ -150,7 +153,7 @@ function getRoundPlayers(db: Database.Database, round: number, openedAt: string)
     .prepare(
       `SELECT COALESCE(pl.name, '') AS name, COALESCE(pl.email, '') AS email,
               pk.team AS team, pk.outcome AS outcome, pk.status AS pickStatus,
-              pk.auto_pick AS autoPick
+              pk.auto_pick AS autoPick, pk.jolly_used AS jollyUsed
        FROM profile p
        JOIN player pl ON pl.id = p.player_id
        LEFT JOIN pick pk ON pk.profile_id = p.id AND pk.round = ?
@@ -164,6 +167,7 @@ function getRoundPlayers(db: Database.Database, round: number, openedAt: string)
     outcome: string | null;
     pickStatus: string | null;
     autoPick: number | null;
+    jollyUsed: number | null;
   }>;
   return rows.map((r) => ({
     name: r.name !== '' ? r.name : r.email,
@@ -171,6 +175,8 @@ function getRoundPlayers(db: Database.Database, round: number, openedAt: string)
     ...(r.outcome !== null ? { outcome: r.outcome } : {}),
     // Feature AUTOPICK (D9): marcatore storico del pick auto-assegnato.
     ...(r.autoPick === 1 ? { autoPick: true } : {}),
+    // Feature JOLLY (D9): marcatore storico del pick con jolly usato.
+    ...(r.jollyUsed === 1 ? { jolly: true } : {}),
     eliminated: r.pickStatus === 'wrong' || r.pickStatus === null
   }));
 }
@@ -218,6 +224,10 @@ export interface ScoredPick {
   team: string;
   outcome: string;
   result: 'correct' | 'wrong';
+  /** Feature JOLLY: true se il pick era stato dichiarato con jolly. */
+  jollyUsed: boolean;
+  /** Feature JOLLY: true se il pick è stato SALVATO dal pareggio tramite jolly. */
+  savedByJolly: boolean;
 }
 
 /** Esito di `round:score`. */
@@ -271,11 +281,12 @@ function getRoundState(db: Database.Database, round: number): RoundStateRow | un
     .get(round) as RoundStateRow | undefined;
 }
 
-/** Profili attivi (eliminated = 0) con email e nome, per le notifiche. */
+/** Profili attivi (eliminated = 0) con email, nome e jolly rimasti. */
 function getActiveProfiles(db: Database.Database): ActiveProfile[] {
   return db
     .prepare(
-      `SELECT p.id, COALESCE(pl.email, '') AS email, COALESCE(pl.name, '') AS playerName
+      `SELECT p.id, COALESCE(pl.email, '') AS email, COALESCE(pl.name, '') AS playerName,
+              p.jollies_remaining
        FROM profile p
        LEFT JOIN player pl ON pl.id = p.player_id
        WHERE p.eliminated = 0
@@ -433,7 +444,9 @@ export async function openRound(ctx: GameContext, round: number): Promise<RoundO
       deadlineRemaining: formatRemaining(now, deadline),
       availableTeams,
       burnedTeams: getBurnedEmailTeams(db, profile.id, round, totalRounds, startRound),
-      matches: emailMatches
+      matches: emailMatches,
+      // Feature JOLLY: contatore per-profilo (solo per profili con contatore noto).
+      jolliesRemaining: profile.jollies_remaining
     });
     if (sent) notified += 1;
   }
@@ -714,6 +727,8 @@ export async function scoreRound(ctx: GameContext, round: number): Promise<Round
     result: 'correct' | 'wrong';
     team: string;
     outcome: string;
+    jollyUsed: boolean;
+    savedByJolly: boolean;
   }> = [];
 
   /** Valuta un pick contro il match della sua squadra (a punteggio noto). */
@@ -722,9 +737,24 @@ export async function scoreRound(ctx: GameContext, round: number): Promise<Round
     if (match === undefined) return; // non dovrebbe accadere (validato alla registrazione)
     if (match.homeScore === undefined || match.awayScore === undefined) return;
     const actual = pickOutcomeFor(pick.team, match);
-    const result = actual === pick.outcome ? 'correct' : 'wrong';
+    // Feature JOLLY (D1): un pick dichiarato con jolly e con risultato
+    // "pareggio" NON elimina: `savedByJolly` trasforma il risultato in
+    // 'correct' (nessun nuovo pick.status: il CHECK della DDL resta
+    // "baked" — la distinzione è nota SOLO qui e trasportata alle email via
+    // flag di runtime, mai ricostruita dopo).
+    const jollyUsed = pick.jolly_used === 1;
+    let result: 'correct' | 'wrong' = actual === pick.outcome ? 'correct' : 'wrong';
+    const savedByJolly = result === 'wrong' && jollyUsed && actual === 'draw';
+    if (savedByJolly) result = 'correct';
     db.prepare('UPDATE pick SET status = ? WHERE id = ?').run(result, pick.id);
-    evaluated.push({ profileId: pick.profile_id, team: pick.team, outcome: pick.outcome, result });
+    evaluated.push({
+      profileId: pick.profile_id,
+      team: pick.team,
+      outcome: pick.outcome,
+      result,
+      jollyUsed,
+      savedByJolly
+    });
 
     const profile = db
       .prepare(
@@ -754,14 +784,16 @@ export async function scoreRound(ctx: GameContext, round: number): Promise<Round
         playerName: profile.playerName,
         result,
         team: pick.team,
-        outcome: pick.outcome
+        outcome: pick.outcome,
+        jollyUsed,
+        savedByJolly
       });
     }
   };
 
   // 1) Pick PENDING del round.
   const pending = db
-    .prepare("SELECT id, profile_id, round, team, outcome, status FROM pick WHERE round = ? AND status = 'pending' ORDER BY id")
+    .prepare("SELECT id, profile_id, round, team, outcome, status, jolly_used FROM pick WHERE round = ? AND status = 'pending' ORDER BY id")
     .all(round) as unknown as PickRow[];
   for (const pick of pending) {
     const match = matches.find((m) => m.homeTeam === pick.team || m.awayTeam === pick.team);
@@ -794,7 +826,7 @@ export async function scoreRound(ctx: GameContext, round: number): Promise<Round
   // 2) Pick FROZEN la cui partita ORA ha punteggio (recupero concluso):
   //    valutazione a posteriori, anche su round già scored (LLD §1.4).
   const frozen = db
-    .prepare("SELECT id, profile_id, round, team, outcome, status FROM pick WHERE round = ? AND status = 'frozen' ORDER BY id")
+    .prepare("SELECT id, profile_id, round, team, outcome, status, jolly_used FROM pick WHERE round = ? AND status = 'frozen' ORDER BY id")
     .all(round) as unknown as PickRow[];
   for (const pick of frozen) {
     await evaluatePick(pick);
@@ -815,7 +847,12 @@ export async function scoreRound(ctx: GameContext, round: number): Promise<Round
       outcome: email.outcome,
       playerResult: email.result,
       inGameCount: inGame,
-      matches: emailMatches
+      matches: emailMatches,
+      // Feature JOLLY (D1/D9): flag runtime trasportati alle mail di esito —
+      // il renderer sceglie il testo corretto (salvato dal pareggio / jolly
+      // usato / il jolly non salva dalla sconfitta).
+      jollyUsed: email.jollyUsed,
+      savedByJolly: email.savedByJolly
     });
   }
 
@@ -909,7 +946,9 @@ export async function scoreRound(ctx: GameContext, round: number): Promise<Round
             players: roundPlayers,
             inGameCount: inGame,
             eliminatedWrong,
-            eliminatedMissing
+            eliminatedMissing,
+            // Feature JOLLY: contatore del DESTINATARIO (per destinatario).
+            jolliesRemaining: survivor.jollies_remaining
           });
         } catch (error) {
           ctx.logger?.warn(

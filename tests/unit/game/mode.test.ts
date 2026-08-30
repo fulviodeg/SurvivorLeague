@@ -211,6 +211,60 @@ describe('assertModeConsistent — autopick_on_missing (feature AUTOPICK)', () =
   });
 });
 
+describe('assertModeConsistent — jollies_per_player (feature JOLLY)', () => {
+  /** Contesto con win_only coincidente e jollies_per_player persistito/configurato espliciti. */
+  function makeJollyCtx(persistedJollies: number, configuredJollies: number): GameContext {
+    const db = new Database(':memory:');
+    migrate(db);
+    loadBaseSeason(db);
+    db.prepare(
+      'INSERT INTO tournament_state (id, season_started, start_round, winner_notified, win_only, jollies_per_player) VALUES (1, 1, 1, 0, 1, ?)'
+    ).run(persistedJollies);
+    return {
+      db,
+      dataProvider: new DbSeasonDataProvider(db),
+      config: parseConfig({
+        IMAP_USER: 'u',
+        IMAP_PASS: 'p',
+        SMTP_USER: 'u',
+        SMTP_PASS: 'p',
+        LLM_API_KEY: 'k',
+        FOOTBALL_DATA_TOKEN: 't',
+        WIN_ONLY: 'true',
+        JOLLIES_PER_PLAYER: String(configuredJollies)
+      }),
+      now: NOW
+    };
+  }
+
+  it('mismatch su jollies_per_player → throw che nomina JOLLIES_PER_PLAYER e i valori (persistito vs configurato)', () => {
+    const ctx = makeJollyCtx(1, 2); // persistito 1, configurato 2
+    expect(() => assertModeConsistent(ctx)).toThrowError(/JOLLIES_PER_PLAYER/);
+    expect(() => assertModeConsistent(ctx)).toThrowError(/persistito 1/);
+    expect(() => assertModeConsistent(ctx)).toThrowError(/configurato 2/);
+  });
+
+  it('mismatch inverso (persistito 3, configurato 1) → throw coerente', () => {
+    const ctx = makeJollyCtx(3, 1);
+    expect(() => assertModeConsistent(ctx)).toThrowError(/persistito 3/);
+    expect(() => assertModeConsistent(ctx)).toThrowError(/configurato 1/);
+  });
+
+  it('jollies_per_player coincidente → no-op', () => {
+    expect(() => assertModeConsistent(makeJollyCtx(1, 1))).not.toThrow();
+    expect(() => assertModeConsistent(makeJollyCtx(0, 0))).not.toThrow();
+  });
+
+  it('con logger presente emette fatal strutturato con persistedJollies/configuredJollies', () => {
+    const ctx = makeJollyCtx(1, 2);
+    const logger = fakeLogger();
+    ctx.logger = logger as unknown as GameContext['logger'];
+    expect(() => assertModeConsistent(ctx)).toThrowError(/JOLLIES_PER_PLAYER/);
+    expect(logger.calls).toHaveLength(1);
+    expect(logger.calls[0]?.obj).toMatchObject({ persistedJollies: 1, configuredJollies: 2 });
+  });
+});
+
 describe('hook della guardia in openRound/closeRound/scoreRound (ADR-016)', () => {
   const [IM] = FIXTURE_TEAMS;
 

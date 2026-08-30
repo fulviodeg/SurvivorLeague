@@ -191,7 +191,7 @@ describe('flusso open → pick → close → score (RF-16)', () => {
     setScore(db, 1, IM, AC, 2, 1);
     const scored = await scoreRound(ctxAt(T_SCORE), 1);
     expect(scored.status).toBe('scored');
-    expect(scored.evaluated).toEqual([{ profileId: a, team: IM, outcome: 'win', result: 'correct' }]);
+    expect(scored.evaluated).toEqual([{ profileId: a, team: IM, outcome: 'win', result: 'correct', jollyUsed: false, savedByJolly: false }]);
     expect(scored.newlyEliminated).toEqual([]);
     // MEDIUM-2 (emendamento post-revisione ADR-011): il closeRound ha già
     // chiuso il torneo (caso 1: A è l'unico superstite) → round:score aggiorna
@@ -328,7 +328,7 @@ describe('rinvii: CL7 (entro finestra), CL1/CL8 (oltre tcClose), recupero (froze
     // Il recupero si gioca e finisce 3-1 per JU: il frozen viene valutato.
     setScore(db, 1, JU, MA, 3, 1);
     const rescore = await scoreRound(ctxAt(new Date('2026-09-20T18:00:00.000Z')), 1);
-    expect(rescore.evaluated).toEqual([{ profileId: a, team: JU, outcome: 'win', result: 'correct' }]);
+    expect(rescore.evaluated).toEqual([{ profileId: a, team: JU, outcome: 'win', result: 'correct', jollyUsed: false, savedByJolly: false }]);
     expect(checkElimination(db, a)).toEqual({ eliminated: false });
   });
 
@@ -378,13 +378,13 @@ describe('rinvii: CL7 (entro finestra), CL1/CL8 (oltre tcClose), recupero (froze
     // Solo IM-AC ha un punteggio: valutato solo il pick di A; B resta pending.
     setScore(db, 1, IM, AC, 2, 1);
     const partial = await scoreRound(ctxAt(T_SCORE), 1);
-    expect(partial.evaluated).toEqual([{ profileId: a, team: IM, outcome: 'win', result: 'correct' }]);
+    expect(partial.evaluated).toEqual([{ profileId: a, team: IM, outcome: 'win', result: 'correct', jollyUsed: false, savedByJolly: false }]);
     expect(partial.status).toBe('closed'); // non scored: resta un pending
 
     // Arriva anche JU-MA: ora il round va a scored (RF-16).
     setScore(db, 1, JU, MA, 1, 0);
     const full = await scoreRound(ctxAt(new Date('2026-09-12T19:30:00.000Z')), 1);
-    expect(full.evaluated).toEqual([{ profileId: b, team: JU, outcome: 'win', result: 'correct' }]);
+    expect(full.evaluated).toEqual([{ profileId: b, team: JU, outcome: 'win', result: 'correct', jollyUsed: false, savedByJolly: false }]);
     expect(full.status).toBe('scored');
   });
 });
@@ -508,5 +508,144 @@ describe('round:status / round:deadline (sola lettura, RF-25/RF-31)', () => {
     db.prepare('INSERT INTO tournament_state (id, start_round) VALUES (1, 6)').run();
     const opened = await openRound(ctxAt(new Date('2026-10-10T10:00:00.000Z')), 6);
     expect(opened).toMatchObject({ tt: 1, tc: 6 });
+  });
+});
+
+describe('jolly — scoring: salvataggio dal pareggio e righe giocatore (feature JOLLY, D1/D7)', () => {
+  /** Harness in modalità win_only CON jolly attivi (JOLLIES_PER_PLAYER=1). */
+  function makeJollyHarness(): Harness {
+    const db = new Database(':memory:');
+    migrate(db);
+    loadBaseSeason(db);
+    const dataProvider = new DbSeasonDataProvider(db);
+    const platformDb = new Database(':memory:');
+    migratePlatform(platformDb);
+    const platform = new DbPlatformRegistry(platformDb);
+    const config = parseConfig({
+      IMAP_USER: 'u',
+      IMAP_PASS: 'p',
+      SMTP_USER: 'u',
+      SMTP_PASS: 'p',
+      LLM_API_KEY: 'k',
+      FOOTBALL_DATA_TOKEN: 't',
+      WIN_ONLY: 'true',
+      JOLLIES_PER_PLAYER: '1',
+      DEADLINE_ADVANCE_MIN: '30',
+      MATCH_DURATION_MIN: '105',
+      TC_CLOSE_SKEW_MIN: '15'
+    });
+    const channel = new FakeChannel();
+    const generator = new FakeGenerator();
+    return {
+      db,
+      channel,
+      generator,
+      platform,
+      ctxAt: (now: Date) => ({ db, dataProvider, config, now, channel, generator, platform })
+    };
+  }
+
+  it('pareggio + jolly → pick correct SENZA eliminazione (salvato dal jolly, D1)', async () => {
+    const { db, generator, platform, ctxAt } = makeJollyHarness();
+    const a = insertProfile(db, 'a@test.it', 'Aldo');
+    const b = insertProfile(db, 'b@test.it', 'Beppe');
+    platform.register('a@test.it', null, T_OPEN);
+    platform.register('b@test.it', null, T_OPEN);
+    await openRound(ctxAt(T_OPEN), 1);
+    // A dichiara IM con JOLLY; B dichiara JU senza jolly.
+    const reg = await registerPick(ctxAt(T_PICK), {
+      profileId: a, round: 1, team: IM, outcome: 'win', jolly: true, receivedAt: T_PICK
+    });
+    expect(reg.ok).toBe(true);
+    await registerPick(ctxAt(T_PICK), {
+      profileId: b, round: 1, team: JU, outcome: 'win', receivedAt: T_PICK
+    });
+    // IM-AC pareggia 1-1 → A avrebbe sbagliato (draw ≠ win) ma il jolly salva.
+    setScore(db, 1, IM, AC, 1, 1);
+    setScore(db, 1, JU, MA, 2, 1); // JU vince → B corretto.
+    await closeRound(ctxAt(T_CLOSE), 1);
+    const scored = await scoreRound(ctxAt(T_SCORE), 1);
+    expect(scored.evaluated).toEqual(
+      expect.arrayContaining([
+        { profileId: a, team: IM, outcome: 'win', result: 'correct', jollyUsed: true, savedByJolly: true }
+      ])
+    );
+    // A NON è eliminato e il suo pick risulta correct.
+    expect(db.prepare('SELECT eliminated FROM profile WHERE id = ?').get(a)).toEqual({ eliminated: 0 });
+    expect(db.prepare("SELECT status FROM pick WHERE profile_id = ?").get(a)).toEqual({ status: 'correct' });
+    // La mail di esito porta i flag runtime jollyUsed/savedByJolly.
+    const correct = generator.contexts.find(
+      (c) => c.type === 'round_result_correct' && c.team === IM
+    );
+    expect(correct).toMatchObject({ jollyUsed: true, savedByJolly: true });
+  });
+
+  it('sconfitta + jolly → wrong + eliminazione (il jolly non salva dalla sconfitta)', async () => {
+    const { db, ctxAt } = makeJollyHarness();
+    const a = insertProfile(db, 'a@test.it', 'Aldo');
+    await openRound(ctxAt(T_OPEN), 1);
+    await registerPick(ctxAt(T_PICK), {
+      profileId: a, round: 1, team: IM, outcome: 'win', jolly: true, receivedAt: T_PICK
+    });
+    setScore(db, 1, IM, AC, 0, 1); // IM perde → sconfitta, il jolly NON salva.
+    await closeRound(ctxAt(T_CLOSE), 1);
+    const scored = await scoreRound(ctxAt(T_SCORE), 1);
+    expect(scored.evaluated).toEqual(
+      expect.arrayContaining([
+        { profileId: a, team: IM, outcome: 'win', result: 'wrong', jollyUsed: true, savedByJolly: false }
+      ])
+    );
+    expect(scored.newlyEliminated).toEqual([a]);
+    expect(db.prepare('SELECT eliminated FROM profile WHERE id = ?').get(a)).toEqual({ eliminated: 1 });
+  });
+
+  it('vittoria + jolly → correct (jolly comunque consumato alla dichiarazione)', async () => {
+    const { db, ctxAt } = makeJollyHarness();
+    const a = insertProfile(db, 'a@test.it', 'Aldo');
+    await openRound(ctxAt(T_OPEN), 1);
+    await registerPick(ctxAt(T_PICK), {
+      profileId: a, round: 1, team: IM, outcome: 'win', jolly: true, receivedAt: T_PICK
+    });
+    setScore(db, 1, IM, AC, 2, 0); // IM vince → correct (jolly usato ma non necessario).
+    await closeRound(ctxAt(T_CLOSE), 1);
+    const scored = await scoreRound(ctxAt(T_SCORE), 1);
+    expect(scored.evaluated).toEqual(
+      expect.arrayContaining([
+        { profileId: a, team: IM, outcome: 'win', result: 'correct', jollyUsed: true, savedByJolly: false }
+      ])
+    );
+    // Consumo alla dichiarazione: contatore già a 0 (non ripristinato allo score).
+    expect(db.prepare('SELECT jollies_remaining FROM profile WHERE id = ?').get(a)).toEqual({
+      jollies_remaining: 0
+    });
+  });
+
+  it('il riepilogo round_closed_survived espone il marcatore jolly nella riga giocatore (D9)', async () => {
+    const { db, generator, platform, ctxAt } = makeJollyHarness();
+    const a = insertProfile(db, 'a@test.it', 'Aldo');
+    const b = insertProfile(db, 'b@test.it', 'Beppe');
+    platform.register('a@test.it', null, T_OPEN);
+    platform.register('b@test.it', null, T_OPEN);
+    await openRound(ctxAt(T_OPEN), 1);
+    await registerPick(ctxAt(T_PICK), {
+      profileId: a, round: 1, team: IM, outcome: 'win', jolly: true, receivedAt: T_PICK
+    });
+    await registerPick(ctxAt(T_PICK), {
+      profileId: b, round: 1, team: JU, outcome: 'win', receivedAt: T_PICK
+    });
+    setScore(db, 1, IM, AC, 2, 0);
+    setScore(db, 1, JU, MA, 2, 1);
+    await closeRound(ctxAt(T_CLOSE), 1);
+    await scoreRound(ctxAt(T_SCORE), 1);
+    const summary = generator.contexts.find((c) => c.type === 'round_closed_survived');
+    expect(summary).toBeDefined();
+    // La riga del giocatore con jolly porta il marcatore jolly:true.
+    const aldRow = summary?.players?.find((p) => p.name === 'Aldo');
+    expect(aldRow).toMatchObject({ team: IM, jolly: true });
+    const bepRow = summary?.players?.find((p) => p.name === 'Beppe');
+    expect(bepRow).toMatchObject({ team: JU });
+    expect(bepRow?.jolly).toBeUndefined();
+    // Il riepilogo porta anche il contatore del DESTINATARIO (per destinatario).
+    expect(summary?.jolliesRemaining).toBe(0);
   });
 });

@@ -215,10 +215,11 @@ export function getTournamentState(db: Database.Database): {
   export_path: string | null;
   win_only: number;
   autopick_on_missing: number;
+  jollies_per_player: number;
 } | undefined {
   return db
     .prepare(
-      'SELECT season_started, start_round, registration_open, winner_notified, finished_at, export_path, win_only, autopick_on_missing FROM tournament_state WHERE id = 1'
+      'SELECT season_started, start_round, registration_open, winner_notified, finished_at, export_path, win_only, autopick_on_missing, jollies_per_player FROM tournament_state WHERE id = 1'
     )
     .get() as
     | {
@@ -230,6 +231,7 @@ export function getTournamentState(db: Database.Database): {
         export_path: string | null;
         win_only: number;
         autopick_on_missing: number;
+        jollies_per_player: number;
       }
     | undefined;
 }
@@ -334,14 +336,21 @@ export async function startTournament(
     // quest'ultimo caso la colonna è riscritta dal valore .env corrente, così
     // un torneo nuovo può partire con una modalità diversa). Feature AUTOPICK:
     // `autopick_on_missing` è FISSATA nella STESSA istruzione (speculare a
-    // win_only, un'unica sorgente di persistenza).
+    // win_only, un'unica sorgente di persistenza). Feature JOLLY:
+    // `jollies_per_player` è FISSATA QUI come le altre chiavi di modalità.
     db.prepare(
-      `INSERT INTO tournament_state (id, season_started, start_round, winner_notified, finished_at, export_path, win_only, autopick_on_missing)
-       VALUES (1, 1, ?, 0, NULL, NULL, ?, ?)
+      `INSERT INTO tournament_state (id, season_started, start_round, winner_notified, finished_at, export_path, win_only, autopick_on_missing, jollies_per_player)
+       VALUES (1, 1, ?, 0, NULL, NULL, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET season_started = 1, start_round = excluded.start_round,
          winner_notified = 0, finished_at = NULL, export_path = NULL, win_only = excluded.win_only,
-         autopick_on_missing = excluded.autopick_on_missing`
-    ).run(startRound, config.WIN_ONLY ? 1 : 0, config.AUTOPICK_ON_MISSING ? 1 : 0);
+         autopick_on_missing = excluded.autopick_on_missing,
+         jollies_per_player = excluded.jollies_per_player`
+    ).run(
+      startRound,
+      config.WIN_ONLY ? 1 : 0,
+      config.AUTOPICK_ON_MISSING ? 1 : 0,
+      config.JOLLIES_PER_PLAYER
+    );
     const insertPending = db.prepare(
       "INSERT INTO round_state (round, status) VALUES (?, 'pending')"
     );
@@ -569,7 +578,7 @@ export async function tournamentExport(ctx: GameContext): Promise<ExportResult> 
       // storia del torneo.
       tournament_state: db
         .prepare(
-          'SELECT id, season_started, registration_open, start_round, registration_notified, winner_notified, finished_at, win_only, autopick_on_missing FROM tournament_state'
+          'SELECT id, season_started, registration_open, start_round, registration_notified, winner_notified, finished_at, win_only, autopick_on_missing, jollies_per_player FROM tournament_state'
         )
         .all() as unknown[]
     }

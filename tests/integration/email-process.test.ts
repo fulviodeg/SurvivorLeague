@@ -753,3 +753,74 @@ describe('channel:email:process — win_only (ADR-016)', () => {
     expect(generator.contexts[0]?.reason).toContain('solo il nome della squadra che vincerà');
   });
 });
+
+describe('channel:email:process — jolly (feature JOLLY, D4/D11)', () => {
+  /** Registra un profilo attivo per l'email (player+profile con register_id). */
+  function registerProfile(db: Database.Database, platform: DbPlatformRegistry, email: string): void {
+    const account = platform.register(email, null, T_OPEN);
+    db.prepare('INSERT INTO player (email, name, register_id) VALUES (?, ?, ?)').run(
+      email,
+      'Aldo',
+      account.registerId
+    );
+    db.prepare(
+      'INSERT INTO profile (player_id, register_id) VALUES ((SELECT id FROM player WHERE email = ?), ?)'
+    ).run(email, account.registerId);
+  }
+
+  it('il wiring passa jollyEnabled al classificatore quando i jolly sono attivi', async () => {
+    const { ctx, platform, deps } = makeHarness({ winOnly: true });
+    registerProfile(ctx.db, platform, 'a@test.it');
+    const classifier = useClassifier(ctx, new Map([[`vado di ${JU}`, pick(JU, 'win')]]));
+
+    await processEmailBatch(ctx, [incoming('a@test.it', `vado di ${JU}`, T_PICK, '1')], deps());
+
+    expect(classifier.calls[0]?.jollyEnabled).toBe(true);
+  });
+
+  it('email con jolly dichiarato → pick registrato con jolly e conferma "PICK REGISTRATO CON JOLLY" + contatore aggiornato', async () => {
+    const { db, ctx, platform, generator, deps } = makeHarness({ winOnly: true });
+    registerProfile(db, platform, 'a@test.it');
+    useClassifier(ctx, new Map([[`vado di ${JU}`, { intent: 'pick', pick: { team: JU, outcome: 'win', jolly: true }, name: null }]]));
+
+    await processEmailBatch(ctx, [incoming('a@test.it', `vado di ${JU}`, T_PICK, '1')], deps());
+
+    // Pick registrato con jolly_used=1 e contatore decrementato (1 → 0).
+    expect(db.prepare('SELECT jolly_used FROM pick').get()).toEqual({ jolly_used: 1 });
+    expect(db.prepare('SELECT jollies_remaining FROM profile').get()).toEqual({ jollies_remaining: 0 });
+    // Conferma con jollyUsed + jolliesRemaining.
+    expect(generator.contexts[0]).toMatchObject({
+      type: 'pick_confirmed',
+      team: JU,
+      jollyUsed: true,
+      jolliesRemaining: 0
+    });
+  });
+
+  it('jolly dichiarato con contatore a 0 → rifiuto "non hai più jolly disponibili"', async () => {
+    const { db, ctx, platform, generator, deps } = makeHarness({ winOnly: true });
+    registerProfile(db, platform, 'a@test.it');
+    db.prepare('UPDATE profile SET jollies_remaining = 0').run();
+    useClassifier(ctx, new Map([[`vado di ${JU}`, { intent: 'pick', pick: { team: JU, outcome: 'win', jolly: true }, name: null }]]));
+
+    await processEmailBatch(ctx, [incoming('a@test.it', `vado di ${JU}`, T_PICK, '1')], deps());
+
+    expect(generator.contexts[0]).toMatchObject({
+      type: 'pick_rejected',
+      reason: 'non hai più jolly disponibili'
+    });
+    // Nessun pick registrato.
+    expect(db.prepare('SELECT COUNT(*) AS n FROM pick').get()).toEqual({ n: 0 });
+  });
+
+  it('jolly off (classica) → jollyEnabled=false e pick normale (keyword rumore)', async () => {
+    const { ctx, platform, generator, deps } = makeHarness({ winOnly: false });
+    registerProfile(ctx.db, platform, 'a@test.it');
+    const classifier = useClassifier(ctx, new Map([[`vado di ${JU}`, pick(JU, 'win')]]));
+
+    await processEmailBatch(ctx, [incoming('a@test.it', `vado di ${JU}`, T_PICK, '1')], deps());
+
+    expect(classifier.calls[0]?.jollyEnabled).toBe(false);
+    expect(generator.contexts[0]).toMatchObject({ type: 'pick_confirmed', jollyUsed: false });
+  });
+});

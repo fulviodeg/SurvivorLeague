@@ -69,6 +69,7 @@ interface ValidateArgs extends JsonArg {
   profileId: number;
   team: string;
   outcome?: string;
+  jolly?: boolean;
 }
 interface RegisterArgs extends ValidateArgs {
   reason?: string;
@@ -109,6 +110,12 @@ const pickBuilder = (yargs: Argv<object>) =>
       // la modalità; in win_only l'interprete è il canale email, non il CLI).
       describe:
         'Esito previsto: win | draw | lose (opzionale: se omesso → invalid_outcome; in win_only il pick è la sola squadra, con --outcome win)'
+    })
+    .option('jolly', {
+      type: 'boolean' as const,
+      default: false,
+      describe:
+        'Dichiara un jolly (feature JOLLY): in win_only salva dal pareggio; bruciato alla dichiarazione; rifiutato in classica (jolly_not_allowed) o senza jolly rimasti (no_jollies_left)'
     });
 
 export const pickValidateCommand: CommandModule<object, ValidateArgs> = {
@@ -123,6 +130,7 @@ export const pickValidateCommand: CommandModule<object, ValidateArgs> = {
         round: argv.round,
         team: argv.team,
         outcome: argv.outcome ?? '',
+        jolly: argv.jolly === true,
         receivedAt: ctx.now
       });
       if (argv.json) {
@@ -180,6 +188,7 @@ export const pickRegisterCommand: CommandModule<object, RegisterArgs> = {
           round: argv.round,
           team: argv.team,
           outcome: argv.outcome ?? '',
+          jolly: argv.jolly === true,
           receivedAt: ctx.now
         },
         { reason: argv.reason }

@@ -19,6 +19,8 @@ import { LLMError } from './errors.js';
 import { renderEmailV2 } from './email-renderer.js';
 import { narrativeFor } from './templates.js';
 import type { EmailContext, LLMGenerator } from './generator.js';
+import type { GameMode } from '../game/mode.js';
+import { modeFor } from '../game/mode.js';
 
 /** Logger minimale per il fallback (warn pino con oggetto + messaggio). */
 export interface WarnLogger {
@@ -32,15 +34,22 @@ export interface WarnLogger {
  */
 export class DeterministicGenerator implements LLMGenerator {
   private readonly timeZone: string;
-  private readonly winOnly: boolean;
+  private readonly mode: GameMode;
 
-  constructor(timeZone = 'Europe/Rome', winOnly = false) {
+  constructor(timeZone = 'Europe/Rome', mode: GameMode = modeFor(false, 0)) {
     this.timeZone = timeZone;
-    this.winOnly = winOnly;
+    this.mode = mode;
   }
 
   async generate(ctx: EmailContext): Promise<string> {
-    return renderEmailV2(ctx, narrativeFor(ctx.type, this.winOnly), this.timeZone, this.winOnly);
+    // Feature JOLLY: savedByJolly evita la narrativa "hai indovinato" sul
+    // pick salvato dal pareggio.
+    return renderEmailV2(
+      ctx,
+      narrativeFor(ctx.type, this.mode, ctx.savedByJolly === true),
+      this.timeZone,
+      this.mode
+    );
   }
 }
 

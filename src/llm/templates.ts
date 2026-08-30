@@ -28,6 +28,7 @@
  * (fix review 2026-08-23): nessun file storico morto nel repo.
  */
 import type { EmailContext, EmailType } from './generator.js';
+import type { GameMode } from '../game/mode.js';
 
 /**
  * Parole di conferma della barriera unsubscribe (RF-P2, decisione (a)/B1):
@@ -200,7 +201,7 @@ export const DETERMINISTIC_NARRATIVES: Record<EmailType, string> = {
  * citano "squadra + esito" sono `pick_instructions`, `pick_rejected` e
  * `clarification`, qui sovrascritti. Gli altri tipi restano generici
  * (`platform_registered`/`platform_already_registered`/`round_result_*` non
- * citano l'esito e NON cambiano). `narrativeFor(type, winOnly)` è l'accesso
+ * citano l'esito e NON cambiano). `narrativeFor(type, mode)` è l'accesso
  * unico: fallback alla narrativa base quando l'overlay non esiste per il tipo.
  */
 export const WIN_ONLY_NARRATIVE_OVERRIDES: Partial<Record<EmailType, string>> = {
@@ -213,7 +214,7 @@ export const WIN_ONLY_NARRATIVE_OVERRIDES: Partial<Record<EmailType, string>> = 
 /**
  * Overlay win_only dei PROMPT LLM (ADR-016): i prompt che citano
  * "squadra + esito"/"squadra ed esito" sono riscritti per chiedere SOLO la
- * squadra vincente. `templateFor(type, winOnly)` è l'accesso unico con
+ * squadra vincente. `templateFor(type, mode)` è l'accesso unico con
  * fallback al template base.
  */
 export const WIN_ONLY_TEMPLATE_OVERRIDES: Partial<Record<EmailType, string>> = {
@@ -252,24 +253,70 @@ scrivere "voglio iscrivermi".`
 };
 
 /**
- * Accesso unico alla narrativa deterministica per tipo, win_only-aware
- * (ADR-016): overlay se presente, altrimenti la narrativa base. MAI usare
+ * Overlay jolly dei PROMPT LLM (feature JOLLY, D8): istruiscono l'LLM a
+ * menzionare CORRETTAMENTE il jolly quando è presente nel contesto
+ * serializzato (campi `Jolly usato`/`Jolly: ha salvato dal pareggio`/`Jolly
+ * rimasti` di `serializeEmailContext`). Sono prompt win_only-style (il jolly
+ * esiste SOLO in win_only, `jollyEnabled = winOnly && jollies >= 1`):
+ * `templateFor(type, mode)` li seleziona PRIMA degli overlay win_only.
+ */
+export const JOLLY_TEMPLATE_OVERRIDES: Partial<Record<EmailType, string>> = {
+  pick_instructions: `${COMMON_HEADER}
+Argomento: ISTRUZIONI PER IL PICK. Il round è aperto: incoraggia il giocatore a scegliere UNA
+squadra tra quelle disponibili (campo "squadre disponibili" del contesto), quella che secondo lui
+vincerà la sua partita, e a inviarla prima della scadenza. Se nel contesto è presente "Jolly
+rimasti: N", ricorda che può dichiarare il jolly scrivendo «SQUADRA Jolly»: un pareggio non lo
+eliminerà (la sconfitta sì). Le squadre già bruciate e la deadline sono nei box del sistema: non
+elencarle di nuovo.`,
+
+  pick_confirmed: `${COMMON_HEADER}
+Argomento: CONFERMA DEL PICK REGISTRATO. Festeggia la mossa del giocatore (la squadra scelta è
+nel box del sistema). Se nel contesto è presente "Jolly usato: sì", accenna che il jolly è stato
+dichiarato e consumato (con "Jolly rimasti: N" se presente); se il jolly non c'è, non citarlo.`,
+
+  round_result_correct: `${COMMON_HEADER}
+Argomento: PICK CORRETTO. Esprimi gioia autentica: il giocatore resta in gara (l'esito è nel box
+del sistema). Se nel contesto è presente "Jolly: ha salvato dal pareggio", spiega che la squadra
+ha pareggiato ma il jolly lo ha salvato dall'eliminazione (non dire che ha "indovinato"); se c'è
+solo "Jolly usato: sì", il jolly è stato consumato ma la vittoria è meritata. Proietta sul
+prossimo round: riceverà le istruzioni quando si aprirà.`,
+
+  round_result_wrong: `${COMMON_HEADER}
+Argomento: PICK SBAGLIATO. Comunica con tono rispettoso e sportivo che la squadra scelta non ha
+vinto e che l'avventura del giocatore si ferma qui (l'esito è nel box del sistema). Se nel
+contesto è presente "Jolly usato: sì", spiega che il jolly non salva dalla sconfitta. Ringrazia
+per essere stato con noi. MAI "grazie per averci giocato" e MAI invitare a seguire i prossimi
+round (gli eliminati non li seguono).`
+};
+
+/**
+ * Accesso unico alla narrativa deterministica per tipo, mode-aware
+ * (ADR-016 + feature JOLLY): overlay jolly (solo `round_result_correct`
+ * salvato dal pareggio — evita la contraddizione con "hai indovinato"),
+ * poi overlay win_only se presente, altrimenti la narrativa base. MAI usare
  * `DETERMINISTIC_NARRATIVES` direttamente nei generatori: passare da qui.
  */
-export function narrativeFor(type: EmailType, winOnly: boolean): string {
-  if (winOnly && WIN_ONLY_NARRATIVE_OVERRIDES[type] !== undefined) {
+export function narrativeFor(type: EmailType, mode: GameMode, savedByJolly = false): string {
+  if (mode.jollyEnabled && savedByJolly && type === 'round_result_correct') {
+    return 'La tua squadra ha pareggiato, ma il tuo jolly ti ha salvato: resti in gara!';
+  }
+  if (mode.winOnly && WIN_ONLY_NARRATIVE_OVERRIDES[type] !== undefined) {
     return WIN_ONLY_NARRATIVE_OVERRIDES[type]!;
   }
   return DETERMINISTIC_NARRATIVES[type];
 }
 
 /**
- * Accesso unico al prompt LLM per tipo, win_only-aware (ADR-016): overlay se
+ * Accesso unico al prompt LLM per tipo, mode-aware (ADR-016 + feature JOLLY):
+ * overlay jolly se presente (SOLO con jollyEnabled), poi overlay win_only se
  * presente, altrimenti il template base. MAI usare `EMAIL_TEMPLATES`
  * direttamente nel generatore: passare da qui.
  */
-export function templateFor(type: EmailType, winOnly: boolean): string {
-  if (winOnly && WIN_ONLY_TEMPLATE_OVERRIDES[type] !== undefined) {
+export function templateFor(type: EmailType, mode: GameMode): string {
+  if (mode.jollyEnabled && JOLLY_TEMPLATE_OVERRIDES[type] !== undefined) {
+    return JOLLY_TEMPLATE_OVERRIDES[type]!;
+  }
+  if (mode.winOnly && WIN_ONLY_TEMPLATE_OVERRIDES[type] !== undefined) {
     return WIN_ONLY_TEMPLATE_OVERRIDES[type]!;
   }
   return EMAIL_TEMPLATES[type];
@@ -334,5 +381,9 @@ export function serializeEmailContext(ctx: EmailContext, timeZone: string): stri
     lines.push(`- Eliminati senza pick: ${ctx.eliminatedMissing}`);
   }
   if (ctx.platformCount !== undefined) lines.push(`- Iscritti alla piattaforma: ${ctx.platformCount}`);
+  // Feature JOLLY (D9): dati iniettati dal Game Engine, MAI generati dall'LLM.
+  if (ctx.jollyUsed === true) lines.push('- Jolly usato: sì');
+  if (ctx.savedByJolly === true) lines.push('- Jolly: ha salvato dal pareggio');
+  if (ctx.jolliesRemaining !== undefined) lines.push(`- Jolly rimasti: ${ctx.jolliesRemaining}`);
   return lines.join('\n');
 }

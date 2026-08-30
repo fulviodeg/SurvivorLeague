@@ -45,7 +45,8 @@ function classify(body: string, opts: Partial<Parameters<DeterministicIntentClas
     teams: opts.teams ?? PROD_TEAMS,
     aliases: opts.aliases ?? PROD_ALIASES,
     ...(opts.subject !== undefined ? { subject: opts.subject } : {}),
-    ...(opts.winOnly !== undefined ? { winOnly: opts.winOnly } : {})
+    ...(opts.winOnly !== undefined ? { winOnly: opts.winOnly } : {}),
+    ...(opts.jollyEnabled !== undefined ? { jollyEnabled: opts.jollyEnabled } : {})
   });
 }
 
@@ -234,6 +235,64 @@ describe('DeterministicIntentClassifier — win_only (ADR-016)', () => {
 
   it('senza win_only la squadra nuda resta other (nessuna regressione)', async () => {
     expect(await classify('Roma')).toMatchObject({ intent: 'other' });
+  });
+});
+
+describe('DeterministicIntentClassifier — jolly (feature JOLLY, D4)', () => {
+  it('keyword "jolly" ovunque con jollyEnabled → jolly:true e pick risolto (squadra nuda → win)', async () => {
+    expect(await classify('Roma Jolly', { winOnly: true, jollyEnabled: true })).toMatchObject({
+      intent: 'pick',
+      pick: { team: 'AS Roma', outcome: 'win', jolly: true }
+    });
+  });
+
+  it('keyword "jolly" PRIMA della squadra → jolly:true e pick risolto', async () => {
+    expect(await classify('Jolly Roma', { winOnly: true, jollyEnabled: true })).toMatchObject({
+      intent: 'pick',
+      pick: { team: 'AS Roma', outcome: 'win', jolly: true }
+    });
+  });
+
+  it('keyword jolly con esito win esplicito → jolly:true, outcome win', async () => {
+    expect(await classify('roma vince jolly', { winOnly: true, jollyEnabled: true })).toMatchObject({
+      intent: 'pick',
+      pick: { team: 'AS Roma', outcome: 'win', jolly: true }
+    });
+  });
+
+  it('keyword jolly case/accenti-insensibile ("JOLLY", "jollì")', async () => {
+    expect(await classify('JOLLY Roma', { winOnly: true, jollyEnabled: true })).toMatchObject({
+      intent: 'pick',
+      pick: { team: 'AS Roma', outcome: 'win', jolly: true }
+    });
+    expect(await classify('roma jollì', { winOnly: true, jollyEnabled: true })).toMatchObject({
+      intent: 'pick',
+      pick: { team: 'AS Roma', outcome: 'win', jolly: true }
+    });
+  });
+
+  it('jolly NEL MEZZO di una parola ("jollywood") NON è riconosciuto (word boundary)', async () => {
+    expect(await classify('roma jollywood', { winOnly: true, jollyEnabled: true })).toMatchObject({
+      intent: 'pick',
+      pick: { team: 'AS Roma', outcome: 'win' }
+    });
+  });
+
+  it('jolly off (jollyEnabled assente/false) → la keyword è rumore ignorato (pick normale, D4)', async () => {
+    // Con WIN_ONLY il pick resta la squadra nuda, senza flag jolly.
+    expect(await classify('Roma Jolly', { winOnly: true })).toMatchObject({
+      intent: 'pick',
+      pick: { team: 'AS Roma', outcome: 'win' }
+    });
+    // In classica "Roma Jolly" senza esito resta other (grammatica team-prima invariata).
+    expect(await classify('Roma Jolly')).toMatchObject({ intent: 'other' });
+  });
+
+  it('in win_only un esito draw/lose esplicito resta NON riconosciuto anche con jolly', async () => {
+    expect(await classify('roma pareggia jolly', { winOnly: true, jollyEnabled: true })).toMatchObject({
+      intent: 'other',
+      pick: null
+    });
   });
 });
 

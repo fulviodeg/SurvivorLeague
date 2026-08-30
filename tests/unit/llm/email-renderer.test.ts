@@ -14,6 +14,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { renderEmailV2 } from '../../../src/llm/email-renderer.js';
+import { modeFor } from '../../../src/game/mode.js';
 import { EMAIL_TYPES, type EmailContext, type EmailType } from '../../../src/llm/generator.js';
 
 const ROME = 'Europe/Rome';
@@ -741,7 +742,7 @@ describe('renderEmailV2 — win_only (ADR-016)', () => {
       team: 'Roma',
       outcome: 'win'
     };
-    const body = renderEmailV2(ctx, '', ROME, true);
+    const body = renderEmailV2(ctx, '', ROME, modeFor(true, 0));
     expect(body).toBe(
       [
         HEADER,
@@ -764,7 +765,7 @@ describe('renderEmailV2 — win_only (ADR-016)', () => {
       deadlineRemaining: '2 ore',
       matches: UPCOMING_MATCHES
     };
-    const body = renderEmailV2(ctx, 'Scegli la squadra che vincerà.', ROME, true);
+    const body = renderEmailV2(ctx, 'Scegli la squadra che vincerà.', ROME, modeFor(true, 0));
     expect(body).toContain(
       'Rispondi a questa email con il nome della squadra che vincerà prima della scadenza.'
     );
@@ -785,7 +786,7 @@ describe('renderEmailV2 — win_only (ADR-016)', () => {
       eliminatedWrong: 1,
       eliminatedMissing: 0
     };
-    const body = renderEmailV2(ctx, '', ROME, true);
+    const body = renderEmailV2(ctx, '', ROME, modeFor(true, 0));
     expect(body).toContain('Mario Rossi — Roma — ✅ ancora in gara');
     expect(body).toContain('Sara Verdi — Inter — ❌ eliminato');
     expect(body).not.toContain('· vittoria');
@@ -803,7 +804,7 @@ describe('renderEmailV2 — win_only (ADR-016)', () => {
         }
       ]
     };
-    const body = renderEmailV2(ctx, '', ROME, true);
+    const body = renderEmailV2(ctx, '', ROME, modeFor(true, 0));
     expect(body).toContain('Mario Rossi — Roma — ✅ ancora in gara');
     expect(body).not.toContain('· vittoria');
   });
@@ -819,7 +820,7 @@ describe('renderEmailV2 — win_only (ADR-016)', () => {
       inGameCount: 13,
       matches: RESULT_MATCHES
     };
-    const body = renderEmailV2(ctx, `Hai indovinato: hai centrato l'esito previsto.`, ROME, true);
+    const body = renderEmailV2(ctx, `Hai indovinato: hai centrato l'esito previsto.`, ROME, modeFor(true, 0));
     expect(body).toContain(
       `✅ SEI ANCORA IN GARA!\n⚽ il tuo Pick: ROMA ⚽\nHai indovinato: hai centrato l'esito previsto.`
     );
@@ -835,7 +836,7 @@ describe('renderEmailV2 — win_only (ADR-016)', () => {
       outcome: 'win',
       inGameCount: 13
     };
-    const body = renderEmailV2(ctx, `Il tuo pick non si è avverato: l'avventura si ferma qui.`, ROME, true);
+    const body = renderEmailV2(ctx, `Il tuo pick non si è avverato: l'avventura si ferma qui.`, ROME, modeFor(true, 0));
     expect(body).toContain(
       `❌ SEI STATO ELIMINATO!\n⚽ il tuo Pick: ROMA ⚽\nIl tuo pick non si è avverato: l'avventura si ferma qui.`
     );
@@ -849,7 +850,7 @@ describe('renderEmailV2 — win_only (ADR-016)', () => {
       championshipRound: 5,
       inGameCount: 13
     };
-    const body = renderEmailV2(ctx, 'Non è arrivato alcun pick entro la deadline.', ROME, true);
+    const body = renderEmailV2(ctx, 'Non è arrivato alcun pick entro la deadline.', ROME, modeFor(true, 0));
     expect(body).toContain('❌ SEI STATO ELIMINATO!');
     expect(body).not.toContain('il tuo Pick');
   });
@@ -902,7 +903,190 @@ describe('renderEmailV2 — marcatore storico "🤖 Auto-assegnato" (feature AUT
       eliminatedWrong: 0,
       eliminatedMissing: 0
     };
-    const body = renderEmailV2(ctx, '', ROME, true);
+    const body = renderEmailV2(ctx, '', ROME, modeFor(true, 0));
     expect(body).toContain('Mario Rossi — Roma — ✅ ancora in gara · 🤖 Auto-assegnato');
+  });
+});
+
+describe('renderEmailV2 — testi jolly (feature JOLLY, D8/D9)', () => {
+  const jolly = modeFor(true, 1);
+
+  it('pick_instructions con jolly attivo → riga istruzioni + "Jolly rimasti: N"', () => {
+    const ctx: EmailContext = {
+      type: 'pick_instructions',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      deadline: DEADLINE,
+      deadlineRemaining: '2 ore',
+      jolliesRemaining: 2
+    };
+    const body = renderEmailV2(ctx, 'Scegli la squadra che vincerà.', ROME, jolly);
+    expect(body).toContain('🎯 Jolly: scrivi «SQUADRA Jolly» per usarlo — un pareggio non ti eliminerà (la sconfitta sì).');
+    expect(body).toContain('Jolly rimasti: 2.');
+  });
+
+  it('pick_instructions con jolly attivo e contatore assente → solo la riga di istruzione', () => {
+    const ctx: EmailContext = { type: 'pick_instructions', playerName: 'Mario' };
+    const body = renderEmailV2(ctx, '', ROME, jolly);
+    expect(body).toContain('🎯 Jolly: scrivi «SQUADRA Jolly» per usarlo');
+    expect(body).not.toContain('Jolly rimasti:');
+  });
+
+  it('pick_instructions con jolly DISATTIVATO → nessuna riga jolly', () => {
+    const ctx: EmailContext = {
+      type: 'pick_instructions',
+      playerName: 'Mario',
+      jolliesRemaining: 2
+    };
+    const body = renderEmailV2(ctx, '', ROME, modeFor(true, 0));
+    expect(body).not.toContain('Jolly');
+  });
+
+  it('pick_confirmed con jolly usato → chiave "PICK REGISTRATO CON JOLLY → SQUADRA" + "Jolly rimasti"', () => {
+    const ctx: EmailContext = {
+      type: 'pick_confirmed',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      team: 'Roma',
+      outcome: 'win',
+      jollyUsed: true,
+      jolliesRemaining: 0
+    };
+    const body = renderEmailV2(ctx, '', ROME, jolly);
+    expect(body).toContain('PICK REGISTRATO CON JOLLY → ROMA');
+    expect(body).toContain('🎯 Jolly rimasti: 0.');
+  });
+
+  it('pick_confirmed con jolly usato ma jolly disattivato → chiave win_only normale', () => {
+    const ctx: EmailContext = {
+      type: 'pick_confirmed',
+      playerName: 'Mario',
+      team: 'Roma',
+      outcome: 'win',
+      jollyUsed: true
+    };
+    const body = renderEmailV2(ctx, '', ROME, modeFor(true, 0));
+    expect(body).toContain('PICK REGISTRATO → ROMA');
+    expect(body).not.toContain('PICK REGISTRATO CON JOLLY');
+  });
+
+  it('esito corretto SALVATO dal jolly (pareggio) → riga dedicata dopo l\'esito', () => {
+    const ctx: EmailContext = {
+      type: 'round_result_correct',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      team: 'Roma',
+      outcome: 'win',
+      jollyUsed: true,
+      savedByJolly: true,
+      inGameCount: 13
+    };
+    const body = renderEmailV2(ctx, 'La tua squadra ha pareggiato, ma il tuo jolly ti ha salvato: resti in gara!', ROME, jolly);
+    expect(body).toContain('🎯 Il tuo jolly ti ha salvato: ROMA ha pareggiato.');
+    expect(body).toContain('✅ SEI ANCORA IN GARA!');
+  });
+
+  it('esito corretto con jolly ma vittoria → riga "🎯 Jolly usato"', () => {
+    const ctx: EmailContext = {
+      type: 'round_result_correct',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      team: 'Roma',
+      outcome: 'win',
+      jollyUsed: true,
+      savedByJolly: false,
+      inGameCount: 13
+    };
+    const body = renderEmailV2(ctx, 'Hai indovinato: hai centrato l\'esito previsto.', ROME, jolly);
+    expect(body).toContain('🎯 Jolly usato');
+    expect(body).not.toContain('ti ha salvato');
+  });
+
+  it('esito sbagliato con jolly (sconfitta) → riga "🎯 Il jolly non salva dalla sconfitta."', () => {
+    const ctx: EmailContext = {
+      type: 'round_result_wrong',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      team: 'Roma',
+      outcome: 'win',
+      jollyUsed: true,
+      savedByJolly: false,
+      inGameCount: 13
+    };
+    const body = renderEmailV2(ctx, 'Il tuo pick non si è avverato: l\'avventura si ferma qui.', ROME, jolly);
+    expect(body).toContain('🎯 Il jolly non salva dalla sconfitta.');
+    expect(body).toContain('❌ SEI STATO ELIMINATO!');
+  });
+
+  it('esito con jolly ma jolly disattivato → nessuna riga jolly (solo pick win_only)', () => {
+    const ctx: EmailContext = {
+      type: 'round_result_wrong',
+      playerName: 'Mario',
+      team: 'Roma',
+      outcome: 'win',
+      jollyUsed: true,
+      inGameCount: 13
+    };
+    const body = renderEmailV2(ctx, '', ROME, modeFor(true, 0));
+    expect(body).not.toContain('🎯');
+    expect(body).toContain('⚽ il tuo Pick: ROMA ⚽');
+  });
+
+  it('riepilogo round_closed_survived → riga "🎯 Jolly rimasti: N" per destinatario', () => {
+    const ctx: EmailContext = {
+      type: 'round_closed_survived',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      players: [
+        { name: 'Mario Rossi', team: 'Roma', outcome: 'win', eliminated: false, jolly: true },
+        { name: 'Sara Verdi', team: 'Inter', outcome: 'win', eliminated: false }
+      ],
+      inGameCount: 2,
+      eliminatedWrong: 0,
+      eliminatedMissing: 0,
+      jolliesRemaining: 1
+    };
+    const body = renderEmailV2(ctx, '', ROME, jolly);
+    // Marcatore "🎯 Jolly" sulla riga del giocatore con jolly usato.
+    expect(body).toContain('Mario Rossi — Roma — ✅ ancora in gara · 🎯 Jolly');
+    expect(body).toContain('Sara Verdi — Inter — ✅ ancora in gara');
+    expect(body).toContain('🎯 Jolly rimasti: 1.');
+  });
+
+  it('il marcatore "🎯 Jolly" appare anche nello storico tournament_closed', () => {
+    const ctx: EmailContext = {
+      type: 'tournament_closed',
+      playerName: 'Mario',
+      tournamentHistory: [
+        {
+          round: 1,
+          championshipRound: 5,
+          players: [{ name: 'Mario Rossi', team: 'Roma', outcome: 'win', eliminated: false, jolly: true }]
+        }
+      ]
+    };
+    const body = renderEmailV2(ctx, '', ROME, jolly);
+    expect(body).toContain('Mario Rossi — Roma — ✅ ancora in gara · 🎯 Jolly');
+  });
+
+  it('in modalità classica il marcatore "🎯 Jolly" segue la riga con esito', () => {
+    const ctx: EmailContext = {
+      type: 'round_closed_survived',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      players: [{ name: 'Mario Rossi', team: 'Roma', outcome: 'draw', eliminated: false, jolly: true }],
+      inGameCount: 1,
+      eliminatedWrong: 0,
+      eliminatedMissing: 0
+    };
+    const body = renderEmailV2(ctx, '', ROME, modeFor(false, 1));
+    expect(body).toContain('Mario Rossi — Roma · pareggio — ✅ ancora in gara · 🎯 Jolly');
   });
 });
