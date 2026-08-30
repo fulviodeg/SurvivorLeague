@@ -84,7 +84,7 @@ export function buildClassifySystemPrompt(opts: PickParseOptions): string {
   // importata — va dichiarato per non confondere l'LLM e preservare la
   // robustezza CS7 (mai mischiare i due domini).
   const league = opts.testMode
-    ? 'un torneo privato di pronostici basato su un campionato sintetico (rosa di Serie A 2025/26, stagione fittizia di test, NON la stagione reale).'
+    ? 'un torneo privato di pronostici basato su un campionato sintetico (rosa di Serie A 2026/27, stagione fittizia di test, NON la stagione reale).'
     : 'un torneo privato di pronostici sulla Serie A.';
   // ADR-016 (win_only): istruzioni dedicate quando la modalità è attiva — il
   // giocatore sceglie SOLO la squadra vincente; una squadra nuda è sufficiente

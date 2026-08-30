@@ -107,6 +107,11 @@ alcun pick entro la scadenza e che per questo l'avventura del giocatore si ferma
 nel box del sistema); ringrazia con calore per essere stato con noi. NON invitare a seguire i
 prossimi round (gli eliminati non li seguono) e MAI dire "grazie per averci giocato".`,
 
+  pick_auto_assigned: `${COMMON_HEADER}
+Argomento: PICK AUTO-ASSEGNATO. Il giocatore non ha inviato un pick entro la scadenza e il
+sistema gliene ha assegnato uno in automatico (la squadra è nel box del sistema): festeggia la
+prosecuzione dell'avventura, senza sensi di colpa e senza colpevolizzare il mancato invio.`,
+
   round_result_correct: `${COMMON_HEADER}
 Argomento: PICK CORRETTO. Esprimi gioia autentica: la squadra scelta ha prodotto l'esito previsto
 e il giocatore resta in gara (l'esito è nel box del sistema). Proietta sul prossimo round:
@@ -176,6 +181,8 @@ export const DETERMINISTIC_NARRATIVES: Record<EmailType, string> = {
   pick_confirmed: '',
   pick_rejected: 'Riprova rispondendo con squadra + esito (win, draw, lose).',
   pick_missing_elimination: 'Non è arrivato alcun pick entro la deadline.',
+  pick_auto_assigned:
+    'Non hai inviato un pick entro la deadline: te ne abbiamo assegnato uno in automatico (la prima squadra disponibile in ordine alfabetico).',
   round_result_correct: "Hai indovinato: hai centrato l'esito previsto.",
   round_result_wrong: "Il tuo pick non si è avverato: l'avventura si ferma qui.",
   pick_postponed: 'La partita della tua squadra è stata rinviata: il tuo pick resta in attesa.',

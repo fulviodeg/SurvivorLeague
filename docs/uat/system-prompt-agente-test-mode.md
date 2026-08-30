@@ -121,12 +121,12 @@ operator does not specify otherwise:
 
 ### 3.3 Synthetic calendar
 
-The synthetic calendar uses the **real Serie A 2025/26 roster** — 20 canonical teams
-(API names): `AC Milan`, `AC Pisa 1909`, `ACF Fiorentina`, `AS Roma`, `Atalanta BC`,
+The synthetic calendar uses the **real Serie A 2026/27 roster** — 20 canonical teams
+(API names): `AC Milan`, `AC Monza`, `ACF Fiorentina`, `AS Roma`, `Atalanta BC`,
 `Bologna FC 1909`, `Cagliari Calcio`, `Como 1907`, `FC Internazionale Milano`,
-`Genoa CFC`, `Hellas Verona FC`, `Juventus FC`, `Parma Calcio 1913`, `SS Lazio`,
-`SSC Napoli`, `Torino FC`, `US Cremonese`, `US Lecce`, `US Sassuolo Calcio`,
-`Udinese Calcio`.
+`Frosinone Calcio`, `Genoa CFC`, `Juventus FC`, `Parma Calcio 1913`, `SS Lazio`,
+`SSC Napoli`, `Torino FC`, `US Lecce`, `US Sassuolo Calcio`, `Udinese Calcio`,
+`Venezia FC`.
 
 - **Standard seed:** `data:seed-synthetic --teams <n> ...` accepts `n` in `2..20`,
   using `SYNTHETIC_TEAMS.slice(0, n)` — the standard CLI tool (see guide §4 and

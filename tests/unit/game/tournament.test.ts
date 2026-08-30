@@ -113,6 +113,34 @@ describe('tournament:start (US6, RF-21, RF-20)', () => {
     });
   });
 
+  it('AUTOPICK (feature AUTOPICK): autopick_on_missing fissata a start e inclusa nell\'export', async () => {
+    const db = new Database(':memory:');
+    migrate(db);
+    loadBaseSeason(db);
+    const ctx: GameContext = {
+      db,
+      dataProvider: new DbSeasonDataProvider(db),
+      config: parseConfig({
+        IMAP_USER: 'u',
+        IMAP_PASS: 'p',
+        SMTP_USER: 'u',
+        SMTP_PASS: 'p',
+        LLM_API_KEY: 'k',
+        FOOTBALL_DATA_TOKEN: 't',
+        WIN_ONLY: 'true',
+        AUTOPICK_ON_MISSING: 'true'
+      }),
+      now: NOW_BEFORE
+    };
+    await startTournament(ctx);
+    expect(db.prepare('SELECT autopick_on_missing FROM tournament_state WHERE id = 1').get()).toEqual({
+      autopick_on_missing: 1
+    });
+
+    const dump = await tournamentExport(ctx);
+    expect(dump.tables.tournament_state[0]).toMatchObject({ autopick_on_missing: 1 });
+  });
+
   it('aggancio --start-round 4: TT1 = TC 4, righe pending solo per la finestra', async () => {
     const { db, ctx } = makeCtx();
     const res = await startTournament(ctx, { startRound: 4 });

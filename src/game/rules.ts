@@ -156,6 +156,45 @@ export async function getAvailableTeams(
 }
 
 /**
+ * Prima squadra disponibile per l'AUTO-PICK (feature AUTOPICK, D1/D4): la
+ * prima delle squadre disponibili (in giornata E non bruciate nel girone di
+ * `round`, stessa fonte di `getAvailableTeams`) in ORDINE ALFABETICO per
+ * `shortName` (nome generico dalla tabella `team`). Ritorna il NOME CANONICO
+ * della prima, o `null` se nessuna disponibile (il chiamante mantiene il
+ * fallback `missing_pick`).
+ *
+ * I dati round/team/partite sono LETTI UNA VOLTA DAL CHIAMANTE e passati qui
+ * (`matches`, `teams`, `totalRounds`, `shortNames`) per evitare N round-trip
+ * per profilo (stesso stile del fix review 2026-08-23). `shortNames` è la
+ * mappa nome canonico → short_name (dal provider); un nome SENZA short_name
+ * degrada all'ordine canonico (fallback sicuro su DB legacy con tabella `team`
+ * vuota, mai un errore). L'ordinamento è stabile (tie-break sul nome canonico):
+ * dipende solo dai dati, mai dal clock/LLM (RNF1).
+ */
+export function getFirstAvailableTeamByShortName(
+  db: Database.Database,
+  profileId: number,
+  round: number,
+  totalRounds: number,
+  matches: Match[],
+  teams: string[],
+  shortNames: ReadonlyMap<string, string>
+): string | null {
+  const inRound = new Set(matches.flatMap((m) => [m.homeTeam, m.awayTeam]));
+  const burned = new Set(getBurnedTeams(db, profileId, round, totalRounds));
+  const available = teams.filter((team) => inRound.has(team) && !burned.has(team));
+  if (available.length === 0) return null;
+  const sorted = [...available].sort((a, b) => {
+    const sa = shortNames.get(a) ?? a;
+    const sb = shortNames.get(b) ?? b;
+    if (sa < sb) return -1;
+    if (sa > sb) return 1;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+  return sorted[0] ?? null;
+}
+
+/**
  * Girone "corrente" per i comandi con default (es. `rules:burned-teams` senza
  * `--half`): il girone del round più avanzato in `round_state`; se nessun round
  * è ancora stato aperto → andata (1). Fonte è lo stato reale del torneo.

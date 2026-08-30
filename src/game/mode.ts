@@ -10,10 +10,10 @@
  * qualsiasi scrittura/invio: la guardia è SOLA LETTURA e precede le scritture.
  *
  * Nome GENERICO `assertModeConsistent` (non `assertWinOnlyConsistent`):
- * oggi confronta solo `win_only`, ma è estensibile per chiave ai futuri
+ * confronta `win_only` e, dalla feature AUTOPICK, anche `autopick_on_missing`
+ * (stessa funzione, una chiave in più): è estensibile per chiave ai futuri
  * parametri di modalità (es. `JOLLIES_PER_PLAYER`) SENZA una seconda guardia —
- * basta aggiungere un confronto nella stessa funzione (vedi piano win_only,
- * sezione Jolly, punto 1).
+ * basta aggiungere un confronto nella stessa funzione.
  *
  * Meccanismo fatale (verificato sulla CLI): i comandi che scrivono/inviano
  * (`scheduler:tick`, `channel:email:process`, `round:open/close/score`) non
@@ -49,15 +49,46 @@ export function assertModeConsistent(ctx: GameContext): void {
   if (state === undefined || state.season_started !== 1) return;
   if (state.winner_notified === 1) return;
 
-  const persisted = state.win_only === 1;
-  const configured = ctx.config.WIN_ONLY;
-  if (persisted === configured) return;
+  const persistedWinOnly = state.win_only === 1;
+  const configuredWinOnly = ctx.config.WIN_ONLY;
+  // Feature AUTOPICK: speculare a win_only — la persistenza si confronta col
+  // valore .env corrente INDIPENDENTEMENTE da WIN_ONLY (con WIN_ONLY=false il
+  // valore viene comunque persistito, la sola derivazione lo ignora, D5).
+  const persistedAutopick = state.autopick_on_missing === 1;
+  const configuredAutopick = ctx.config.AUTOPICK_ON_MISSING;
 
+  if (persistedWinOnly === configuredWinOnly && persistedAutopick === configuredAutopick) {
+    return;
+  }
+
+  const parts: string[] = [];
+  if (persistedWinOnly !== configuredWinOnly) {
+    parts.push(
+      `WIN_ONLY cambiata a torneo aperto: persistita ${persistedWinOnly ? 'true' : 'false'} ` +
+        `nel DB (tournament_state.win_only=${state.win_only}), configurata ${configuredWinOnly ? 'true' : 'false'} ` +
+        `in WIN_ONLY.`
+    );
+  }
+  if (persistedAutopick !== configuredAutopick) {
+    parts.push(
+      `AUTOPICK_ON_MISSING cambiata a torneo aperto: persistita ${persistedAutopick ? 'true' : 'false'} ` +
+        `nel DB (tournament_state.autopick_on_missing=${state.autopick_on_missing}), configurata ${configuredAutopick ? 'true' : 'false'} ` +
+        `in AUTOPICK_ON_MISSING.`
+    );
+  }
   const message =
-    `WIN_ONLY cambiata a torneo aperto: persistita ${persisted ? 'true' : 'false'} ` +
-    `nel DB (tournament_state.win_only=${state.win_only}), configurata ${configured ? 'true' : 'false'} ` +
-    `in WIN_ONLY. La modalità è fissata a tournament:start: ripristina WIN_ONLY=${persisted ? 'true' : 'false'} ` +
+    `${parts.join(' ')} La modalità è fissata a tournament:start: ripristina i valori nel .env ` +
     `oppure chiudi il torneo e riavvia con tournament:start.`;
-  ctx.logger?.fatal({ persisted, configured, winOnly: state.win_only }, 'game mode mismatch: aborting');
+  ctx.logger?.fatal(
+    {
+      persisted: persistedWinOnly,
+      configured: configuredWinOnly,
+      winOnly: state.win_only,
+      persistedAutopick,
+      configuredAutopick,
+      autopickOnMissing: state.autopick_on_missing
+    },
+    'game mode mismatch: aborting'
+  );
   throw new Error(message);
 }

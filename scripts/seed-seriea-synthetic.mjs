@@ -1,9 +1,9 @@
 /**
- * Seed del calendario sintetico con le 20 squadre REALI di Serie A 2025/26
- * (nomi canonici API football-data.org). Lo script riusa la stessa pipeline
- * del CLI (generateSyntheticSeason + upsertMatches, ADR-007) con la rosa
- * completa, poi salva i punteggi veri in un JSON e li AZZERA (scenario
- * "risultati che arrivano dopo", guida §5.5).
+ * Seed del calendario sintetico con le 20 squadre REALI di Serie A 2026/27
+ * (nomi canonici API football-data.org, costante `SYNTHETIC_TEAMS`). Lo script
+ * riusa la stessa pipeline del CLI (generateSyntheticSeason + upsertMatches,
+ * ADR-007) con la rosa completa, poi salva i punteggi veri in un JSON e li
+ * AZZERA (scenario "risultati che arrivano dopo", guida §5.5).
  *
  * Uso: node --import tsx scripts/seed-seriea-synthetic.mjs
  *   --rounds N --spacing-min M --offset-min K --seed S [--db PATH] [--scores FILE] [--no-null]
@@ -11,31 +11,8 @@
 import Database from 'better-sqlite3';
 import { writeFileSync } from 'node:fs';
 
-import { generateSyntheticSeason } from '../src/data/synthetic-season.js';
+import { SYNTHETIC_TEAMS, generateSyntheticSeason } from '../src/data/synthetic-season.js';
 import { upsertMatches } from '../src/data/importer.js';
-
-const TEAMS = [
-  'AC Milan',
-  'AC Pisa 1909',
-  'ACF Fiorentina',
-  'AS Roma',
-  'Atalanta BC',
-  'Bologna FC 1909',
-  'Cagliari Calcio',
-  'Como 1907',
-  'FC Internazionale Milano',
-  'Genoa CFC',
-  'Hellas Verona FC',
-  'Juventus FC',
-  'Parma Calcio 1913',
-  'SS Lazio',
-  'SSC Napoli',
-  'Torino FC',
-  'US Cremonese',
-  'US Lecce',
-  'US Sassuolo Calcio',
-  'Udinese Calcio'
-];
 
 function parseArg(name, def) {
   const i = process.argv.indexOf(`--${name}`);
@@ -58,7 +35,7 @@ function argValue(name, def) {
 const db = new Database(dbPath);
 const firstKickoff = new Date(Date.now() + offsetMin * 60_000);
 const matches = generateSyntheticSeason({
-  teams: TEAMS,
+  teams: SYNTHETIC_TEAMS,
   rounds,
   spacingMin,
   firstKickoff,
@@ -66,7 +43,7 @@ const matches = generateSyntheticSeason({
 });
 
 const n = upsertMatches(db, matches);
-console.log(`Seed completato: ${TEAMS.length} squadre Serie A, ${rounds} giornate, ${n} partite`);
+console.log(`Seed completato: ${SYNTHETIC_TEAMS.length} squadre Serie A, ${rounds} giornate, ${n} partite`);
 console.log(`Primo fischio: ${firstKickoff.toISOString()}`);
 console.log(`Ultimo fischio: ${matches[matches.length - 1].matchDate.toISOString()}`);
 

@@ -28,7 +28,8 @@ import {
 import {
   rulesAvailableCommand,
   rulesBurnedCommand,
-  rulesCheckHalfCommand
+  rulesCheckHalfCommand,
+  rulesTeamsCommand
 } from './commands/rules.js';
 import { winnerCheckCommand } from './commands/winner.js';
 import { llmClassifyCommand, llmGenerateCommand, llmParseCommand } from './commands/llm.js';
@@ -74,6 +75,7 @@ export function createCli(argv: string[] = hideBin(process.argv)) {
     .command(rulesBurnedCommand)
     .command(rulesAvailableCommand)
     .command(rulesCheckHalfCommand)
+    .command(rulesTeamsCommand)
     .command(pickValidateCommand)
     .command(pickRegisterCommand)
     .command(pickListCommand)

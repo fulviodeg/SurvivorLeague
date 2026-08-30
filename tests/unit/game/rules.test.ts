@@ -19,6 +19,7 @@ import {
   checkHalf,
   getAvailableTeams,
   getBurnedTeams,
+  getFirstAvailableTeamByShortName,
   halfBoundary,
   isBurned,
   lastAndataRound,
@@ -157,6 +158,65 @@ describe('getAvailableTeams — squadre in giornata non bruciate (decisione 12, 
 
     // Nessun pick: tutte le squadre in giornata al round 6 (MA-IM, JU-AC).
     expect(await getAvailableTeams(db, provider, profile, 6)).toEqual([AC, MA, IM, JU]);
+  });
+});
+
+describe('getFirstAvailableTeamByShortName — auto-pick (feature AUTOPICK, D1/D4)', () => {
+  /** Nomi generici (shortName) della mini-stagione: ordine alfabetico atteso. */
+  const SHORT = new Map<string, string>([
+    [IM, 'Inter'],
+    [AC, 'Milan'],
+    [JU, 'Juventus'],
+    [MA, 'Roma']
+  ]);
+
+  it('restituisce la prima disponibile in ordine alfabetico per shortName (non per nome canonico)', async () => {
+    const { db, provider } = makeCtx();
+    const profile = insertProfile(db, 'auto@test.it');
+    const totalRounds = await provider.getTotalRounds();
+
+    // Round 6 (ritorno): in giornata MA-IM e JU-AC. Nessuna bruciata.
+    // Ordine canonico (getTeams): AC Milan, AS Roma, Inter, Juventus → prima "AC Milan".
+    // Ordine per shortName: Inter, Juventus, Milan, Roma → prima "Inter" (FC Internazionale Milano).
+    const matches = await provider.getMatchesForRound(6);
+    const teams = await provider.getTeams();
+    expect(getFirstAvailableTeamByShortName(db, profile, 6, totalRounds, matches, teams, SHORT)).toBe(IM);
+  });
+
+  it('esclude le bruciate del girone (stessa fonte di getAvailableTeams)', async () => {
+    const { db, provider } = makeCtx();
+    const profile = insertProfile(db, 'auto2@test.it');
+    insertPick(db, profile, 4, IM); // IM bruciata nel ritorno
+    const totalRounds = await provider.getTotalRounds();
+
+    const matches = await provider.getMatchesForRound(6);
+    const teams = await provider.getTeams();
+    // IM bruciata → prima disponibile per shortName = JU ("Juventus").
+    expect(getFirstAvailableTeamByShortName(db, profile, 6, totalRounds, matches, teams, SHORT)).toBe(JU);
+  });
+
+  it('ritorna null quando nessuna squadra è disponibile (tutte bruciate in giornata)', async () => {
+    const { db, provider } = makeCtx();
+    const profile = insertProfile(db, 'auto3@test.it');
+    const totalRounds = await provider.getTotalRounds();
+
+    const matches = await provider.getMatchesForRound(6);
+    // Lista canonica VUOTA (o senza sovrapposizione con le partite) → nessuna
+    // squadra disponibile → null (il chiamante mantiene il fallback missing_pick).
+    expect(
+      getFirstAvailableTeamByShortName(db, profile, 6, totalRounds, matches, [], SHORT)
+    ).toBeNull();
+  });
+
+  it('degrade all\'ordine canonico quando lo shortName è assente (tabella team vuota, DB legacy)', async () => {
+    const { db, provider } = makeCtx();
+    const profile = insertProfile(db, 'auto4@test.it');
+    const totalRounds = await provider.getTotalRounds();
+
+    const matches = await provider.getMatchesForRound(6);
+    const teams = await provider.getTeams();
+    // Mappa vuota → fallback sul nome canonico: prima "AC Milan".
+    expect(getFirstAvailableTeamByShortName(db, profile, 6, totalRounds, matches, teams, new Map())).toBe(AC);
   });
 });
 

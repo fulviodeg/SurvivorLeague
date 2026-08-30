@@ -2,7 +2,7 @@
  * Test della risorsa prompt `src/llm/team-aliases-synthetic.md` (piano UAT
  * Task 0.4, D7).
  *
- * Verificano la coerenza della risorsa alias SINTETICA (Serie A 2025/26,
+ * Verificano la coerenza della risorsa alias SINTETICA (Serie A 2026/27,
  * test-only): niente logica nel file (solo Markdown editoriale), lista
  * canonica di 20 club senza duplicati, ogni alias mappa su un nome canonico
  * della lista e ogni nome canonico ha almeno un alias (speculare a

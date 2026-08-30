@@ -114,6 +114,36 @@ describe('data:refresh — aggiorna la riga esistente senza duplicarla (Task 2.3
   });
 });
 
+describe('data:import — popola la tabella team (feature AUTOPICK, D1)', () => {
+  it('deriva name → short_name dai match con shortName e li upserta nella tabella team', async () => {
+    const db = createDb();
+    const matches = BASE_MATCHES.map((m) => ({
+      ...m,
+      homeTeamShort: `${m.homeTeam} SHORT`,
+      awayTeamShort: `${m.awayTeam} SHORT`
+    }));
+    await importMatches(db, fakeClient(matches));
+
+    const rows = db
+      .prepare('SELECT name, short_name FROM team ORDER BY name')
+      .all() as Array<{ name: string; short_name: string }>;
+    // 4 squadre della mini-stagione, ognuna col proprio shortName derivato.
+    expect(rows).toHaveLength(4);
+    expect(rows.find((r) => r.name === 'FC Internazionale Milano')).toMatchObject({
+      short_name: 'FC Internazionale Milano SHORT'
+    });
+    db.close();
+  });
+
+  it('un match senza shortName NON crea righe nella tabella team (fallback sicuro)', async () => {
+    const db = createDb();
+    await importMatches(db, fakeClient(BASE_MATCHES)); // BASE_MATCHES senza shortName
+    const n = (db.prepare('SELECT COUNT(*) AS n FROM team').get() as { n: number }).n;
+    expect(n).toBe(0);
+    db.close();
+  });
+});
+
 describe('data:import — formato canonico match_date e atomicità (briefing §1-B, §4-C)', () => {
   it('scrive match_date in formato canonico ISO-8601 UTC (suffisso Z)', () => {
     const row = toMatchRow({ ...BASE_MATCHES[0]!, matchDate: new Date('2026-09-12T16:00:00Z') });

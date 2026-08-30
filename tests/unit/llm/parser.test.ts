@@ -211,9 +211,9 @@ describe('Selezione risorsa alias in base al test mode (Task 0.4, D7)', () => {
 
   it('loadTeamAliasesFor(true) → risorsa sintetica (rosa Serie A del calendario sintetico)', async () => {
     const content = await loadTeamAliasesFor(true);
-    expect(content).toContain('AC Pisa 1909'); // promossa: nel calendario sintetico, non in produzione
+    expect(content).toContain('Frosinone Calcio'); // promossa (rosa 2026/27): nel calendario sintetico, non in produzione
     expect(content).toContain('US Sassuolo Calcio');
-    expect(content).not.toContain('Empoli FC'); // retrocessa: solo nella risorsa di produzione
+    expect(content).not.toContain('Empoli FC'); // assente dalla rosa sintetica 2026/27 (presente in produzione)
   });
 });
 
@@ -230,7 +230,7 @@ describe('buildParseSystemPrompt — contesto lega in test mode (Task 0.4, D7)',
   it('testMode=true → prompt chiarisce la lega sintetica (rosa Serie A, stagione fittizia)', () => {
     const prompt = buildParseSystemPrompt({ ...basicOpts, testMode: true });
     expect(prompt).toContain('campionato sintetico');
-    expect(prompt).toContain('rosa di Serie A 2025/26');
+    expect(prompt).toContain('rosa di Serie A 2026/27');
     expect(prompt).toContain('stagione fittizia di test, NON la stagione reale');
     expect(prompt).not.toContain('pronostici sulla Serie A.');
   });

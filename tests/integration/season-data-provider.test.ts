@@ -66,6 +66,27 @@ describe('DbSeasonDataProvider — calendario e query di base (LLD §6.1)', () =
     expect(teams).toHaveLength(4);
     expect(teams).toEqual(['AC Milan', 'AS Roma', 'FC Internazionale Milano', 'Juventus FC']);
   });
+
+  it('getTeamsOrderedByShortName legge la tabella team ordinata per short_name (feature AUTOPICK)', async () => {
+    const { db, provider } = makeProvider();
+    // La tabella team NON è popolata dalle fixture base (BASE_MATCHES non ha
+    // shortName): la popoliamo esplicitamente con l'upsert reale.
+    db.prepare('INSERT INTO team (name, short_name) VALUES (?, ?)').run('Juventus FC', 'Juventus');
+    db.prepare('INSERT INTO team (name, short_name) VALUES (?, ?)').run('FC Internazionale Milano', 'Inter');
+    db.prepare('INSERT INTO team (name, short_name) VALUES (?, ?)').run('AC Milan', 'Milan');
+
+    // Ordine alfabetico per short_name: Inter < Juventus < Milan.
+    expect(await provider.getTeamsOrderedByShortName()).toEqual([
+      { name: 'FC Internazionale Milano', shortName: 'Inter' },
+      { name: 'Juventus FC', shortName: 'Juventus' },
+      { name: 'AC Milan', shortName: 'Milan' }
+    ]);
+  });
+
+  it('getTeamsOrderedByShortName su tabella team vuota → [] (nessun errore)', async () => {
+    const { provider } = makeProvider();
+    expect(await provider.getTeamsOrderedByShortName()).toEqual([]);
+  });
 });
 
 describe('DbSeasonDataProvider — parsing match_date (formato canonico, briefing §1-B)', () => {

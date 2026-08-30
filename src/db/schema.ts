@@ -55,7 +55,21 @@ CREATE TABLE IF NOT EXISTS pick (
   outcome    TEXT NOT NULL CHECK (outcome IN ('win', 'draw', 'lose')),
   status     TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'frozen', 'correct', 'wrong')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- Feature AUTOPICK: 1 = pick assegnato IN AUTOMATICO alla chiusura del round
+  -- (profilo in gara senza pick entro la deadline). Segue lo stesso scoring di
+  -- un pick manuale (nessuno stato dedicato); il flag serve solo al marcatore
+  -- storico "🤖 Auto-assegnato" nelle mail retrospettive.
+  auto_pick  INTEGER NOT NULL DEFAULT 0,
   UNIQUE(profile_id, round)
+);
+
+-- Squadre: nome generico "shortName" per squadra (feature AUTOPICK, D1).
+-- Tabella ADDITIVA popolata da data:import / data:seed-synthetic (upsert su
+-- "name"). Il "name" resta il canonico dell'API; "short_name" serve SOLO
+-- all'ordinamento alfabetico dell'auto-pick e al comando "rules:teams".
+CREATE TABLE IF NOT EXISTS team (
+  name       TEXT PRIMARY KEY,
+  short_name TEXT NOT NULL
 );
 
 -- Dati stagione (calendario + risultati Serie A)
@@ -100,9 +114,12 @@ CREATE TABLE IF NOT EXISTS tournament_state (
   finished_at       TEXT,                        -- ADR-011: istante di chiusura del torneo (clock iniettato, ISO-8601)
   export_path       TEXT,                        -- ADR-011 (§1.3): path assoluto dell'export archiviato alla chiusura;
                                                  -- NULL = export NON archiviato → riavvio rifiutato (gate HIGH-1)
-  win_only          INTEGER NOT NULL DEFAULT 0   -- ADR-016: 1 = modalità win_only (pick = sola squadra, outcome 'win');
+  win_only          INTEGER NOT NULL DEFAULT 0,  -- ADR-016: 1 = modalità win_only (pick = sola squadra, outcome 'win');
                                                  -- fissata a tournament:start e coperta dalla guardia fatal di
                                                  -- src/game/mode.ts (mismatch a torneo aperto → processo abortito)
+  autopick_on_missing INTEGER NOT NULL DEFAULT 0 -- Feature AUTOPICK: 1 = auto-pick attivo (WIN_ONLY + AUTOPICK_ON_MISSING);
+                                                 -- fissata a tournament:start e coperta dalla STESSA guardia fatal
+                                                 -- di src/game/mode.ts (mismatch a torneo aperto → processo abortito)
 );
 `;
 
@@ -180,6 +197,25 @@ export function applyAdditiveMigrations(db: Database.Database): void {
   // pre-esistente la guadagna con default 0 (modalità classica).
   if (!stateColumns.includes('win_only')) {
     db.exec('ALTER TABLE tournament_state ADD COLUMN win_only INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // Feature AUTOPICK: autopick_on_missing è fissata a tournament:start e
+  // confrontata dalla STESSA guardia fatal di src/game/mode.ts a torneo
+  // aperto. Colonna additiva: un DB pre-esistente la guadagna con default 0
+  // (auto-pick disattivato).
+  if (!stateColumns.includes('autopick_on_missing')) {
+    db.exec(
+      'ALTER TABLE tournament_state ADD COLUMN autopick_on_missing INTEGER NOT NULL DEFAULT 0'
+    );
+  }
+
+  // Feature AUTOPICK: flag per-pick auto_pick (analogo a jolly_used). Colonna
+  // additiva: un DB pre-esistente la guadagna con default 0 (pick manuale).
+  const pickColumns = (db.prepare('PRAGMA table_info(pick)').all() as Array<{
+    name: string;
+  }>).map((c) => c.name);
+  if (!pickColumns.includes('auto_pick')) {
+    db.exec('ALTER TABLE pick ADD COLUMN auto_pick INTEGER NOT NULL DEFAULT 0');
   }
 }
 

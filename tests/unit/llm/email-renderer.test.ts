@@ -248,6 +248,29 @@ describe('renderEmailV2 (email v3/v4) — output esatto per i 17 template', () =
     );
   });
 
+  it('pick_auto_assigned', () => {
+    const ctx: EmailContext = {
+      type: 'pick_auto_assigned',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      team: 'Roma'
+    };
+    const body = renderEmailV2(
+      ctx,
+      'Non hai inviato un pick entro la deadline: te ne abbiamo assegnato uno in automatico (la prima squadra disponibile in ordine alfabetico).',
+      ROME
+    );
+    expect(body).toBe(
+      [
+        HEADER,
+        'Ciao Mario!',
+        'PICK AUTO ASSEGNATO → ROMA',
+        'Non hai inviato un pick entro la deadline: te ne abbiamo assegnato uno in automatico (la prima squadra disponibile in ordine alfabetico).'
+      ].join('\n')
+    );
+  });
+
   it('round_result_correct', () => {
     const ctx: EmailContext = {
       type: 'round_result_correct',
@@ -673,6 +696,7 @@ describe('renderEmailV2 (email v3) — vincoli strutturali', () => {
       pick_confirmed: 'PICK REGISTRATO → ROMA → VITTORIA',
       pick_rejected: 'PICK NON REGISTRATO: squadra già usata',
       pick_missing_elimination: '❌ SEI STATO ELIMINATO!',
+      pick_auto_assigned: 'PICK AUTO ASSEGNATO → ROMA',
       round_result_correct: '✅ SEI ANCORA IN GARA!',
       round_result_wrong: '❌ SEI STATO ELIMINATO!',
       pick_postponed: '⏸ PARTITA RINVIATA',
@@ -828,5 +852,57 @@ describe('renderEmailV2 — win_only (ADR-016)', () => {
     const body = renderEmailV2(ctx, 'Non è arrivato alcun pick entro la deadline.', ROME, true);
     expect(body).toContain('❌ SEI STATO ELIMINATO!');
     expect(body).not.toContain('il tuo Pick');
+  });
+});
+
+describe('renderEmailV2 — marcatore storico "🤖 Auto-assegnato" (feature AUTOPICK, D9)', () => {
+  it('riga giocatore con autoPick → appendice " · 🤖 Auto-assegnato" in coda (round_closed_survived)', () => {
+    const ctx: EmailContext = {
+      type: 'round_closed_survived',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      players: [
+        { name: 'Mario Rossi', team: 'Roma', outcome: 'win', eliminated: false, autoPick: true },
+        { name: 'Sara Verdi', team: 'Inter', outcome: 'win', eliminated: false }
+      ],
+      inGameCount: 2,
+      eliminatedWrong: 0,
+      eliminatedMissing: 0
+    };
+    const body = renderEmailV2(ctx, '', ROME);
+    expect(body).toContain('Mario Rossi — Roma · vittoria — ✅ ancora in gara · 🤖 Auto-assegnato');
+    expect(body).toContain('Sara Verdi — Inter · vittoria — ✅ ancora in gara');
+  });
+
+  it('il marcatore appare anche nello storico tournament_closed (riusa playerResultRow)', () => {
+    const ctx: EmailContext = {
+      type: 'tournament_closed',
+      playerName: 'Mario',
+      tournamentHistory: [
+        {
+          round: 1,
+          championshipRound: 5,
+          players: [{ name: 'Mario Rossi', team: 'Roma', outcome: 'win', eliminated: false, autoPick: true }]
+        }
+      ]
+    };
+    const body = renderEmailV2(ctx, '', ROME);
+    expect(body).toContain('Mario Rossi — Roma · vittoria — ✅ ancora in gara · 🤖 Auto-assegnato');
+  });
+
+  it('il marcatore vale anche in win_only (riga senza esito)', () => {
+    const ctx: EmailContext = {
+      type: 'round_closed_survived',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      players: [{ name: 'Mario Rossi', team: 'Roma', outcome: 'win', eliminated: false, autoPick: true }],
+      inGameCount: 1,
+      eliminatedWrong: 0,
+      eliminatedMissing: 0
+    };
+    const body = renderEmailV2(ctx, '', ROME, true);
+    expect(body).toContain('Mario Rossi — Roma — ✅ ancora in gara · 🤖 Auto-assegnato');
   });
 });

@@ -49,6 +49,7 @@ describe('migrate (schema LLD §3)', () => {
       'profile',
       'round_state',
       'sqlite_sequence',
+      'team',
       'tournament_state'
     ]);
     db.close();

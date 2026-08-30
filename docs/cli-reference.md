@@ -1,3 +1,4 @@
+
 # Survivor League — CLI Reference
 
 > **Role of this document.** Complete reference of every command exposed by the
@@ -32,7 +33,7 @@
 - [4. Season data commands](#4-season-data-commands)
   - [`data:import`](#dataimport) · [`data:refresh`](#datarefresh) · [`data:calendar`](#datacalendar) · [`data:results`](#dataresults) · [`data:seed-synthetic`](#dataseed-synthetic)
 - [5. Game engine — rules](#5-game-engine--rules)
-  - [`rules:burned-teams`](#rulesburned-teams) · [`rules:available-teams`](#rulesavailable-teams) · [`rules:check-half`](#rulescheck-half)
+  - [`rules:burned-teams`](#rulesburned-teams) · [`rules:available-teams`](#rulesavailable-teams) · [`rules:check-half`](#rulescheck-half) · [`rules:teams`](#rulesteams)
 - [6. Game engine — picks](#6-game-engine--picks)
   - [`pick:validate`](#pickvalidate) · [`pick:register`](#pickregister) · [`pick:list`](#picklist)
 - [7. Game engine — eliminations](#7-game-engine--eliminations)
@@ -315,7 +316,7 @@ data:seed-synthetic [--teams <n>] [--rounds <n>] [--spacing-min <n>]
 ```
 
 **Purpose.** TEST MODE tool (UAT): generates an invented but coherent
-synthetic championship calendar (Serie B teams) with **pre-seeded scores** and
+synthetic championship calendar (Serie A 2026/27 teams) with **pre-seeded scores** and
 loads it into the `match` table of the tournament database. The seeded scores
 make the compressed UAT cadence possible: `round:score` can complete
 immediately after a round closes, so the next round can open without waiting.
@@ -324,12 +325,12 @@ immediately after a round closes, so the next round can open without waiting.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--teams` | number | `8` | Number of teams, from 2 to 8, taken from the synthetic Serie B roster. |
+| `--teams` | number | `8` | Number of teams, from 2 to 20, taken from the synthetic Serie A 2026/27 roster. |
 | `--rounds` | number | `7` | Number of rounds (matchdays). With 8 teams the complete round-robin is 7; larger values repeat the pairings (wrap). Also the domain of attachable TCs: `--start-round` of `tournament:start` must be within `1..rounds`. |
 | `--spacing-min` | number | `90` | Minutes between two consecutive rounds (spaces rounds only; all matches of the same round share the same kickoff time). |
 | `--first-kickoff-offset-min` | number | `120` | Minutes from *now* (real clock) to the kickoff of the first round. |
 | `--seed` | number | `42` | Deterministic seed of the score generator: same seed → same scores on all matches. |
-| `--force` | boolean | `false` | Allows seeding a non-empty `match` table. Without `--clear`, the upsert never deletes existing rows → possible **mixed calendar** (real Serie A + synthetic Serie B); a WARN (English) warns about the inconsistency. |
+| `--force` | boolean | `false` | Allows seeding a non-empty `match` table. Without `--clear`, the upsert never deletes existing rows → possible **mixed calendar** (real season + synthetic Serie A 2026/27); a WARN (English) warns about the inconsistency. |
 | `--clear` | boolean | `false` | Empties the `match` table (and only that table) before seeding. Requires `--force` (double confirmation). Refused while a tournament is in progress (`season_started=1` or rows in `pick`/`round_state`). |
 | `--json` | boolean | `false` | JSON summary (`teams`, `rounds`, `matches`, `firstKickoff`, `lastKickoff`, `warnings`). |
 
@@ -417,6 +418,31 @@ data (`floor(total/2) + 1`), never hardcoded. Read-only, diagnostic.
 |---|---|---|
 | `--round` | number, **required** | Championship round (TC) to evaluate. |
 | `--json` | boolean (default `false`) | JSON output `{"testMode":…, "round":…, "half":…, "totalRounds":…, "label":"andata"|"ritorno"}`. Text output: `Round <n> — girone andata|ritorno (confine derivato da <N> round)`. |
+
+---
+
+### `rules:teams`
+
+```
+rules:teams [--json]
+```
+
+**Purpose.** Lists the teams from the `team` table **ordered by `short_name`**
+(generic name, e.g. "Inter"), as pairs *generic + canonical*. Feature AUTOPICK
+(ADR-017): this is the alphabetical order the auto-pick uses when a profile
+misses the deadline, and the verification tool for the first real
+`data:import` (the imported `shortName`s must match expectations). Read-only,
+**no live API call**: reads only the current tournament database.
+
+**Parameters.**
+
+| Option | Type | Description |
+|---|---|---|
+| `--json` | boolean (default `false`) | JSON output `[{ "name": …, "shortName": … }, …]` (the `testMode` wrapper when in TEST MODE). Text output: one line `<shortName> (<name>)` per team, e.g. `Inter (FC Internazionale Milano)`. |
+
+**Guards and warnings.**
+
+1. **Empty `team` table** → text output `Tabella team vuota: esegui data:import o data:seed-synthetic per popolarla.` (JSON: empty array). The table is populated only by `data:import` / `data:refresh` / `data:seed-synthetic`; a legacy database keeps it empty until then.
 
 ---
 
@@ -1003,7 +1029,7 @@ llm:parse --input <text> [--mode <llm|deterministic>] [--json]
 **Purpose.** Extracts `{team, outcome}` from free text (as a player's email
 would be): the LLM (or, with `--mode deterministic`, the deterministic
 parser with unique formulas) receives the canonical team list from the
-database plus the alias resource (synthetic Serie B roster in TEST MODE) and
+database plus the alias resource (synthetic Serie A 2026/27 roster in TEST MODE) and
 returns the canonical name and the predicted outcome, or `null` when the pick
 is not recognizable or ambiguous.
 

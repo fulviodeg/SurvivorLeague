@@ -19,6 +19,9 @@
  *     (`missing_pick`), notifica, `closed_at`, status `closed`. Con `--force`
  *     richiede `--reason` (audit obbligatorio, RF-29): stessa identica
  *     semantica di consolidamento — non esiste "chiudi senza eliminare".
+ *     Feature AUTOPICK (D3/D4/D5): con `WIN_ONLY && AUTOPICK_ON_MISSING` e
+ *     deadline REALE, ai mancanti viene assegnata in automatico la prima
+ *     squadra disponibile per short_name invece di eliminarli.
  *   - `round:score`  — contabilizzazione INCREMENTALE (ADR-003): per ogni pick
  *     `pending` del round: match con punteggio → `correct`/`wrong` (ed
  *     eliminazione `wrong_pick`); match `postponed` senza punteggio → `frozen`
@@ -54,7 +57,14 @@ import type { Match } from '../data/provider.js';
 import type { GameContext } from './context.js';
 import { eliminate } from './elimination.js';
 import { computeDeadline, computeTcClose, formatRemaining } from './round-time.js';
-import { checkHalf, getAvailableTeams, halfWindow, pickOutcomeFor } from './rules.js';
+import {
+  checkHalf,
+  getAvailableTeams,
+  getFirstAvailableTeamByShortName,
+  halfWindow,
+  pickOutcomeFor
+} from './rules.js';
+import { insertPendingPick } from './pick-processor.js';
 import { getTournamentState, isTournamentClosed, tournamentExport } from './tournament.js';
 import { getStartRound, ttFor, turnFor } from './turn.js';
 import { checkWinner, type WinnerInfo } from './winner.js';
@@ -139,7 +149,8 @@ function getRoundPlayers(db: Database.Database, round: number, openedAt: string)
   const rows = db
     .prepare(
       `SELECT COALESCE(pl.name, '') AS name, COALESCE(pl.email, '') AS email,
-              pk.team AS team, pk.outcome AS outcome, pk.status AS pickStatus
+              pk.team AS team, pk.outcome AS outcome, pk.status AS pickStatus,
+              pk.auto_pick AS autoPick
        FROM profile p
        JOIN player pl ON pl.id = p.player_id
        LEFT JOIN pick pk ON pk.profile_id = p.id AND pk.round = ?
@@ -152,11 +163,14 @@ function getRoundPlayers(db: Database.Database, round: number, openedAt: string)
     team: string | null;
     outcome: string | null;
     pickStatus: string | null;
+    autoPick: number | null;
   }>;
   return rows.map((r) => ({
     name: r.name !== '' ? r.name : r.email,
     ...(r.team !== null ? { team: r.team } : {}),
     ...(r.outcome !== null ? { outcome: r.outcome } : {}),
+    // Feature AUTOPICK (D9): marcatore storico del pick auto-assegnato.
+    ...(r.autoPick === 1 ? { autoPick: true } : {}),
     eliminated: r.pickStatus === 'wrong' || r.pickStatus === null
   }));
 }
@@ -187,6 +201,12 @@ export interface RoundCloseResult {
   status: 'closed';
   /** Profili eliminati per pick mancante in questa chiusura. */
   eliminatedMissing: number[];
+  /**
+   * Profili che hanno ricevuto un PICK AUTO-ASSEGNATO in questa chiusura
+   * (feature AUTOPICK: solo con deadline reale e autopick attivo). Vuoto se
+   * l'auto-pick è disattivato o la deadline è NULL.
+   */
+  autoAssigned: number[];
   /** true se chiusura forzata (RF-29, con reason auditato). */
   forced: boolean;
   reason?: string;
@@ -467,13 +487,20 @@ export async function openRound(ctx: GameContext, round: number): Promise<RoundO
  * `reason` (RF-29: audit obbligatorio); la semantica è IDENTICA alla chiusura
  * a deadline — non esiste "chiudi senza eliminare". Idempotente su round già
  * `closed` (ri-consolida senza effetti: gli eliminati restano tali).
+ *
+ * Feature AUTOPICK (D3/D4/D5): con `WIN_ONLY && AUTOPICK_ON_MISSING` e
+ * deadline REALE (`rs.deadline !== null`), al posto dell'eliminazione il
+ * sistema assegna a ogni mancante la prima squadra disponibile per short_name
+ * (`pick_auto_assigned`, `auto_pick=1`, outcome 'win'). Con deadline NULL
+ * (`close_safety`, RF-30) o autopick disattivato, i mancanti restano eliminati
+ * `missing_pick` come oggi.
  */
 export async function closeRound(
   ctx: GameContext,
   round: number,
   opts: { force?: boolean; reason?: string } = {}
 ): Promise<RoundCloseResult> {
-  const { db, now } = ctx;
+  const { db, now, config, dataProvider } = ctx;
 
   // ADR-016: guardia fatal all'inizio (copre `round:close` manuale, che scrive
   // ed elimina SENZA passare dallo scheduler).
@@ -493,7 +520,33 @@ export async function closeRound(
 
   const { tt, tc } = turnFor(db, round);
 
-  // Consolidamento: profili attivi SENZA pick per questo round → missing_pick.
+  // Feature AUTOPICK (D3/D5): l'auto-assign scatta SOLO se il gating è attivo
+  // (WIN_ONLY && AUTOPICK_ON_MISSING) E la chiusura ha una deadline REALE
+  // (`rs.deadline !== null`); la chiusura di sicurezza (`close_safety`,
+  // deadline NULL, RF-30) continua a eliminare i mancanti come oggi. I dati
+  // necessari all'auto-pick (partite, squadre, totali round, short_name) sono
+  // letti UNA VOLTA qui — non per profilo — per evitare N round-trip (stesso
+  // stile del fix review 2026-08-23).
+  const autopickEnabled = config.WIN_ONLY && config.AUTOPICK_ON_MISSING;
+  let autopickData:
+    | { matches: Match[]; teams: string[]; totalRounds: number; shortNames: Map<string, string> }
+    | undefined;
+  if (autopickEnabled && rs.deadline !== null) {
+    const [matches, teams, totalRounds, teamRows] = await Promise.all([
+      dataProvider.getMatchesForRound(round),
+      dataProvider.getTeams(),
+      dataProvider.getTotalRounds(),
+      dataProvider.getTeamsOrderedByShortName()
+    ]);
+    autopickData = {
+      matches,
+      teams,
+      totalRounds,
+      shortNames: new Map(teamRows.map((t) => [t.name, t.shortName]))
+    };
+  }
+
+  // Consolidamento: profili attivi SENZA pick per questo round.
   const missing = db
     .prepare(
       `SELECT p.id, COALESCE(pl.email, '') AS email, COALESCE(pl.name, '') AS playerName
@@ -506,30 +559,76 @@ export async function closeRound(
     .all(round) as unknown as ActiveProfile[];
 
   const eliminatedMissing: number[] = [];
+  const autoAssigned: number[] = [];
+  const assignedTeams = new Map<number, string>();
   for (const profile of missing) {
-    eliminate(db, profile.id, 'missing_pick', now);
-    eliminatedMissing.push(profile.id);
+    // Feature AUTOPICK (D4): inserimento DIRETTO (bypassa `validatePick`, che
+    // a chiusura rifiuterebbe con after_acceptance/round_not_open), con
+    // outcome 'win' e auto_pick=1. Fallback (autopick disattivato, deadline
+    // NULL o nessuna squadra disponibile, D6): eliminazione missing_pick.
+    const team =
+      autopickData === undefined
+        ? null
+        : getFirstAvailableTeamByShortName(
+            db,
+            profile.id,
+            round,
+            autopickData.totalRounds,
+            autopickData.matches,
+            autopickData.teams,
+            autopickData.shortNames
+          );
+    if (team !== null) {
+      insertPendingPick(db, profile.id, round, team, 'win', now.toISOString(), 1);
+      autoAssigned.push(profile.id);
+      assignedTeams.set(profile.id, team);
+    } else {
+      if (autopickEnabled && rs.deadline !== null) {
+        // D6 (caso difensivo): nessuna squadra disponibile → resta missing_pick
+        // con warn log in inglese (mai assegnare una squadra non in giornata).
+        ctx.logger?.warn(
+          { profileId: profile.id, round },
+          'round:close: auto-pick skipped (no available team) — profile eliminated as missing_pick'
+        );
+      }
+      eliminate(db, profile.id, 'missing_pick', now);
+      eliminatedMissing.push(profile.id);
+    }
   }
   // ADR-011: esito `missing` + conteggio aggregato dei superstiti
   // ("Il torneo continua con N giocatori in gara", convenzione 10) — fix
   // review 2026-08-23: il conteggio è calcolato UNA volta DOPO tutte le
-  // eliminazioni del round, così OGNI eliminato riceve lo STESSO valore
+  // eliminazioni del round, così OGNI destinatario riceve lo STESSO valore
   // (mai numeri divergenti tra destinatari della stessa chiusura).
   const inGame = countInGame(db);
-  // LOW-1 (best-effort): un fallimento SMTP/LLM sulla notifica di
-  // eliminazione viene loggato (warn pino, inglese) e NON interrompe il
-  // loop: la chiusura e il successivo check vincitore (`settleWinnerIfNeeded`)
-  // devono girare comunque (stesso pattern di riepilogo e vincitori).
+  // LOW-1 (best-effort): un fallimento SMTP/LLM sulla notifica viene loggato
+  // (warn pino, inglese) e NON interrompe il loop: la chiusura e il successivo
+  // check vincitore (`settleWinnerIfNeeded`) devono girare comunque (stesso
+  // pattern di riepilogo e vincitori).
   for (const profile of missing) {
+    const team = assignedTeams.get(profile.id);
     try {
-      await notify(ctx, profile.email, {
-        type: 'pick_missing_elimination',
-        playerName: profile.playerName,
-        round: tt,
-        championshipRound: tc,
-        playerResult: 'missing',
-        inGameCount: inGame
-      });
+      if (team !== undefined) {
+        // Feature AUTOPICK (D8): conferma A POSTERIORI, senza sezione
+        // deadline/countdown (post-deadline): il renderer NON la aggiunge a
+        // PICK_EMAIL_TYPES.
+        await notify(ctx, profile.email, {
+          type: 'pick_auto_assigned',
+          playerName: profile.playerName,
+          round: tt,
+          championshipRound: tc,
+          team
+        });
+      } else {
+        await notify(ctx, profile.email, {
+          type: 'pick_missing_elimination',
+          playerName: profile.playerName,
+          round: tt,
+          championshipRound: tc,
+          playerResult: 'missing',
+          inGameCount: inGame
+        });
+      }
     } catch (error) {
       ctx.logger?.warn(
         {
@@ -563,6 +662,7 @@ export async function closeRound(
     tc,
     status: 'closed',
     eliminatedMissing,
+    autoAssigned,
     forced: opts.force === true,
     reason: opts.reason
   };

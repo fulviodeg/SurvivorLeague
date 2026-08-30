@@ -116,6 +116,22 @@ round — the **Turno del Torneo (TT)**.
   `tournament:start`**: set `WIN_ONLY` **before** `tournament:start` and do not
   change it mid-tournament — a change while the tournament is open aborts the
   process with a fatal error (see §6.8).
+- **Auto-pick on a missing pick (`AUTOPICK_ON_MISSING`, default `false`).**
+  Optional, **active only in `win_only`**. When `true` (`AUTOPICK_ON_MISSING=true`
+  with `WIN_ONLY=true`), at the **close** of a round with a **real deadline**
+  (`round_state.deadline !== null`), every profile still in the game that sent
+  no pick is **not eliminated**: the system assigns it the **first available
+  team in alphabetical order by generic name** (`shortName`, e.g. "Inter" —
+  stored in the `team` table at import), excluding the teams burned in the
+  current girone and the teams not playing in that round. The auto-assigned
+  pick (`pick.auto_pick=1`, `outcome='win'`) is then scored normally: correct
+  → the profile stays; wrong → elimination. The player receives the
+  confirmation **`pick_auto_assigned`** at closing (no deadline section). A
+  **safety closure (deadline NULL)** never auto-assigns: the missing players
+  are eliminated `missing_pick` as usual. If no team is available (defensive
+  case), the profile is eliminated `missing_pick` with a warning log. The flag
+  is **fixed in the database at `tournament:start`** (same fatal guard as
+  `WIN_ONLY`, see §6.8).
 - **Outcome of a Pick.** When the match's result becomes available, the Pick
   is evaluated. Correct → the profile **stays in the game**. Wrong → the
   profile is **eliminated**.
@@ -218,6 +234,7 @@ confirmation flow itself.
 | Round opening (`pick_instructions`) | **Active participants** (profiles in the game), each with their available teams, the deadline and the response format. At the opening of the **TT 1**, also the **active subscribers without a profile**. |
 | Pick confirmation (`pick_confirmed`) / rejection (`pick_rejected`) | The sender, with the reason of a rejection. |
 | Round closing — elimination for missing Pick (`pick_missing_elimination`) | Each eliminated profile, at `round:close`. |
+| Round closing — auto-pick assigned (`pick_auto_assigned`) | Each profile that received an **auto-assigned pick** at `round:close` (`AUTOPICK_ON_MISSING=true` with a real deadline): confirmation *after the fact*, no deadline section. |
 | Accounting results (`round_result_correct` / `round_result_wrong`) | Each evaluated profile, at `round:score`. `wrong` is the elimination notice. |
 | Round-closing summary (`round_closed_survived`) | **Survivors only**, sent exactly once when the round reaches the accounted state. Eliminated profiles never receive it. Includes the **players list** of the round (ADR-015). |
 | Postponement notice (`pick_postponed`) | Profiles whose Pick entered Freeze. |
@@ -295,7 +312,7 @@ the whole round to conclude.
 ### 3.5 Synthetic test data
 
 For UAT sessions, a **synthetic season** can be generated instead of the real
-one: `data:seed-synthetic` invents a coherent Serie B calendar with
+one: `data:seed-synthetic` invents a coherent Serie A 2026/27 calendar with
 **pre-seeded scores** and loads it into the same `match` table (options and
 guards in the CLI reference; usage and timelines in
 `docs/uat/guida-test-mode.md`). Because the scores are already present,
@@ -413,12 +430,12 @@ payload includes `"testMode": true`, and every log line carries
 | Outbound emails | Sent as-is | The `[TEST MODE] …` banner is prepended to every sent email (added at sending time; LLM-generated texts unchanged). |
 | CLI output | Normal | `TEST MODE` first line; `testMode` field in every JSON output. |
 | Logs (pino) | Normal | `"testMode": true` in every line. |
-| Pick interpretation | Real team roster (Serie A) | Synthetic Serie B roster, with the LLM told it is a synthetic championship. |
+| Pick interpretation | Real team roster (Serie A) | Synthetic Serie A 2026/27 roster, with the LLM told it is a synthetic championship. |
 | Clock / reception timestamps | Real | Shifted back by `TEST_OFFSET_DAYS` days **only if > 0** (2025 replay); with `0` everything stays real. |
 | Data refresh (import/refresh, scheduler) | Always executed | **Skipped by default** (`TEST_REFRESH_ALLOWED=false`); with `=true` executed with a consent WARN per operation. |
 
 **What it is for.** An end-to-end UAT with real players on a **synthetic**
-Serie B calendar compressible into 1–2 hours instead of a week; real clock and
+Serie A 2026/27 calendar compressible into 1–2 hours instead of a week; real clock and
 real email timestamps, so the anti-fraud controls run on authentic evidence;
 protection of the synthetic calendar from the real data flow; and, optionally,
 the **replay of historical data** (season 2025) shifting clock and timestamps
@@ -512,8 +529,8 @@ Parameters: `--json`. Lines: `R<round> <ISO date> <home> <score|–> <away> [da 
 `--round` (required), `--json`.
 
 **`data:seed-synthetic`** — TEST MODE tool: generates and loads the synthetic
-Serie B calendar with pre-seeded scores. Parameters: `--teams` (2–8, default
-8), `--rounds` (default 7), `--spacing-min` (default 90), `--first-kickoff-offset-min`
+Serie A 2026/27 calendar with pre-seeded scores. Parameters: `--teams` (2–20,
+default 8), `--rounds` (default 7), `--spacing-min` (default 90), `--first-kickoff-offset-min`
 (default 120), `--seed` (default 42), `--force`, `--clear` (requires
 `--force`; refused mid-tournament), `--json`. Guards against overwriting and
 mixed calendars (see CLI reference §4).
@@ -592,11 +609,11 @@ unsubscription, picks, replies, mark-as-read on success. Parameters:
 
 ### 5.3 Complete command reference
 
-The complete catalog of all 34 commands (including the diagnostic tools
-`rules:burned-teams` / `rules:available-teams` / `rules:check-half`,
-`pick:validate` / `pick:register` / `pick:list`, `elimination:check` /
-`elimination:list`, `llm:parse` / `llm:classify` / `llm:generate`,
-`channel:email:send`, `simulate:full` / `simulate:round`) is in
+The complete catalog of all 40 commands (including the diagnostic tools
+`rules:burned-teams` / `rules:available-teams` / `rules:check-half` /
+`rules:teams`, `pick:validate` / `pick:register` / `pick:list`,
+`elimination:check` / `elimination:list`, `llm:parse` / `llm:classify` /
+`llm:generate`, `channel:email:send`, `simulate:full` / `simulate:round`) is in
 `docs/cli-reference.md`, with man-page detail for every parameter.
 
 ---
@@ -679,8 +696,12 @@ For each championship round in the tournament window, the cycle is:
    are silently logged.
 3. **Close** (`round:close` / scheduler at the deadline). The pick window
    closes; every active profile without a valid Pick is eliminated
-   (`missing_pick`) and notified. A forced closure (`--force --reason`)
-   consolidates identically at any moment.
+   (`missing_pick`) and notified — **unless `AUTOPICK_ON_MISSING=true` with a
+   real deadline**: in that case each missing profile receives the first
+   available team by `shortName` automatically and is notified with
+   `pick_auto_assigned` (no elimination). A forced closure (`--force --reason`)
+   consolidates identically at any moment; a safety closure (deadline NULL)
+   always eliminates `missing_pick`.
 4. **Account** (`round:score` / scheduler). Each pending Pick whose match has
    concluded is evaluated: `correct` (stay) or `wrong` (eliminated,
    notified). Picks on matches postponed beyond the TC window go to
@@ -775,14 +796,15 @@ commissioner may face:
   actual kickoff (see §8.1).
 - **Postponements.** Handled by the Freeze mechanism (§8.3), no intervention
   required.
-- **Mode change mid-tournament (fatal).** `WIN_ONLY` is fixed in the database
-  at `tournament:start`. If `.env` changes `WIN_ONLY` while a tournament is
-  open, the next write path (`scheduler:tick`, `channel:email:process`,
-  `round:open`/`close`/`score`, `pick:register`) **aborts the process** with a
-  fatal error naming the persisted vs configured value, before any write or
-  email is sent (the database stays unchanged). To recover: restore `WIN_ONLY`
-  to the persisted value, or close the tournament and start a new one
-  (`tournament:start` re-writes the mode from the new `.env`).
+- **Mode change mid-tournament (fatal).** `WIN_ONLY` and `AUTOPICK_ON_MISSING`
+  are fixed in the database at `tournament:start`. If `.env` changes either of
+  them while a tournament is open, the next write path (`scheduler:tick`,
+  `channel:email:process`, `round:open`/`close`/`score`, `pick:register`)
+  **aborts the process** with a fatal error naming the persisted vs configured
+  value(s), before any write or email is sent (the database stays unchanged).
+  To recover: restore the changed variable to the persisted value, or close
+  the tournament and start a new one (`tournament:start` re-writes the mode
+  from the new `.env`).
 
 ---
 
@@ -808,6 +830,7 @@ here match `.env.example`.
 | `MATCH_DURATION_MIN` | minutes | `125` | The estimated duration of a match, used to compute the expected end of each match (`match_date + MATCH_DURATION_MIN`) and therefore the TC close. |
 | `MAX_PROFILES_PER_PLAYER` | number | `1` | Maximum profiles per player. POC: 1 — do not change. |
 | `WIN_ONLY` | `true` / `false` | `true` | **Game mode `win_only` (default):** `true` = the player picks only the team that will win its match (the system interprets the pick as `outcome = win`; a draw or loss eliminates). `false` = classic mode (explicit win/draw/lose). The mode is **fixed in the database at `tournament:start`** and a fatal guard aborts the process if `WIN_ONLY` changes while a tournament is open: set it **before** `tournament:start` and do not change it mid-tournament. |
+| `AUTOPICK_ON_MISSING` | `true` / `false` | `false` | **Auto-pick on a missing pick** (active **only** in `win_only`, i.e. with `WIN_ONLY=true`; otherwise ignored with no error). `true` = at the close of a round with a **real deadline** (`round_state.deadline !== null`), each profile in the game without a pick receives the **first available team by `shortName`** (alphabetical order, `team` table) — no elimination, `pick_auto_assigned` notification; the pick is then scored normally. A safety closure (deadline NULL) always eliminates `missing_pick`. Also **fixed in the database at `tournament:start`** and covered by the same fatal guard as `WIN_ONLY`: set it before `tournament:start`, do not change it mid-tournament. |
 | `ENTRY_FEE_EUR` | EUR | `5` | Entry fee — **placeholder, not used in the POC**. |
 | `WINNER_SHARE_PCT` | percent (0–100) | `85` | Winner share of the prize pool — **placeholder, not used in the POC**. |
 

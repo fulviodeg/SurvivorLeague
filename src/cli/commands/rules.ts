@@ -165,3 +165,38 @@ export const rulesCheckHalfCommand: CommandModule<object, HalfArgs> = {
     }
   }
 };
+
+/**
+ * `rules:teams` (feature AUTOPICK, D2): elenco delle squadre dalla tabella
+ * `team`, ORDINATO per `short_name` (coppia generico + canonico). NESSUNA
+ * chiamata API live: legge SOLO il DB corrente. Serve al commissioner per
+ * verificare l'ordinamento dell'auto-pick e come verifica del primo
+ * `data:import` (i `shortName` reali dell'API devono coincidere con le
+ * aspettative). Pattern CLI identico a `rules:burned-teams` (getConfig →
+ * createConnection → migrate → DbSeasonDataProvider).
+ */
+export const rulesTeamsCommand: CommandModule<object, JsonArg> = {
+  command: 'rules:teams',
+  describe: 'Squadre dalla tabella team ordinate per short_name (generico + canonico, feature AUTOPICK)',
+  builder: (yargs) => jsonOption(yargs),
+  handler: async (argv) => {
+    const config = getConfig();
+    const db = createConnection(config.DB_PATH);
+    try {
+      migrate(db);
+      const teams = await new DbSeasonDataProvider(db).getTeamsOrderedByShortName();
+      if (argv.json) {
+        console.log(jsonWithTestMode(config, teams));
+      } else {
+        printTestModeBanner(config);
+        if (teams.length === 0) {
+          console.log('Tabella team vuota: esegui data:import o data:seed-synthetic per popolarla.');
+        } else {
+          for (const t of teams) console.log(`${t.shortName} (${t.name})`);
+        }
+      }
+    } finally {
+      db.close();
+    }
+  }
+};

@@ -111,6 +111,7 @@ Le decisioni significative e difficili da invertire sono registrate, in forma co
 | **ADR-006** | Tutti i componenti gestibili da CLI | La CLI è il contratto operativo del sistema (sez. 5.4, sez. 8); orchestrabile da un agente in futuro |
 | **ADR-008** | Aggancio asincrono del torneo a un TC arbitrario e chiusure garantite | `tournament_state.start_round` deriva la mappatura TT↔TC (rf-20/25); guard anti-frode al kickoff effettivo (RF-31); chiusura di sicurezza (RF-30); seam eligibilità (`checkEligibility`) (sez. 5.1, 6.2-6.4) |
 | **ADR-009** | Iscrizione a livello di piattaforma con storage separato e auto-join al TT1 | Nuovo componente **Platform Registry** su DB separato (sez. 5); Message Router smista sull'intento LLM (sez. 5.3, 6.2); auto-join al TT1 (RF-P5); matrice notifiche con filtro account `active` (sez. 6.3-6.4); nessuna finestra di iscrizione (sez. 5.4) |
+| **ADR-017** | Auto-pick al mancato invio (`AUTOPICK_ON_MISSING`) | Alla **chiusura** di un round con **deadline reale** (`rs.deadline !== null`) e `WIN_ONLY=true`, il Round Manager assegna ai mancanti la prima squadra disponibile in ordine alfabetico per `shortName` (nuova tabella `team`); colonne additive `tournament_state.autopick_on_missing`/`pick.auto_pick`; nuova email `pick_auto_assigned`; comando `rules:teams` (sez. 5.1, 6.3, 7.1) |
 
 ---
 
@@ -178,9 +179,9 @@ Il nucleo deterministico (ADR-004). Contiene:
 
 | Modulo | Responsabilità |
 |--------|---------------|
-| **Round Manager** | Apre e chiude round, gestisce deadline, coordina l'invio delle email di pick, e implementa la **contabilizzazione incrementale** dei pick (§6.4; `round:score`, idempotente) |
-| **Pick Processor** | Valida un pick (squadra in giornata, già bruciata, esito valido, già inviato) e lo registra |
-| **Rules Engine** | Regole di gioco: squadre bruciate per girone, esiti validi, condizioni di vittoria (PRD §5) |
+| **Round Manager** | Apre e chiude round, gestisce deadline, coordina l'invio delle email di pick, e implementa la **contabilizzazione incrementale** dei pick (§6.4; `round:score`, idempotente). Con **`AUTOPICK_ON_MISSING`** (ADR-017), alla chiusura di un round con **deadline reale** (`round_state.deadline !== null`), assegna automaticamente ai profili in gara senza pick la prima squadra disponibile in ordine alfabetico per `shortName` (email `pick_auto_assigned`, flag `pick.auto_pick=1`) |
+| **Pick Processor** | Valida un pick (squadra in giornata, già bruciata, esito valido, già inviato) e lo registra; con l'auto-pick (ADR-017) il pick auto è inserito DIRETTAMENTE con `insertPendingPick(..., autoPick=1)` (bypassa la cascata `validatePick`, che a chiusura rifiuterebbe con `after_acceptance`/`round_not_open`) |
+| **Rules Engine** | Regole di gioco: squadre bruciate per girone, esiti validi, condizioni di vittoria (PRD §5); con l'auto-pick (ADR-017) espone `getFirstAvailableTeamByShortName` (prima squadra in giornata e non bruciata, ordinata per `shortName`) |
 | **Elimination Engine** | Determina quali profili sono eliminati (pick mancante, pick sbagliato) |
 | **Winner Engine** | Determina se il torneo è finito e chi ha vinto (casi 1, 2, 3 del PRD §4.6) |
 
@@ -300,7 +301,7 @@ flowchart TD
 
 ### 6.3 Apertura e chiusura round
 
-*In sviluppo: via CLI (`round:open`, `round:close [--force --reason]`). In produzione: automatico dallo Scheduler alla finestra del TC (deadline = inizio prima partita − anticipo, PRD §5.3). Il **primo TT si apre all'apertura del torneo** (RF-23) e all'avvio parte il broadcast `tournament_open` a **tutti gli iscritti attivi** della piattaforma (RF-P6, sostituisce l'invito a una lista di contatti). La registrazione del pick e la bruciatura della squadra avvengono **all'invio valido** (sez. 6.2, PRD §4.3): la chiusura **consolida** soltanto lo stato (elimina i profili senza pick, notifica `pick_missing_elimination` ai soli account `active`) e non registra nulla; la contabilizzazione è invocata separatamente (sez. 6.4). La chiusura può essere **forzata** dal commissioner (`round:close --force --reason <motivo>`, RF-29) o applicata in **sicurezza** allo scadere del TC se la deadline è NULL/non innescata (RF-30, log `safety_close`); l'istante di accettazione dei pick è `min(deadline registrata, kickoff effettivo)` (RF-31). Tutte le email portano la coppia **TT/TC** (RF-25) e sono filtrate sullo stato `active` dell'account al momento dell'invio (RF-P6).*
+*In sviluppo: via CLI (`round:open`, `round:close [--force --reason]`). In produzione: automatico dallo Scheduler alla finestra del TC (deadline = inizio prima partita − anticipo, PRD §5.3). Il **primo TT si apre all'apertura del torneo** (RF-23) e all'avvio parte il broadcast `tournament_open` a **tutti gli iscritti attivi** della piattaforma (RF-P6, sostituisce l'invito a una lista di contatti). La registrazione del pick e la bruciatura della squadra avvengono **all'invio valido** (sez. 6.2, PRD §4.3): la chiusura **consolida** soltanto lo stato (elimina i profili senza pick e notifica `pick_missing_elimination` ai soli account `active` — oppure, con `AUTOPICK_ON_MISSING` e deadline reale, assegna loro una squadra in automatico con `pick_auto_assigned`, ADR-017) e non registra nulla; la contabilizzazione è invocata separatamente (sez. 6.4). La chiusura può essere **forzata** dal commissioner (`round:close --force --reason <motivo>`, RF-29) o applicata in **sicurezza** allo scadere del TC se la deadline è NULL/non innescata (RF-30, log `safety_close`); l'istante di accettazione dei pick è `min(deadline registrata, kickoff effettivo)` (RF-31). Tutte le email portano la coppia **TT/TC** (RF-25) e sono filtrate sullo stato `active` dell'account al momento dell'invio (RF-P6).*
 
 ```mermaid
 flowchart TD
@@ -315,8 +316,12 @@ flowchart TD
 
     J["Trigger chiusura:<br/>deadline scaduta<br/>| round:close --force --reason<br/>| safety close (deadline NULL)"] --> K{Round Manager<br/>per ogni profilo attivo}
     K -->|Pick presente| L[Pick già registrato<br/>all'invio valido (6.2)]
-    K -->|Pick mancante| M[Elimina profilo + notifica<br/>pick_missing_elimination<br/>solo account active]
+    K -->|Pick mancante| M{AUTOPICK attivo<br/>e deadline REALE?}
+    M -->|sì| A[Auto-assign: prima squadra<br/>disponibile per shortName<br/>+ email pick_auto_assigned]
+    M -->|no| N[Elimina profilo + notifica<br/>pick_missing_elimination<br/>solo account active]
 ```
+
+**Auto-assign al mancato invio (ADR-017).** Con `WIN_ONLY=true` e `AUTOPICK_ON_MISSING=true`, alla chiusura di un round con **deadline reale** (`round_state.deadline !== null`) i profili in gara senza pick non vengono eliminati: il Round Manager assegna loro la **prima squadra disponibile** in ordine alfabetico per `shortName` (nome generico dalla tabella `team`, es. "Inter"), escludendo le bruciate nel girone e le non in giornata. Il pick auto (`pick.auto_pick=1`, `outcome='win'`) segue poi il normale scoring di `round:score` (corretto → resta, sbagliato → eliminazione). La conferma è la mail **`pick_auto_assigned`** (a posteriori, senza sezione deadline). Con `AUTOPICK_ON_MISSING=false` o con **deadline NULL** (chiusura di sicurezza, RF-30) i mancanti restano eliminati `missing_pick` come oggi; se non resta alcuna squadra disponibile (caso difensivo) si elimina `missing_pick` con warn log.
 
 **Broadcast di apertura torneo (`tournament:start`, RF-P6).** Dopo le scritture atomiche di avvio, il comando legge `activeEmails()` dal **Platform Registry** e invia `tournament_open` a tutti gli iscritti attivi (canale+generatore iniettati; no-op se assenti). Un account `unsubscribed`/`pending_unsubscribe` non riceve alcuna email.
 
@@ -431,6 +436,8 @@ Il sistema **non dipende da un fornitore dati specifico**: dialoga con l'interfa
 | **`DbSeasonDataProvider`** | Unica implementazione nella POC: il Game Engine legge solo dal DB (tabella `match`). I comandi `data:import` / `data:refresh` chiamano l'API **football-data.org** (header `X-Auth-Token`, token in env `FOOTBALL_DATA_TOKEN`, ADR-005) e fanno **upsert** nella tabella `match` |
 | **`ApiProvider`** | Futura, per lettura diretta dei dati live (produzione 2026/27) |
 
+**Nomi generici `shortName` e tabella `team` (ADR-017).** Il client API estrae anche il nome generico di ogni squadra (`homeTeam.shortName`/`awayTeam.shortName`, es. "Inter") e l'import lo salva nella **tabella additiva `team (name TEXT PRIMARY KEY, short_name TEXT NOT NULL)`** (upsert su `name`; `data:seed-synthetic` usa la mappatura sintetica `SYNTHETIC_TEAM_SHORT_NAMES`). Il `name` resta il canonico dell'API (usato ovunque nel gioco); lo `shortName` serve SOLO all'ordinamento alfabetico dell'auto-pick (ADR-017) e al comando **`rules:teams`**, che legge la tabella `team` dal DB e la mostra ordinata per `short_name` (coppia generico + canonico, senza chiamate API live). Il provider espone `getTeamsOrderedByShortName()` (tabella `team` vuota → `[]`: il motore degrada all'ordine canonico).
+
 I dettagli operativi di football-data.org (endpoint, rate limit, piani, mappatura degli stati `FINISHED`/`POSTPONED`/`SUSPENDED`, documentazione di riferimento) sono nell'LLD §6.1, in modo che la POC non duplichi specifiche del fornitore.
 
 ### 7.2 Canale email
@@ -529,5 +536,5 @@ Allineate al PRD §13: le decisioni già acquisite non compaiono più come apert
 |-----------|-------|
 | [PRD](POC_PRD.md) v0.6.0 | Requisiti di prodotto: regole, RF, CL, CS, metriche |
 | [LLD](POC_LLD.md) | Design di dettaglio: modello dati, interfacce TS, CLI, configurazione, test |
-| [ADR](../decisions/architecture-decisions.md) | Decisioni architetturali registrate (ADR-001…009) |
+| [ADR](../decisions/architecture-decisions.md) | Decisioni architetturali registrate (ADR-001…017) |
 | `docs/reviews/2026-08-11/architecture-review-2026-08-11.md` | Revisione architetturale indipendente (fix in §16, domande PO §15) |

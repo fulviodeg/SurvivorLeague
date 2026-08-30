@@ -163,6 +163,54 @@ describe('assertModeConsistent (ADR-016)', () => {
   });
 });
 
+describe('assertModeConsistent — autopick_on_missing (feature AUTOPICK)', () => {
+  /** Contesto con win_only coincidente e autopick_on_missing persistito/configurato espliciti. */
+  function makeAutopickCtx(persistedAutopick: number, configuredAutopick: boolean): GameContext {
+    const db = new Database(':memory:');
+    migrate(db);
+    loadBaseSeason(db);
+    db.prepare(
+      'INSERT INTO tournament_state (id, season_started, start_round, winner_notified, win_only, autopick_on_missing) VALUES (1, 1, 1, 0, 1, ?)'
+    ).run(persistedAutopick);
+    return {
+      db,
+      dataProvider: new DbSeasonDataProvider(db),
+      config: parseConfig({
+        IMAP_USER: 'u',
+        IMAP_PASS: 'p',
+        SMTP_USER: 'u',
+        SMTP_PASS: 'p',
+        LLM_API_KEY: 'k',
+        FOOTBALL_DATA_TOKEN: 't',
+        WIN_ONLY: 'true',
+        AUTOPICK_ON_MISSING: configuredAutopick ? 'true' : 'false'
+      }),
+      now: NOW
+    };
+  }
+
+  it('mismatch solo su autopick_on_missing → throw che nomina AUTOPICK_ON_MISSING', () => {
+    const ctx = makeAutopickCtx(0, true); // persistita false, configurata true
+    expect(() => assertModeConsistent(ctx)).toThrowError(/AUTOPICK_ON_MISSING/);
+    expect(() => assertModeConsistent(ctx)).toThrowError(/persistita false/);
+    expect(() => assertModeConsistent(ctx)).toThrowError(/configurata true/);
+  });
+
+  it('autopick_on_missing coincidente → no-op (entrambi 0 o entrambi 1)', () => {
+    expect(() => assertModeConsistent(makeAutopickCtx(0, false))).not.toThrow();
+    expect(() => assertModeConsistent(makeAutopickCtx(1, true))).not.toThrow();
+  });
+
+  it('con logger presente emette fatal strutturato con persistedAutopick/configuredAutopick', () => {
+    const ctx = makeAutopickCtx(0, true);
+    const logger = fakeLogger();
+    ctx.logger = logger as unknown as GameContext['logger'];
+    expect(() => assertModeConsistent(ctx)).toThrowError(/AUTOPICK_ON_MISSING/);
+    expect(logger.calls).toHaveLength(1);
+    expect(logger.calls[0]?.obj).toMatchObject({ persistedAutopick: false, configuredAutopick: true });
+  });
+});
+
 describe('hook della guardia in openRound/closeRound/scoreRound (ADR-016)', () => {
   const [IM] = FIXTURE_TEAMS;
 

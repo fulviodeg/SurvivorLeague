@@ -95,6 +95,22 @@ describe('FootballDataClient — mappatura status API (2.1-3/2.1-4)', () => {
     });
   });
 
+  it('estrae shortName in homeTeamShort/awayTeamShort (feature AUTOPICK, D1)', async () => {
+    const fetchImpl: typeof fetch = () => Promise.resolve(json200([apiMatch({ matchday: 1 })]));
+    const { client } = makeClient(fetchImpl);
+
+    const [m] = await client.getMatches();
+    expect(m).toMatchObject({ homeTeamShort: 'Inter', awayTeamShort: 'Milan' });
+  });
+
+  it('shortName assente → FootballDataError (validato come name)', async () => {
+    const fetchImpl: typeof fetch = () =>
+      Promise.resolve(json200([apiMatch({ homeTeam: { name: 'FC Internazionale Milano' } })]));
+    const { client } = makeClient(fetchImpl);
+
+    await expect(client.getMatches()).rejects.toThrowError(/shortName/);
+  });
+
   it('converte utcDate in Date (canonica, suffisso Z)', async () => {
     const fetchImpl: typeof fetch = () =>
       Promise.resolve(json200([apiMatch({ utcDate: '2025-09-12T16:00:00Z' })]));

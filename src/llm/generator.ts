@@ -48,6 +48,7 @@ export const EMAIL_TYPES = [
   'pick_confirmed', // conferma di registrazione pick; per l'auto-join è l'UNICO messaggio (RF-P5, D5)
   'pick_rejected', // rifiuto pick con motivo
   'pick_missing_elimination', // eliminazione per pick mancante
+  'pick_auto_assigned', // auto-pick assegnato a chiusura (feature AUTOPICK): conferma a posteriori
   'round_result_correct', // esito pick corretto
   'round_result_wrong', // esito pick sbagliato (eliminazione)
   'pick_postponed', // notifica passaggio in Freeze (rinvio)
@@ -95,6 +96,11 @@ export interface EmailPlayerResult {
   outcome?: string;
   /** true = eliminato IN QUESTO round; false = ancora in gara. */
   eliminated: boolean;
+  /**
+   * Feature AUTOPICK (D9): true = pick assegnato in automatico alla chiusura
+   * (il renderer aggiunge il marcatore "🤖 Auto-assegnato" alla riga).
+   */
+  autoPick?: boolean;
 }
 
 /** Storico per-round del torneo per `tournament_closed` (ADR-015 email v4). */
@@ -206,6 +212,7 @@ const SUBJECT_LABELS: Record<EmailType, string> = {
   pick_confirmed: 'Pick Registrato',
   pick_rejected: 'Pick Rifiutato',
   pick_missing_elimination: 'Esito Round',
+  pick_auto_assigned: 'Pick Auto Assegnato',
   round_result_correct: 'Esito Round',
   round_result_wrong: 'Esito Round',
   pick_postponed: 'Partita Rinviata',

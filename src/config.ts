@@ -141,6 +141,21 @@ const configSchema = z.object({
   // PRIMA di `tournament:start` e non modificarla a torneo in corso. Non è una
   // credenziale, nessun impatto su env-examples.test.ts.
   WIN_ONLY: boolParam('true'),
+  // Auto-pick al mancato invio entro la deadline (feature AUTOPICK, terzo
+  // incremento di win_only): true = alla CHIUSURA di un round con deadline
+  // reale (`round_state.deadline !== null`), per ogni profilo in gara senza
+  // pick il motore assegna in automatico la prima squadra disponibile in
+  // ordine alfabetico per `short_name` (tabella `team`), escludendo bruciate e
+  // non in giornata, con `pick.auto_pick=1` e `outcome='win'`; il pick segue
+  // poi il normale scoring (corretto → resta, sbagliato → eliminazione).
+  // Attiva SOLO con WIN_ONLY=true (gating silenzioso: con WIN_ONLY=false è
+  // ignorata, nessun errore). FISSATA nel DB a `tournament:start`
+  // (tournament_state.autopick_on_missing) e coperta dalla stessa guardia
+  // fatal di WIN_ONLY (src/game/mode.ts): impostarla PRIMA di
+  // `tournament:start` e non modificarla a torneo in corso. Default false =
+  // comportamento invariato (i mancanti restano eliminati `missing_pick`).
+  // Non è una credenziale, nessun impatto su env-examples.test.ts.
+  AUTOPICK_ON_MISSING: boolParam('false'),
 
   // --- §4.2 Parametri infrastruttura ---
   // Fuso orario di sistema (stringa IANA) per la comunicazione verso

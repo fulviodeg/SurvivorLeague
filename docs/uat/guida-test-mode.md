@@ -42,7 +42,7 @@ email aperta e pronte a operare secondo le esigenze dei test. In particolare:
   (30–45 minuti negli esempi di questa guida);
 - all'occorrenza, sono pronte a **inviare il pick in ritardo** su richiesta
   dell'operatore (per dimostrare i controlli anti-frode, vedi §6);
-- usano squadre del **campionato sintetico** (rosa di Serie A 2025/26, calendario
+- usano squadre del **campionato sintetico** (rosa di Serie A 2026/27, calendario
   fittizio di test) elencate nel §1, non la stagione reale importata.
 
 Questa assunzione è ripetuta nei singoli esempi (§5) perché tutto il tempo
@@ -65,7 +65,7 @@ comandi a schermo, i log di sistema e i dati in formato `--json`.
 A cosa serve:
 
 - permettere una **UAT end-to-end con giocatori veri** su un calendario
-  **sintetico** (inventato ma coerente, rosa di Serie A 2025/26) con giornate
+  **sintetico** (inventato ma coerente, rosa di Serie A 2026/27) con giornate
   comprimibili in 1–2 ore invece che in una settimana reale;
 - lasciare l'orologio e i timestamp delle email **reali**, così il controllo
   anti-frode (che si basa sull'orario vero di arrivo delle email) viene
@@ -116,7 +116,7 @@ i seguenti componenti cambiano comportamento rispetto alla produzione:
 | **CLI — output testuale** | Output normale | Ogni comando stampa una riga `TEST MODE` in cima all'output |
 | **CLI — output `--json`** | JSON tal quale | Ogni output `--json` include il campo `"testMode": true` |
 | **Log (pino)** | Righe JSON normali | Ogni riga di log include il campo `"testMode": true` |
-| **Parser LLM** | Usa la risorsa `team-aliases.md` (Serie A 2025/26) | Usa la risorsa sintetica `team-aliases-synthetic.md` (rosa di Serie A 2025/26, calendario sintetico) e riceve nel prompt il contesto "campionato sintetico" (per non confondere l'LLM reale) |
+| **Parser LLM** | Usa la risorsa `team-aliases.md` (Serie A 2025/26) | Usa la risorsa sintetica `team-aliases-synthetic.md` (rosa di Serie A 2026/27, calendario sintetico) e riceve nel prompt il contesto "campionato sintetico" (per non confondere l'LLM reale) |
 | **Orologio (clock)** | Ora reale | Spostato indietro di `TEST_OFFSET_DAYS` giorni **solo se** il valore è > 0 (per il replay 2025); con 0 resta reale |
 | **Timestamp di ricezione email** | `receivedAt` reale (internaldate IMAP) | Spostato indietro dello **stesso** `TEST_OFFSET_DAYS` **solo se** > 0 (replay); con 0 resta reale |
 | **Scheduler — refresh dati** | Aggiorna i risultati dall'API a ogni tick | Con `TEST_REFRESH_ALLOWED=false` (default) **salta** il refresh e lo segnala a log; con `=true` esegue ma emette un WARN di consenso a ogni operazione |
@@ -125,11 +125,13 @@ i seguenti componenti cambiano comportamento rispetto alla produzione:
 
 **Nota modalità `win_only` (ADR-016).** Con `WIN_ONLY=true` (modalità di DEFAULT) il giocatore sceglie SOLO la squadra che vincerà: la formula pick cambia — nel parser deterministico una **squadra nuda** ("Napoli") è un pick valido `{Napoli, win}` (niente esito esplicito richiesto), mentre "Napoli pareggia"/"Napoli perde" NON sono riconosciuti (→ chiarimento, perché pareggio/sconfitta = eliminazione). `win_only` è la modalità di default (in `.env.uat` è già `WIN_ONLY=true`): per tornare alla classica impostare `WIN_ONLY=false` PRIMA di `tournament:start` e non modificarla a torneo aperto (una variazione fa abortire il processo con un errore fatale).
 
+**Nota auto-pick al mancato invio (ADR-017).** La feature `AUTOPICK_ON_MISSING` (bool, default `false`, in `.env.uat` è già `false`) è una **funzionalità di sistema, non del test mode**: va attivata nel file `.env.uat` (`AUTOPICK_ON_MISSING=true`) **SOLO** se in UAT si vuole dimostrare l'auto-assign — e comunque solo con `WIN_ONLY=true`. Comportamento: alla **chiusura di un round con deadline reale** (`round_state.deadline !== null`), ogni profilo in gara senza pick riceve automaticamente la **prima squadra disponibile in ordine alfabetico per `short_name`** (nome generico dalla tabella `team`, es. "Inter"), con la conferma `pick_auto_assigned` (senza sezione deadline) al posto dell'eliminazione; il pick auto (`pick.auto_pick=1`, outcome `win`) viene poi contabilizzato normalmente (corretto → resta in gara; sbagliato → eliminazione). Anche `AUTOPICK_ON_MISSING` è **fissata a `tournament:start`** e coperta dalla stessa guardia fatal di `WIN_ONLY`: impostarla PRIMA dell'avvio e non modificarla a torneo aperto. Con deadline NULL (chiusura di sicurezza, RF-30) o con `AUTOPICK_ON_MISSING=false` i mancanti restano eliminati `missing_pick` come sempre. L'ordinamento dell'auto-pick si verifica con `rules:teams` (vedi §2.5).
+
 Le **squadre del calendario sintetico** (dalla risorsa alias sintetica, rosa di
-Serie A 2025/26) sono venti:
+Serie A 2026/27) sono venti:
 
 1. AC Milan — alias: `milan`, `rossoneri`, `diavolo`
-2. AC Pisa 1909 — alias: `pisa`, `nerazzurri toscani`
+2. AC Monza — alias: `monza`, `biancorossi`
 3. ACF Fiorentina — alias: `fiorentina`, `viola`, `gigliati`
 4. AS Roma — alias: `roma`, `giallorossi`, `capitolini`
 5. Atalanta BC — alias: `atalanta`, `la dea`, `orobici`
@@ -137,17 +139,17 @@ Serie A 2025/26) sono venti:
 7. Cagliari Calcio — alias: `cagliari`, `isolani`, `rossoblu sardi`
 8. Como 1907 — alias: `como`, `lariani`
 9. FC Internazionale Milano — alias: `inter`, `l'inter`, `nerazzurri`, `milano`
-10. Genoa CFC — alias: `genoa`, `grifone`, `rossoblu di genova`
-11. Hellas Verona FC — alias: `hellas`, `verona`, `gialloblu`, `hellas verona`
+10. Frosinone Calcio — alias: `frosinone`, `ciociari`, `canarini`
+11. Genoa CFC — alias: `genoa`, `grifone`, `rossoblu di genova`
 12. Juventus FC — alias: `juve`, `juventus`, `vecchia signora`, `bianconeri`
 13. Parma Calcio 1913 — alias: `parma`, `crociati`, `ducali`
 14. SS Lazio — alias: `lazio`, `biancocelesti`
 15. SSC Napoli — alias: `napoli`, `partenopei`, `azzurri`
 16. Torino FC — alias: `torino`, `granata`, `il toro`
-17. US Cremonese — alias: `cremonese`, `grigiorossi`
-18. US Lecce — alias: `lecce`, `salentini`, `giallorossi di lecce`
-19. US Sassuolo Calcio — alias: `sassuolo`, `neroverdi`
-20. Udinese Calcio — alias: `udinese`, `friulani`, `zebrette`
+17. US Lecce — alias: `lecce`, `salentini`, `giallorossi di lecce`
+18. US Sassuolo Calcio — alias: `sassuolo`, `neroverdi`
+19. Udinese Calcio — alias: `udinese`, `friulani`, `zebrette`
+20. Venezia FC — alias: `venezia`, `arancioneverdi`, `lagunari`
 
 I giocatori possono scrivere nella email il nome canonico oppure un alias:
 l'LLM lo riconduce al nome esatto della lista.
@@ -201,7 +203,7 @@ ENV_FILE=.env.uat npm run cli -- data:calendar --json
 Cosa devi vedere se il test mode è attivo:
 
 - nell'output **testuale**, la **prima riga** è `TEST MODE`, seguita dal
-  calendario sintetico (rosa di Serie A 2025/26, date future);
+  calendario sintetico (rosa di Serie A 2026/27, date future);
 - nell'output **`--json`**, il campo `"testMode": true` (es.
   `{"testMode":true,"result":[...]}`);
 - nei **log** (su stdout, una riga JSON per evento) il campo `"testMode": true`
@@ -311,6 +313,15 @@ ENV_FILE=.env.uat npm run cli -- data:calendar
 > che accetta l'opzione `--start-round <n>` (default `1`) per l'**aggancio
 > asincrono**: il torneo parte dal TC `n` invece che dal primo turno di
 > campionato (vedi §3.1 e l'esempio §5.4).
+>
+> **Auto-pick (ADR-017):** per dimostrarlo imposta `AUTOPICK_ON_MISSING=true`
+> nel `.env.uat` **PRIMA** di `tournament:start` (fissata nel DB all'avvio e
+> coperta dalla guardia fatal, come `WIN_ONLY`), e dopo il seed verifica
+> l'ordinamento alfabetico che userà l'auto-assign con:
+> `ENV_FILE=.env.uat npm run cli -- rules:teams` (output `<shortName> (<name>)`
+> per riga, es. `Inter (FC Internazionale Milano)`). Il seed popola la tabella
+> `team` con la mappatura sintetica `SYNTHETIC_TEAM_SHORT_NAMES`; se la tabella
+> è vuota il comando stampa `Tabella team vuota: esegui data:import o data:seed-synthetic per popolarla.`.
 
 **Operazioni per ogni giornata (round) — modalità commissioner:**
 
@@ -345,6 +356,8 @@ ENV_FILE=.env.uat npm run cli -- round:score --round <N>
 ENV_FILE=.env.uat npm run cli -- round:status --round <N>     # stato della giornata
 ENV_FILE=.env.uat npm run cli -- round:deadline --round <N>   # deadline, kickoff, istante di accettazione
 ENV_FILE=.env.uat npm run cli -- data:results --round <N>     # risultati (squadre e punteggi) della giornata
+ENV_FILE=.env.uat npm run cli -- rules:teams                  # squadre dalla tabella team ordinate per short_name
+                                                              # (verifica dell'ordinamento dell'auto-pick, ADR-017)
 ```
 
 **Conclusione e verifica finale:**
@@ -442,8 +455,11 @@ senza profilo** (amendment 2026-08-21: al round 1 i profili non esistono
 ancora, auto-join RF-P5); chiusura round → riepilogo `round_closed_survived`
 **ai soli sopravvissuti** (inviato **una sola volta** alla contabilizzazione);
 gli eliminati ricevono **solo** `pick_missing_elimination` (alla chiusura) e
-`round_result_wrong` (alla contabilizzazione). Un account `unsubscribed` o
-`pending_unsubscribe` **non riceve alcuna email di torneo**.
+`round_result_wrong` (alla contabilizzazione); con **AUTOPICK** (ADR-017) i
+profili auto-assegnati ricevono alla chiusura `pick_auto_assigned` (conferma a
+posteriori, senza sezione deadline) al posto di `pick_missing_elimination`. Un
+account `unsubscribed` o `pending_unsubscribe` **non riceve alcuna email di
+torneo**.
 
 **Chiusura di una giornata.** In commissioner puoi lasciare che la giornata si
 chiuda da sola al superamento della deadline (l'operatore non fa nulla) oppure
@@ -533,7 +549,7 @@ ENV_FILE=.env.uat npm run cli -- tournament:status
 ## 4. Il seed del calendario sintetico in linguaggio semplice
 
 Il comando `data:seed-synthetic` **genera** un calendario inventato ma
-coerente (rosa di Serie A 2025/26, stagione sintetica) e **lo carica** nella
+coerente (rosa di Serie A 2026/27, stagione sintetica) e **lo carica** nella
 tabella `match` del DB.
 In questa guida i **punteggi sono già presenti** (pre-seedati) fin dall'inizio:
 questo è strutturale per la cadenza compressa, perché permette alla
@@ -970,9 +986,10 @@ ENV_FILE=.env.uat npm run cli -- round:score --round 1
 #    Verifica: round:status → "closed", round_state.scored_at = NULL, summary_sent = 0.
 
 # 6. Arrivano i risultati (in produzione: data:refresh con partite FINISHED).
-#    Query diretta sul DB del torneo — i punteggi VERI del round:
-sqlite3 data/uat-synthetic-pippo.db "UPDATE match SET home_score = 3, away_score = 2 WHERE round = 1 AND home_team = 'Brescia Calcio';"
-sqlite3 data/uat-synthetic-pippo.db "UPDATE match SET home_score = 2, away_score = 1 WHERE round = 1 AND home_team = 'US Cremonese';"
+#    Query diretta sul DB del torneo — i punteggi VERI del round (esempio con
+#    la rosa sintetica 2026/27; i nomi esatti sono quelli delle partite del seed):
+sqlite3 data/uat-synthetic-pippo.db "UPDATE match SET home_score = 3, away_score = 2 WHERE round = 1 AND home_team = 'AC Milan';"
+sqlite3 data/uat-synthetic-pippo.db "UPDATE match SET home_score = 2, away_score = 1 WHERE round = 1 AND home_team = 'AC Monza';"
 
 # 7. SECONDO score → i pick vengono valutati e il round si contabilizza
 ENV_FILE=.env.uat npm run cli -- round:score --round 1
@@ -1024,6 +1041,16 @@ ENV_FILE=.env.uat npm run cli -- round:score --round 1
 - **Eliminazioni:** chi non invia il pick entro la chiusura viene eliminato
   (`missing_pick`); chi sbaglia pronostico viene eliminato alla
   contabilizzazione.
+- **Auto-pick al mancato invio (ADR-017):** con `AUTOPICK_ON_MISSING=true`
+  (solo in `win_only`) e una **deadline reale**, il profilo in gara senza pick
+  alla chiusura **non viene eliminato**: riceve in automatico la prima squadra
+  disponibile per `short_name` e la conferma `pick_auto_assigned` (senza
+  sezione deadline); il pick auto è poi contabilizzato normalmente (correct →
+  resta, wrong → eliminazione). Si verifica l'ordinamento con `rules:teams`
+  (dopo il seed) e il fallback con una giornata a `--force` o con tutti i
+  round che lasciano un mancante: il caso "nessuna squadra disponibile" resta
+  `missing_pick` + warn log. La deadline NULL (chiusura di sicurezza, RF-30)
+  NON esercita l'auto-assign (i mancanti restano eliminati).
 - **Reset del pool** al confine di girone (andata/ritorno): le squadre tornano
   disponibili una volta superato il confine.
 - **Aggancio asincrono** a un TC > 1 (RF-20): avvio del torneo da un turno di
@@ -1205,7 +1232,7 @@ test) e dal fatto che sono state inviate durante la sessione di test.
 | **Kickoff (fischio d'inizio)** | L'orario di inizio effettivo della prima partita del round. È il riferimento per la guard anti-frode `after_kickoff`. |
 | **Pick (pronostico)** | La scelta di un giocatore: una squadra + un esito (vince/pareggia/perde). Si invia via email. |
 | **Modalità `win_only`** | Modalità di gioco di default (`WIN_ONLY=true`) in cui il pick è SOLO la squadra che vincerà: una vittoria tiene in gara, pareggio o sconfitta eliminano. Il parser accetta la squadra nuda ("Napoli"); "Napoli pareggia/perde" non è riconosciuto. |
-| **Seed** | L'operazione di "semina" del calendario: il comando `data:seed-synthetic` genera e carica le partite inventate (rosa di Serie A 2025/26) nel DB. |
+| **Seed** | L'operazione di "semina" del calendario: il comando `data:seed-synthetic` genera e carica le partite inventate (rosa di Serie A 2026/27) nel DB. |
 | **Commissioner** | L'operatore che conduce a mano le fasi del torneo con i comandi CLI (modalità manuale). Da qui "modalità commissioner". |
 | **Cron / Scheduler** | L'orchestrazione automatica: un job di sistema (cron) lancia `scheduler:tick` ogni minuto e il sistema apre/chiude/contabilizza le giornate da solo in base al calendario. |
 | **Test mode** | Lo stato del sistema quando è attivo `TEST_MODE=true` (via `ENV_FILE=.env.uat`): segna ogni output con `TEST MODE` e abilita i parametri test-only. |

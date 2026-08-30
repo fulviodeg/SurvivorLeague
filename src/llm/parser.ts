@@ -7,7 +7,7 @@
  * risorsa alias sono INIETTATI PER CHIAMATA (`PickParseOptions`, D2/E):
  * l'import stagionale può cambiare le squadre a metà torneo e la risorsa
  * alias è editabile a mano senza ricompilare. In test mode (D7) la CLI
- * inietta la risorsa alias SINTETICA (rosa di Serie A 2025/26 del calendario
+ * inietta la risorsa alias SINTETICA (rosa di Serie A 2026/27 del calendario
  * sintetico) e il flag `testMode`, che fa chiarire al prompt la lega
  * sintetica (mai mischiare calendario sintetico e stagione reale, CS7).
  *
@@ -45,8 +45,8 @@ export interface PickParseOptions {
   /** Contenuto testuale della risorsa alias (team-aliases.md o sintetica, D7). */
   aliases: string;
   /**
-   * Test mode (D7): quando `true` la lista canonica è il calendario sintetico
-   * (rosa di Serie A 2025/26 del calendario sintetico) e il prompt chiarisce
+    * Test mode (D7): quando `true` la lista canonica è il calendario sintetico
+    * (rosa di Serie A 2026/27 del calendario sintetico) e il prompt chiarisce
    * la lega sintetica (non la stagione reale). Default assente = produzione.
    * Iniettato dalla CLI, mai letto da config qui.
    */
@@ -77,13 +77,13 @@ export interface LLMParser {
 
 /** Percorso della risorsa alias di PRODUZIONE (Serie A 2025/26, legata all'API). */
 const PROD_ALIASES_URL = new URL('./team-aliases.md', import.meta.url);
-/** Percorso della risorsa alias SINTETICA (rosa Serie A 2025/26, test-only). */
+/** Percorso della risorsa alias SINTETICA (rosa Serie A 2026/27, test-only). */
 const SYNTHETIC_ALIASES_URL = new URL('./team-aliases-synthetic.md', import.meta.url);
 
 /**
  * Carica la risorsa alias per il prompt in base al test mode (D7): in test
  * mode restituisce la risorsa sintetica (`team-aliases-synthetic.md`, rosa
- * Serie A 2025/26), altrimenti quella di produzione (`team-aliases.md`). Usa
+ * Serie A 2026/27), altrimenti quella di produzione (`team-aliases.md`). Usa
  * `new URL(..., import.meta.url)`: indipendente dalla cwd del processo (il
  * build `tsc` non copia asset .md — in POC si gira via tsx dalla root, LLD §5).
  */
@@ -109,7 +109,7 @@ export function buildParseSystemPrompt(opts: PickParseOptions): string {
   // importata — va dichiarato per non confondere l'LLM e preservare la
   // robustezza CS7 (mai mischiare i due domini).
   const league = opts.testMode
-    ? 'un torneo privato di pronostici basato su un campionato sintetico (rosa di Serie A 2025/26, stagione fittizia di test, NON la stagione reale).'
+    ? 'un torneo privato di pronostici basato su un campionato sintetico (rosa di Serie A 2026/27, stagione fittizia di test, NON la stagione reale).'
     : 'un torneo privato di pronostici sulla Serie A.';
   return [
     `Sei il parser di Survivor League, ${league}`,

@@ -175,14 +175,21 @@ export async function checkAcceptance(
 }
 
 /**
- * Inserimento ATOMICO della riga pick (stato pending) — usato da registerPick e
- * dall'auto-join RF-P5 (profilo+pick in un'unica transazione, ADR-009).
- * Rilanciata la violazione UNIQUE: il chiamante decide la semantica (motivo).
+ * Inserimento ATOMICO della riga pick (stato pending) — usato da registerPick,
+ * dall'auto-join RF-P5 (profilo+pick in un'unica transazione, ADR-009) e
+ * dall'AUTO-PICK del Round Manager (`closeRound`, feature AUTOPICK) che
+ * bypassa la cascata `validatePick` (a chiusura rifiuterebbe con
+ * `after_acceptance`/`round_not_open`).
  *
  * `createdAt` (ISO-8601) è scritto esplicitamente dal chiamante (= clock
  * iniettato del contesto, Decisione A del briefing Fase 7): mai il default
  * `datetime('now')` di SQLite, che renderebbe non deterministici due export
  * della stessa simulazione (RNF1).
+ *
+ * `autoPick` (feature AUTOPICK, D10): 1 = pick assegnato in automatico alla
+ * chiusura del round (colonna additiva `pick.auto_pick`, default 0 = manuale).
+ * Il flag NON altera lo scoring: serve solo al marcatore storico
+ * "🤖 Auto-assegnato" nelle mail retrospettive.
  */
 export function insertPendingPick(
   db: Database.Database,
@@ -190,13 +197,14 @@ export function insertPendingPick(
   round: number,
   team: string,
   outcome: string,
-  createdAt: string
+  createdAt: string,
+  autoPick = 0
 ): number {
   const info = db
     .prepare(
-      'INSERT INTO pick (profile_id, round, team, outcome, status, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT INTO pick (profile_id, round, team, outcome, status, created_at, auto_pick) VALUES (?, ?, ?, ?, ?, ?, ?)'
     )
-    .run(profileId, round, team, outcome, PICK_STATUS_PENDING, createdAt);
+    .run(profileId, round, team, outcome, PICK_STATUS_PENDING, createdAt, autoPick ? 1 : 0);
   return Number(info.lastInsertRowid);
 }
 

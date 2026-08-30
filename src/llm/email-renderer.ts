@@ -140,6 +140,12 @@ function keyMessage(ctx: EmailContext, winOnly: boolean): string | null {
       return pickConfirmedKey(ctx, winOnly);
     case 'pick_rejected':
       return `PICK NON REGISTRATO: ${ctx.reason ?? ''}`;
+    case 'pick_auto_assigned':
+      // Feature AUTOPICK (D8): conferma a posteriori, squadra in MAIUSCOLO
+      // (come pick_confirmed). Nessuna sezione deadline/countdown (post-deadline).
+      return ctx.team !== undefined && ctx.team !== ''
+        ? `PICK AUTO ASSEGNATO → ${ctx.team.toUpperCase()}`
+        : 'PICK AUTO ASSEGNATO';
     case 'pick_postponed':
       return '⏸ PARTITA RINVIATA';
     case 'round_closed_survived':
@@ -227,15 +233,19 @@ function matchesSection(ctx: EmailContext): string | null {
  */
 function playerResultRow(p: EmailPlayerResult, winOnly: boolean): string {
   const status = p.eliminated ? '❌ eliminato' : '✅ ancora in gara';
+  // Feature AUTOPICK (D9): marcatore in CODA alla riga quando il pick è stato
+  // auto-assegnato — vale per `round_closed_survived` e `tournament_closed`
+  // (riusano entrambe playerResultRow), senza parametro per distinguerle.
+  const autoMarker = p.autoPick === true ? ' · 🤖 Auto-assegnato' : '';
   if (p.team !== undefined && p.team !== '') {
     const outcome = outcomeItalian(p.outcome);
     if (!winOnly && outcome !== null) {
-      return `${p.name} — ${p.team} · ${outcome} — ${status}`;
+      return `${p.name} — ${p.team} · ${outcome} — ${status}${autoMarker}`;
     }
     // ADR-016 (win_only): l'outcome è sempre 'win' — mostrare "· vittoria"
     // accanto a "❌ eliminato" è fuorviante, quindi la riga omette l'esito.
     // Vale anche per lo storico `tournament_closed` (riusa playerResultRow).
-    return `${p.name} — ${p.team} — ${status}`;
+    return `${p.name} — ${p.team} — ${status}${autoMarker}`;
   }
   return `${p.name} — nessun pick — ❌ eliminato`;
 }

@@ -3,12 +3,13 @@
 > ⚠ **POC ONLY** — Questo documento descrive il sistema per la Proof of Concept. Non è il design del sistema di produzione.
 
 **Stato:** Revisionato
-**Data:** 2026-08-20
-**Versione:** 0.5.0
+**Data:** 2026-08-30
+**Versione:** 0.6.0
 
 > Documento di dettaglio implementativo. Per l'architettura di alto livello vedi [POC_HLD.md](POC_HLD.md); per i requisiti di prodotto vedi [POC_PRD.md](POC_PRD.md). Cross-riferimenti aggiornati alla numerazione del PRD v0.6.0 e dell'HLD v0.5.0.
 
 **Changelog:**
+- **0.6.0** (2026-08-30) — Allineamento alla feature **AUTOPICK** (ADR-017, terzo incremento di `win_only`, piano `.kilo/plans/1788074961317-autopick-on-missing.md`): nuova env var `AUTOPICK_ON_MISSING` (§4.1); nuova tabella additiva `team (name TEXT PRIMARY KEY, short_name TEXT NOT NULL)` + colonne additive `tournament_state.autopick_on_missing`/`pick.auto_pick` (§3); `Match` esteso con `homeTeamShort`/`awayTeamShort` e nuova interfaccia `Team` + metodo `getTeamsOrderedByShortName()` (§6.1); nuovo `EmailType pick_auto_assigned` (§6.3); nuovo comando `rules:teams` (§7.5); auto-assign in `closeRound` con la regola "solo con `rs.deadline !== null`"; guardia `assertModeConsistent` estesa ad `autopick_on_missing`; casi di test §8 aggiornati.
 - **0.5.0** (2026-08-20) — Allineamento all'iscrizione a livello di piattaforma (ADR-009, PRD v0.6.0): nuova tabella `platform_account` su DB separato `PLATFORM_DB_PATH` (§3, §4.2) con soft-delete a due passi (`active`/`pending_unsubscribe`/`unsubscribed`); colonne additive `player.register_id`, `profile.register_id`, `round_state.summary_sent` (§3); vincoli applicativi riscritti: gate piattaforma `active`, auto-join al TT1 (RF-P5), riepilogo `round_closed_survived` alla transizione `closed→scored` con guardia `summary_sent` (§3.1); nuova interfaccia `PlatformRegistry` (§6.6) e `LLMIntentClassifier` (§6.2); `EmailType` aggiornati (`platform_registered`, `platform_unsubscribed`, `platform_unsubscribe_confirm`, `tournament_open`, `round_closed_survived`; rimossi `welcome`, `registration_open_invite`, `auto_registered`, `round_closed_eliminated`) (§6.3); nuovi comandi `platform:*` e modifiche `tournament:*`/`round:*`/`channel:email:process` (§7); `channel:email:process` migra entrambi i DB; casi di test §8 aggiornati (registry, classificatore, notifiche filtrate).
 - **0.4.0** (2026-08-14) — Allineamento all'aggancio asincrono del torneo (ADR-008, PRD v0.5.2): colonna `tournament_state.start_round INTEGER NULL` con strategia di migrazione **additiva** idempotente (`ALTER TABLE … ADD COLUMN` se manca — §3); nuovo vincolo applicativo di accettazione pick `min(deadline registrata, fischio d'inizio effettivo prima partita del TC)` (guard anti-frode, RF-31, §3.1); nota finestra `[start_round..N]` come filtro logico (§3.2); nuova interfaccia di **eligibilità** `checkEligibility(ExternalIdentity)` con implementazione POC vuota (ADR-008, §6.5); auto-iscrizione del mittente sconosciuto nel TT1 e iniezione deterministica della coppia TT/TC nei template (ADR-004, §1.1, §6.3); scheduler con chiusura di sicurezza allo scadere del TC se deadline NULL (log `safety_close`, §1.4); comandi CLI aggiornati (`tournament:start --start-round <n>`, `tournament:register --reason`, `pick:register --reason`, `tournament:register:close --reason`, `round:close --force --reason`, output con coppia TT/TC — §7.3, §7.10); casi di test §8 aggiornati.
 - **0.3.0** (2026-08-13) — Allineamento alle decisioni del piano di implementazione: `SeasonDataProvider` con unica implementazione `DbSeasonDataProvider` (lettura da DB; rimosso il precedente provider basato su file JSON); client API football-data.org solo per i comandi `data:*`; contratto del Parser LLM con lista canonica squadre + `team-aliases.md` e check deterministico post-parse; `round:score` processa anche i pick `frozen`; scheduler tick con `data:refresh`; colonne `eliminated_at`/`eliminated_reason` su `profile`; regola operativa rinvii senza `rescheduled_date`; nuovo comando `tournament:export`; distinzione mock/UAT in test strategy.
@@ -64,9 +65,9 @@
 
 | Modulo | Responsabilità |
 |--------|---------------|
-| **Round Manager** | Apre e chiude round, gestisce deadline, coordina l'invio delle email di pick, e implementa la **contabilizzazione incrementale** dei pick (`round:score`: processa i pick `pending`, aggiorna lo stato a `correct`/`wrong`/`frozen`, chiude il round a `scored` quando non restano pick `pending`; processa inoltre i pick `frozen` la cui partita ora ha punteggio, aggiornandoli a `correct`/`wrong` con eventuale eliminazione a posteriori). Gestisce inoltre: la **chiusura forzata** (`round:close --force --reason`, RF-29) e la **chiusura di sicurezza** allo scadere del TC quando la deadline è NULL/non innescata (RF-30, log `safety_close`) — tutte con **semantica di consolidamento identica**; alla transizione `closed→scored` invia il riepilogo `round_closed_survived` ai soli sopravvissuti (guardia `summary_sent`, RF-P6); filtra OGNI notifica sull'account piattaforma `active` (RF-P6, ADR-009) |
-| **Pick Processor** | Valida un pick (account piattaforma `active` + profilo in gara — o auto-join nel TT1 —, squadra in giornata, già bruciata, esito valido, già inviato, entro l'**istante di accettazione** `min(deadline registrata, fischio d'inizio effettivo prima partita del TC)` — RF-31), registra il pick nel database |
-| **Rules Engine** | Regole di gioco: squadre bruciate per girone, esiti validi, condizioni di vittoria |
+| **Round Manager** | Apre e chiude round, gestisce deadline, coordina l'invio delle email di pick, e implementa la **contabilizzazione incrementale** dei pick (`round:score`: processa i pick `pending`, aggiorna lo stato a `correct`/`wrong`/`frozen`, chiude il round a `scored` quando non restano pick `pending`; processa inoltre i pick `frozen` la cui partita ora ha punteggio, aggiornandoli a `correct`/`wrong` con eventuale eliminazione a posteriori). Gestisce inoltre: la **chiusura forzata** (`round:close --force --reason`, RF-29) e la **chiusura di sicurezza** allo scadere del TC quando la deadline è NULL/non innescata (RF-30, log `safety_close`) — tutte con **semantica di consolidamento identica**; con **AUTOPICK** (ADR-017) l'**auto-assign** alla chiusura: se `WIN_ONLY && AUTOPICK_ON_MISSING` e `round_state.deadline !== null`, a ogni mancante viene assegnata la prima squadra disponibile per `short_name` (`pick_auto_assigned`, `auto_pick=1`, outcome `win`) — la chiusura di sicurezza (deadline NULL) elimina invece `missing_pick` come oggi; alla transizione `closed→scored` invia il riepilogo `round_closed_survived` ai soli sopravvissuti (guardia `summary_sent`, RF-P6); filtra OGNI notifica sull'account piattaforma `active` (RF-P6, ADR-009) |
+| **Pick Processor** | Valida un pick (account piattaforma `active` + profilo in gara — o auto-join nel TT1 —, squadra in giornata, già bruciata, esito valido, già inviato, entro l'**istante di accettazione** `min(deadline registrata, fischio d'inizio effettivo prima partita del TC)` — RF-31), registra il pick nel database. `insertPendingPick(db, profileId, round, team, outcome, createdAt, autoPick = 0)` scrive anche la colonna `pick.auto_pick` (feature AUTOPICK, ADR-017: 1 = pick auto-assegnato a chiusura, inserito DIRETTAMENTE dal Round Manager senza la cascata `validatePick`) |
+| **Rules Engine** | Regole di gioco: squadre bruciate per girone, esiti validi, condizioni di vittoria; con l'auto-pick (ADR-017) espone `getFirstAvailableTeamByShortName(db, profileId, round, totalRounds, matches, teams, shortNames)` — la prima squadra disponibile (in giornata E non bruciata nel girone di `round`, stessa fonte di `getAvailableTeams`) ordinata per `short_name` (mappa canonico→short_name iniettata; un nome senza short_name degrada all'ordine canonico), `null` se nessuna disponibile (il chiamante mantiene il fallback `missing_pick`) |
 | **Elimination Engine** | Determina quali profili sono eliminati (pick mancante, pick sbagliato) |
 | **Winner Engine** | Determina se il torneo è finito e chi ha vinto (casi 1, 2, 3 del PRD §4.6), sulla finestra `[start_round..N]` |
 | **Eligibility (seam)** | Gate pre-partecipazione `checkEligibility(ExternalIdentity) → {eligible, reason?}` (ADR-008/009, §6.5): implementazione POC "account piattaforma `active`" (lettura dal Platform Registry); Fase 1: controllo quota (`ENTRY_FEE_EUR`) |
@@ -202,6 +203,20 @@ CREATE TABLE pick (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(profile_id, round)
 );
+-- pick.auto_pick: colonna ADDITIVA (feature AUTOPICK, ADR-017), aggiunta da
+-- applyAdditiveMigrations — 1 = pick assegnato IN AUTOMATICO alla chiusura del
+-- round (profilo in gara senza pick entro la deadline). Segue lo stesso scoring
+-- di un pick manuale (nessuno stato dedicato); serve solo al marcatore storico
+-- "🤖 Auto-assegnato" nelle mail retrospettive.
+
+-- Squadre: nome generico "shortName" per squadra (feature AUTOPICK, ADR-017, D1).
+-- Tabella ADDITIVA popolata da data:import / data:seed-synthetic (upsert su
+-- "name"). Il "name" resta il canonico dell'API; "short_name" serve SOLO
+-- all'ordinamento alfabetico dell'auto-pick e al comando "rules:teams".
+CREATE TABLE team (
+  name       TEXT PRIMARY KEY,
+  short_name TEXT NOT NULL
+);
 
 -- Dati stagione (calendario + risultati Serie A)
 CREATE TABLE match (
@@ -250,6 +265,17 @@ CREATE TABLE tournament_state (
 > (`src/game/mode.ts`) a torneo aperto; l'export la include (determinismo RNF1).
 > Le colonne ADR-011/ADR-015 (`winner_notified`, `finished_at`, `export_path`)
 > seguono lo stesso pattern additivo e non sono ripetute qui per brevità.
+
+> **Nota AUTOPICK (ADR-017, emendamento).** Altre due colonne additive +
+> tabella `team`, stesse regole del pattern additivo (`applyAdditiveMigrations`,
+> idempotente, guardate da `PRAGMA table_info`): `tournament_state.autopick_on_missing
+> INTEGER NOT NULL DEFAULT 0` (1 = auto-pick attivo, cioè `WIN_ONLY + AUTOPICK_ON_MISSING`;
+> FISSATA a `tournament:start` nella STESSA UPSERT di `win_only` e coperta dalla STESSA
+> guardia fatal `assertModeConsistent` — mismatch a torneo aperto → processo abortito)
+> e `pick.auto_pick INTEGER NOT NULL DEFAULT 0` (flag per-pick del pick auto-assegnato).
+> La tabella `team` è creata dalla DDL (niente ALTER: è nuova); un DB legacy la
+> guadagna vuota e la popola al primo `data:import`/`data:seed-synthetic` — il
+> motore tratta lo shortName assente come "ordine canonico" (fallback sicuro).
 
 **DB piattaforma (storage separato, ADR-009, RF-P7).** Vive in `PLATFORM_DB_PATH` (default `./data/platform.db`, §4.2): **mai** nello stesso file di `DB_PATH`. Due connessioni separate, nessuna transazione cross-DB: la piattaforma è **solo letta** dai flussi di torneo (gate notifiche/pick). `register_id` su `player`/`profile` è un riferimento replicato **senza vincoli cross-DB** (RF-P7). Il DB piattaforma **non viene eliminato** col DB torneo e non partecipa alle migrazioni di `db:migrate` (`platform:migrate` dedicato).
 
@@ -309,6 +335,7 @@ Tutti i parametri modificabili vivono in variabili d'ambiente, validate con `zod
 | Durata stimata partita (minuti) | `MATCH_DURATION_MIN` | `125` | PRD §5.4. Per calcolare la fine prevista di una partita |
 | Numero massimo profili per giocatore | `MAX_PROFILES_PER_PLAYER` | `1` | PoC: 1. Futuro: aumentabile (BRIEF §3.3) |
 | Modalità di gioco `win_only` (default) | `WIN_ONLY` | `true` | ADR-016. `true` (default) = il giocatore sceglie SOLO la squadra che vincerà (outcome sempre `win`); pareggio o sconfitta = pick sbagliato → eliminazione. `false` = modalità classica (win/draw/lose). Fissata nel DB a `tournament:start`; una guardia fatal abortisce il processo se cambia a torneo aperto |
+| Auto-pick al mancato invio | `AUTOPICK_ON_MISSING` | `false` | ADR-017 (terzo incremento di `win_only`). `true` = alla CHIUSURA di un round con deadline reale (`round_state.deadline !== null`) il motore assegna a ogni profilo in gara senza pick la prima squadra disponibile in ordine alfabetico per `short_name` (tabella `team`), escludendo bruciate e non in giornata, con `pick.auto_pick=1` e `outcome='win'`; il pick segue poi il normale scoring. Attiva SOLO con `WIN_ONLY=true` (gating silenzioso: con `WIN_ONLY=false` è ignorata, nessun errore). FISSATA nel DB a `tournament:start` (`tournament_state.autopick_on_missing`) e coperta dalla stessa guardia fatal di `WIN_ONLY` (`src/game/mode.ts`). Default `false` = comportamento invariato (i mancanti restano eliminati `missing_pick`) |
 | Quota iscrizione (EUR) | `ENTRY_FEE_EUR` | `5` | BRIEF §3.6. Placeholder per la Fase 1: pagamenti e montepremi sono fuori scope nella POC (PRD §10, BRIEF §7.2). Non usato nella POC |
 | Ripartizione vincitore (%) | `WINNER_SHARE_PCT` | `85` | BRIEF §3.9. Placeholder per la Fase 1: payout fuori scope nella POC (PRD §10, BRIEF §7.2). Non usato nella POC |
 
@@ -387,21 +414,27 @@ survivor-league/
 ├── src/
 │   ├── index.ts                  # Entry point CLI
 │   ├── config.ts                 # Config da env, validata con zod
+│   ├── clock.ts                  # Clock iniettato (makeNow, RNF1): offset TEST_OFFSET_DAYS in test mode
+│   ├── logger.ts                 # Log strutturati pino (createLogger)
 │   ├── db/
 │   │   ├── connection.ts         # better-sqlite3 connection
-│   │   ├── schema.ts             # DDL e migrazioni (DB torneo, DB_PATH)
-│   │   ├── platform-schema.ts    # DDL e migrazioni del DB PIATTAFORMA (PLATFORM_DB_PATH, ADR-009)
-│   │   └── seed.ts               # Popolamento dati test
+│   │   ├── schema.ts             # DDL + migrazioni additive del DB TORNEO (DB_PATH)
+│   │   └── platform-schema.ts    # DDL e migrazioni del DB PIATTAFORMA (PLATFORM_DB_PATH, ADR-009)
 │   ├── platform/
 │   │   └── registry.ts           # PlatformRegistry: interfaccia + impl SQLite (ADR-009, §6.6)
 │   ├── game/
-│   │   ├── round-manager.ts      # Apertura/chiusura round
-│   │   ├── pick-processor.ts     # Validazione e registrazione pick
-│   │   ├── rules.ts              # Regole (squadre bruciate, gironi)
+│   │   ├── context.ts            # GameContext: contratto DI unico {db, dataProvider, config, now, …}
+│   │   ├── errors.ts             # Motivi di rifiuto del Game Engine (cascata pick, §1-F)
+│   │   ├── round-manager.ts      # Apertura/chiusura round + contabilizzazione incrementale (ADR-003)
+│   │   ├── round-time.ts         # Istanti chiave del TC: computeDeadline/computeTcClose (RF-14/RF-30)
+│   │   ├── turn.ts               # Mappatura TC→TT e forme TT/TC (RF-25)
+│   │   ├── pick-processor.ts     # Validazione e registrazione pick (+ insertPendingPick con autoPick)
+│   │   ├── rules.ts              # Regole (squadre bruciate, gironi, getFirstAvailableTeamByShortName)
+│   │   ├── mode.ts               # Guardia modalità assertModeConsistent (ADR-016/017)
 │   │   ├── elimination.ts        # Logica eliminazione
 │   │   ├── winner.ts             # Determinazione vincitore
 │   │   ├── eligibility.ts        # Seam checkEligibility(ExternalIdentity) (ADR-008/009, §6.5)
-│   │   ├── registration.ts       # autoJoinFromPick (RF-P5) + stub @deprecated (rimossi nel Task 10)
+│   │   ├── registration.ts       # autoJoinFromPick (RF-P5) — stub @deprecated rimossi (ADR-009)
 │   │   ├── simulation.ts         # Simulazione seeded full/round (mulberry32, clock derivato dai dati)
 │   │   └── scheduler.ts          # Automazione round via cron (solo produzione)
 │   ├── channel/
@@ -410,29 +443,41 @@ survivor-league/
 │   │   │   ├── index.ts          # EmailAdapter: implementazione concreta (fetch+send)
 │   │   │   ├── imap-client.ts    # Ricezione email (imapflow) — seam: conn passata dal chiamante
 │   │   │   ├── message-router.ts # Normalizzazione identità + {kind:'classified', identity, body} (ADR-009)
+│   │   │   ├── reply-cleaner.ts  # Taglio deterministico della citazione (extractPlayerReply, D6)
 │   │   │   └── smtp-client.ts    # Invio email (nodemailer) — seam: transport passato dal chiamante
 │   │   └── email-processor.ts    # Wiring channel:email:process: fetch → router → Intent Classifier →
 │   │                             # subscribe/unsubscribe (registry) / pick (auto-join + moduli di gioco);
 │   │                             # flag \Seen a successo (D7); mittenti attivi rivalutati per messaggio
 │   ├── llm/
 │   │   ├── parser.ts             # LLM: email → {team, outcome} (interfaccia + impl OpenAI)
+│   │   ├── deterministic-parser.ts # Classificatore deterministico dell'input (formule univoche, ADR-014)
 │   │   ├── intent-classifier.ts  # LLM: email → {intent, pick} in UNA chiamata (ADR-009, §6.2)
 │   │   ├── generator.ts          # LLM: contesto → testo email (interfaccia + impl OpenAI + subjectFor)
+│   │   ├── deterministic-generator.ts # Generatore deterministico dei testi email (ADR-013, default)
+│   │   ├── email-renderer.ts     # Renderer deterministico del canale email (keyMessage/sezioni/CTA)
 │   │   ├── templates.ts          # Template statici per il LLM Generator (segnaposto {{TT_TC}}, D4)
-│   │   ├── openai-client.ts      # Client HTTP condiviso Parser/Generator (chat/completions) + LLMError (D3)
-│   │   └── team-aliases.md       # Alias noti delle squadre (risorsa del prompt del Parser, editabile a mano)
+│   │   ├── errors.ts             # LLMError (trasporto/HTTP) vs null (contenuto, D3)
+│   │   ├── openai-client.ts      # Client HTTP condiviso Parser/Generator (chat/completions) + retry (D3)
+│   │   ├── team-aliases.md       # Alias noti delle squadre (risorsa del prompt del Parser, editabile a mano)
+│   │   └── team-aliases-synthetic.md # Alias sintetici (risorsa test mode, rosa Serie A sintetica)
 │   ├── data/
-│   │   ├── provider.ts           # Interfaccia SeasonDataProvider
-│   │   ├── db-provider.ts        # DbSeasonDataProvider: unica implementazione, legge dalla tabella match
+│   │   ├── provider.ts           # Interfaccia SeasonDataProvider (+ tipo Team, ADR-017)
+│   │   ├── db-provider.ts        # DbSeasonDataProvider: legge da match + team (short_name)
+│   │   ├── importer.ts           # importMatches/upsertMatches/upsertTeams (ADR-007, ADR-017)
+│   │   ├── synthetic-season.ts   # Generatore stagione sintetica (SYNTHETIC_TEAMS, SYNTHETIC_TEAM_SHORT_NAMES)
 │   │   └── football-data-client.ts # Client API football-data.org (usato solo dai comandi data:*)
 │   └── cli/
 │       ├── index.ts              # Registrazione comandi
 │       ├── email-wiring.ts       # Helper condiviso: costruisce EmailAdapter+LLMGenerator+Parser reali
 │       │                         # dai config e li inietta nel GameContext; espone anche il wiring del registry
+│       ├── archive-wiring.ts     # Seam di archiviazione export (archiveTournamentFile, ADR-011 HIGH-1)
+│       ├── email-process-lock.ts # Lock su channel:email:process (anti-concorrenza cron, D7)
+│       ├── output.ts             # Helper output condivisi (jsonWithTestMode, printTestModeBanner)
 │       ├── commands/
+│       │   ├── db.ts             # db:migrate
 │       │   ├── round.ts          # round:open, round:close, round:score, round:status, round:deadline
 │       │   ├── pick.ts           # pick:validate, pick:register, pick:list
-│       │   ├── rules.ts          # rules:burned-teams, rules:available-teams, rules:check-half
+│       │   ├── rules.ts          # rules:burned-teams, rules:available-teams, rules:check-half, rules:teams
 │       │   ├── elimination.ts    # elimination:check, elimination:list
 │       │   ├── winner.ts         # winner:check
 │       │   ├── llm.ts            # llm:parse, llm:classify, llm:generate
@@ -440,10 +485,9 @@ survivor-league/
 │       │   ├── platform.ts       # platform:migrate, platform:register, platform:unregister, platform:list (ADR-009)
 │       │   ├── tournament.ts     # tournament:start (broadcast tournament_open), tournament:status, tournament:history,
 │       │   │                     # tournament:leaderboard, tournament:export (senza register:open/close/register, ADR-009)
-│       │   ├── data.ts           # data:import, data:refresh, data:calendar, data:results
+│       │   ├── data.ts           # data:import, data:refresh, data:calendar, data:results, data:seed-synthetic
 │       │   ├── scheduler.ts      # scheduler:tick, scheduler:status (senza azioni finestra iscrizione)
 │       │   └── simulate.ts       # simulate:full, simulate:round (PLATFORM_DB_PATH dedicato + guardia)
-│       └── print.ts              # Formattazione output
 ├── tests/
 │   ├── unit/
 │   │   └── game/                 # Test regole, pick, eliminazioni, vincitori
@@ -478,9 +522,23 @@ interface Match {
   matchDate: Date;
   homeTeam: string;
   awayTeam: string;
+  homeTeamShort?: string;  // nome generico squadra di casa (campo shortName dell'API, es. "Inter").
+                           // Feature AUTOPICK (ADR-017): usato SOLO dall'import per popolare la
+                           // tabella team; ASSENTE nei Match letti da DbSeasonDataProvider (lo
+                           // short_name vive nella tabella team) — opzionale nel tipo condiviso
+  awayTeamShort?: string;  // come homeTeamShort, per la squadra ospite
   homeScore?: number;
   awayScore?: number;
   postponed: boolean; // rinviata; nella POC include le partite sospese (trattate come rinviate, PRD §5.4)
+}
+
+// Squadra con il suo nome generico (feature AUTOPICK, ADR-017, D1): coppia usata
+// per popolare la tabella team (name → short_name) all'import e come forma di
+// lettura ordinata per short_name (comando rules:teams, auto-pick). Il name
+// resta il nome canonico dell'API (usato ovunque nel gioco).
+interface Team {
+  name: string;       // nome canonico (campo name dell'API), PK della tabella team
+  shortName: string;  // nome generico (campo shortName dell'API, es. "Inter")
 }
 
 interface SeasonDataProvider {
@@ -488,6 +546,12 @@ interface SeasonDataProvider {
   getMatchesForRound(round: number): Promise<Match[]>;
   getFirstMatchDateTime(round: number): Promise<Date>;
   getTeams(): Promise<string[]>;
+  // Squadre con nome generico (short_name) dalla tabella team, ORDINATE per
+  // short_name (feature AUTOPICK, ADR-017, D1/D2): fonte dell'ordinamento
+  // alfabetico dell'auto-pick e del comando rules:teams. Tabella team vuota
+  // (legacy DB) → []: il motore degrada all'ordine canonico. Tie-break su name
+  // per un ordine deterministico a parità di short_name.
+  getTeamsOrderedByShortName(): Promise<Team[]>;
   getTotalRounds(): Promise<number>;
 }
 ```
@@ -502,6 +566,8 @@ interface SeasonDataProvider {
 - `DbSeasonDataProvider` — **unica implementazione nella POC**: legge esclusivamente dalla tabella `match` del DB. Il Game Engine usa solo questa e non accede mai all'API esterna
 - Il client API `FootballDataClient` (verso football-data.org) è usato **solo** dai comandi `data:*` (`data:import`, `data:refresh`) per popolare/aggiornare il DB
 - `ApiProvider` — eventuale evoluzione futura (fuori scope POC)
+
+**Nomi generici `shortName` (feature AUTOPICK, ADR-017).** Il client `parseMatch` estrae e valida anche `homeTeam.shortName`/`awayTeam.shortName` (errore `FootballDataError` chiaro se assenti, come per `name`) e li espone nei campi transitori `Match.homeTeamShort`/`awayTeamShort`. Il generatore sintetico li valorizza con la mappatura `SYNTHETIC_TEAM_SHORT_NAMES` (`src/data/synthetic-season.ts`, canonico → generico per i 20 club, es. `FC Internazionale Milano` → `Inter`; un canonico fuori mappa produce shortName assenti, nessun errore). L'import (`upsertMatches`/`importMatches`) deriva le coppie (`deriveTeams`) e le upserta nella tabella `team` (`upsertTeams`, UPSERT sulla PK `name`) nella STESSA transazione dei `match`. Il nome canonico del gioco resta il `name` dell'API (invariato: `getTeams()` non cambia).
 
 **Documentazione del provider dati (football-data.org):**
 - Overview e API reference: https://docs.football-data.org/general/v4/index.html
@@ -586,6 +652,7 @@ type EmailType =
   | "pick_confirmed"               // conferma pick; per l'auto-join è l'UNICO messaggio (RF-P5, D5)
   | "pick_rejected"
   | "pick_missing_elimination"
+  | "pick_auto_assigned"        // ADR-017: auto-pick assegnato a chiusura (conferma a posteriori, NO deadline)
   | "round_result_correct"
   | "round_result_wrong"
   | "pick_postponed"
@@ -628,6 +695,8 @@ interface EmailPlayerResult {
   name: string;
   team?: string;              // squadra del pick (assente = nessun pick)
   outcome?: string;           // win|draw|lose (assente = nessun pick)
+  autoPick?: boolean;         // ADR-017: true = pick assegnato IN AUTOMATICO alla chiusura
+                              // (il renderer aggiunge il marcatore "🤖 Auto-assegnato" alla riga)
   eliminated: boolean;        // true = eliminato IN QUESTO round
 }
 
@@ -650,6 +719,8 @@ interface LLMGenerator {
 > **Formato date nei testi (D9/ADR-011):** le date sono istanti UTC; i testi email le mostrano con `formatItDate(date, timeZone)` nel FUSO DI SISTEMA (`TIMEZONE`, default Europe/Rome, validato al boot) — fuso esplicito = determinismo (RNF1). Il fuso conta SOLO nella comunicazione verso l'esterno (email e log): le decisioni di gioco restano su UTC.
 >
 > **Errori (D3):** problemi di trasporto/HTTP → `LLMError` rilanciata (mai silenziosa: il chiamante decide se notificare); nessuna eccezione su contenuto (la narrativa è incastonata deterministicamente nel corpo dal renderer, mai validata in modo bloccante).
+>
+> **Auto-pick assegnato (`pick_auto_assigned`, ADR-017, emendamento):** nuovo 18° `EmailType`, conferma A POSTERIORI inviata dal Round Manager a chiusura ai profili auto-assegnati. Soggetto `SUBJECT_LABELS.pick_auto_assigned` = `Pick Auto Assegnato`; `keyMessage` = `PICK AUTO ASSEGNATO → {TEAM}` (squadra in MAIUSCOLO, senza squadra `PICK AUTO ASSEGNATO`); template LLM e narrativa deterministica `DETERMINISTIC_NARRATIVES.pick_auto_assigned` in `src/llm/templates.ts` ("Non hai inviato un pick entro la deadline: te ne abbiamo assegnato uno in automatico (la prima squadra disponibile in ordine alfabetico)."). Il tipo NON è in `PICK_EMAIL_TYPES` (niente sezione deadline/countdown: post-deadline); nessuna CTA. Marcatore storico ` · 🤖 Auto-assegnato` in coda a `playerResultRow` quando `p.autoPick === true` — vale per `round_closed_survived` e `tournament_closed` (riusano entrambe `playerResultRow`).
 
 ### 6.4 ChannelAdapter
 
@@ -763,7 +834,6 @@ Ogni componente del sistema espone comandi CLI dedicati. I comandi sono organizz
 ```bash
 npm run db:migrate                            # Crea/migra le tabelle del DB TORNEO (DB_PATH)
 npm run cli -- platform:migrate               # Crea/migra le tabelle del DB PIATTAFORMA (PLATFORM_DB_PATH, ADR-009)
-npm run db:seed                               # Popola dati test
 ```
 
 ### 7.2 Dati stagione
@@ -773,6 +843,7 @@ npm run cli -- data:import                    # Importa calendario e risultati d
 npm run cli -- data:refresh                   # Aggiorna calendario e risultati dall'API football-data.org
 npm run cli -- data:calendar                  # Mostra calendario completo
 npm run cli -- data:results --round <n>       # Mostra risultati di un round
+npm run cli -- data:seed-synthetic            # Genera e carica il calendario sintetico UAT (rosa Serie A, test mode)
 ```
 
 `data:import` e `data:refresh` chiamano l'API football-data.org (endpoint `GET /v4/competitions/{competition}/matches?season={season}`, header `X-Auth-Token`, token da env `FOOTBALL_DATA_TOKEN`, competizione/stagione da `FOOTBALL_DATA_COMPETITION`/`FOOTBALL_DATA_SEASON`) e fanno **upsert** nella tabella `match` sulla chiave primaria `(round, home_team, away_team)`, in una transazione (tutto o niente: nessuno stato parziale). Non leggono file statici. `data:refresh` è invocato dallo scheduler a ogni tick (§1.4).
@@ -811,6 +882,11 @@ npm run cli -- rules:burned-teams --profile-id <id> [--half <1|2>]
 npm run cli -- rules:available-teams --profile-id <id> --round <n>
                                               # Squadre disponibili per un profilo in un round
 npm run cli -- rules:check-half --round <n>   # Restituisce il girone (1=andata, 2=ritorno) per un round
+npm run cli -- rules:teams                    # Squadre dalla tabella team ordinate per short_name
+                                              # (generico + canonico, feature AUTOPICK, ADR-017): output testo
+                                              # "<shortName> (<name>)" per riga, --json → [{name, shortName}].
+                                              # Nessuna chiamata API live: legge SOLO il DB corrente. Verifica
+                                              # dell'ordinamento dell'auto-pick e del primo data:import
 ```
 
 ### 7.6 Game Engine — Elimination Engine
@@ -1034,3 +1110,33 @@ Casi aggiuntivi al set di test già definito, da distribuire tra unit/integratio
 - nessuna azione `register_close_auto`/`register_close_safety`; `scheduler:status` senza `registrationOpen` (con conteggio iscritti dal registry)
 - `simulate:*` crea account piattaforma (registry) e profili via auto-join al TT1; export deterministici a parità di seed con DB piattaforma pulito (RNF1)
 - guardia `simulate:*`: rifiuto/avviso se `PLATFORM_DB_PATH` coincide col valore di produzione
+
+### 8.3 Casi di test dell'auto-pick al mancato invio (ADR-017, piano `.kilo/plans/1788074961317-autopick-on-missing.md`)
+
+**Config (`tests/unit/config.test.ts`):** `AUTOPICK_ON_MISSING` default `false`; `true` accettato; presente in `.env*.example`.
+
+**shortName / tabella `team` (unit — importer, db-provider, football-data-client, synthetic-season):**
+- `parseMatch` estrae e valida `homeTeam.shortName`/`awayTeam.shortName`; assenti → `FootballDataError` chiaro
+- `upsertTeams` idempotente (UPSERT su `name`: re-import sovrascrive `short_name`, mai duplicati); `upsertMatches` scrive `match` E `team` nella stessa transazione
+- `getTeamsOrderedByShortName` ordina per `short_name` con tie-break su `name`; tabella `team` vuota → `[]` (degradazione all'ordine canonico, mai errore)
+- `SYNTHETIC_TEAM_SHORT_NAMES` mappa i 20 club sintetici (es. `FC Internazionale Milano` → `Inter`); `data:seed-synthetic` popola anche la tabella `team`
+- migrazione additiva su DB legacy: `team` creata, `tournament_state.autopick_on_missing`/`pick.auto_pick` aggiunte con default `0` (riesecuzione no-op)
+
+**Guardia (`tests/unit/game/mode.test.ts`):**
+- mismatch `autopick_on_missing` persistito vs configurato a torneo aperto → `fatal` + `throw` (messaggio che nomina `AUTOPICK_ON_MISSING`); valori coincidenti → no-op; torneo non avviato/chiuso → no-op
+
+**Persistenza/export (`tests/unit/game/tournament.test.ts`):** `tournament:start` scrive `autopick_on_missing` (valore `config.AUTOPICK_ON_MISSING ? 1 : 0`) nella stessa UPSERT di `win_only`; incluso in `getTournamentState`/`tournamentExport`; riavvio su torneo chiuso riscrive dal nuovo `.env`
+
+**Motore (`tests/unit/game/round-manager.test.ts` + `tests/integration/round-flow.test.ts` + `tests/integration/autopick.test.ts`):**
+- autopick attivo (`WIN_ONLY && AUTOPICK_ON_MISSING`) con deadline reale → ogni mancante riceve `insertPendingPick(..., autoPick=1)` con outcome `win` (prima squadra disponibile per short_name) e NOTIFICA `pick_auto_assigned`; nessuna eliminazione `missing_pick`; `RoundCloseResult.autoAssigned` popolato
+- `AUTOPICK_ON_MISSING=false` → `missing_pick` come oggi (comportamento invariato)
+- `WIN_ONLY=false` con `AUTOPICK_ON_MISSING=true` → gating silenzioso, nessun auto-assign (persistito comunque `autopick_on_missing=1`)
+- **deadline NULL** (`close_safety`, RF-30) → nessun auto-assign, mancanti eliminati `missing_pick` (regola D3: l'auto-assign scatta SOLO con `rs.deadline !== null`)
+- nessuna squadra disponibile (tutte bruciate in giornata) → fallback `missing_pick` + warn log inglese `round:close: auto-pick skipped (no available team) — profile eliminated as missing_pick` (mai una squadra non in giornata)
+- idempotenza su re-close: il profilo auto-assegnato HA già un pick (`UNIQUE(profile_id, round)` + `NOT EXISTS`) → nessuna ri-assegnazione
+
+**Email + marcatore (`tests/unit/llm/email-renderer.test.ts`, `deterministic-generator.test.ts`, `generator.test.ts`):**
+- `pick_auto_assigned`: output esatto (`keyMessage` `PICK AUTO ASSEGNATO → {TEAM}`), soggetto `Pick Auto Assegnato`, narrativa deterministica verbatim, **ASSENZA** della sezione deadline (tipo NON in `PICK_EMAIL_TYPES`)
+- marcatore ` · 🤖 Auto-assegnato` in coda alla riga giocatore con `autoPick === true`; presente in `round_closed_survived` e `tournament_closed`; assente senza flag
+
+**CLI smoke (`rules:teams`):** su DB sintetico (`data:seed-synthetic` → `rules:teams`) l'output è ordinato per `short_name` (coppia `<shortName> (<name>)`); `--json` → `[{name, shortName}]`; tabella vuota → messaggio `Tabella team vuota: esegui data:import o data:seed-synthetic per popolarla.`

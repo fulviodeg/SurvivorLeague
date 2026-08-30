@@ -14,15 +14,15 @@
 >
 > **NON legata all'API.** I nomi canonici qui sono quelli della costante
 > `SYNTHETIC_TEAMS` del generatore di stagione sintetica (Task 1), che per la
-> stagione 2025/26 coincidono con i nomi `name` dell'API football-data.org
+> stagione 2026/27 coincidono con i nomi `name` dell'API football-data.org
 > delle squadre di Serie A. La lista è **Serie A (campionato sintetico)**:
 > NON è la stagione reale importata, ma la stessa rosa di club usata dal
 > calendario sintetico di test.
 
-## Lista canonica (club di Serie A 2025/26 — nomi della costante SYNTHETIC_TEAMS)
+## Lista canonica (club di Serie A 2026/27 — nomi della costante SYNTHETIC_TEAMS)
 
 1. AC Milan
-2. AC Pisa 1909
+2. AC Monza
 3. ACF Fiorentina
 4. AS Roma
 5. Atalanta BC
@@ -30,24 +30,24 @@
 7. Cagliari Calcio
 8. Como 1907
 9. FC Internazionale Milano
-10. Genoa CFC
-11. Hellas Verona FC
+10. Frosinone Calcio
+11. Genoa CFC
 12. Juventus FC
 13. Parma Calcio 1913
 14. SS Lazio
 15. SSC Napoli
 16. Torino FC
-17. US Cremonese
-18. US Lecce
-19. US Sassuolo Calcio
-20. Udinese Calcio
+17. US Lecce
+18. US Sassuolo Calcio
+19. Udinese Calcio
+20. Venezia FC
 
 ## Alias → nome canonico
 
 | Alias (come può scrivere il giocatore) | Nome canonico |
 |----------------------------------------|---------------|
 | milan, rossoneri, diavolo | AC Milan |
-| pisa, nerazzurri toscani | AC Pisa 1909 |
+| monza, biancorossi | AC Monza |
 | fiorentina, viola, gigliati | ACF Fiorentina |
 | roma, giallorossi, capitolini | AS Roma |
 | atalanta, la dea, orobici | Atalanta BC |
@@ -55,17 +55,17 @@
 | cagliari, isolani, rossoblu sardi | Cagliari Calcio |
 | como, lariani | Como 1907 |
 | inter, l'inter, nerazzurri, milano | FC Internazionale Milano |
+| frosinone, ciociari, canarini | Frosinone Calcio |
 | genoa, grifone, rossoblu di genova | Genoa CFC |
-| hellas, verona, gialloblu, hellas verona | Hellas Verona FC |
 | juve, juventus, vecchia signora, bianconeri | Juventus FC |
 | parma, crociati, ducali | Parma Calcio 1913 |
 | lazio, biancocelesti | SS Lazio |
 | napoli, partenopei, azzurri | SSC Napoli |
 | torino, granata, il toro | Torino FC |
-| cremonese, grigiorossi | US Cremonese |
 | lecce, salentini, giallorossi di lecce | US Lecce |
 | sassuolo, neroverdi | US Sassuolo Calcio |
 | udinese, friulani, zebrette | Udinese Calcio |
+| venezia, arancioneverdi, lagunari | Venezia FC |
 
 ## Note operative
 
