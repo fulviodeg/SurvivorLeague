@@ -276,6 +276,11 @@ unset ENV_FILE
   scarto) e un **DB piattaforma dedicato** (`PLATFORM_DB_PATH=./data/uat-platform.db`,
   mai `./data/platform.db`);
 - controlla sempre il banner `TEST MODE` a inizio output prima di procedere;
+- **verifica la casella con `channel:email:fetch` PRIMA di `tournament:start`**
+  e DOPO un reset/run abortito: deve riportare "Nessuna email non letta in
+  casella" (un residuo non letto verrebbe processato dal primo
+  `channel:email:process` del nuovo run e potrebbe corromperlo — vedi §2.5
+  e l'incidente UAT 2026-08-31);
 - alla fine di ogni sessione, **ripulisci la casella Gmail condivisa** dalle
   email di test (vedi §8).
 
@@ -309,7 +314,22 @@ ENV_FILE=.env.uat npm run cli -- platform:migrate
 ENV_FILE=.env.uat npm run cli -- data:seed-synthetic --teams 4 --rounds 2 --spacing-min 45 --first-kickoff-offset-min 60 --seed 42
 # 3. Verifica il calendario e il banner TEST MODE
 ENV_FILE=.env.uat npm run cli -- data:calendar
+# 4. PRE-FLIGHT casella (PRIMA di tournament:start): nessun residuo non letto
+ENV_FILE=.env.uat npm run cli -- channel:email:fetch
+#    Output atteso: "Nessuna email non letta in casella"
 ```
+
+> **Pre-flight casella (incidente UAT 2026-08-31).** `channel:email:process` legge
+> TUTTE le email non lette: un residuo del run precedente (un pick, un
+> `PARTECIPO`, una risposta) rimasto in casella dopo un reset/run abortito
+> verrebbe registrato nel NUOVO run come **pick fantasma** (con rifiuti
+> fuorvianti per il giocatore e rischio di eliminazione ingiusta). La verifica
+> con `channel:email:fetch` (sola lettura, non marca nulla) è obbligatoria
+> PRIMA di `tournament:start` e DOPO un reset/run abortito: se ci sono non
+> lette, l'operatore decide come gestirle (mai cancellare registrazioni
+> valide). Da questa iterazione il sistema rifiuta comunque i pick ricevuti
+> prima dell'apertura del round (`pick_before_round_open`), ma la casella
+> pulita resta la pratica corretta.
 
 > **Avvio della stagione.** Per avviare la stagione si usa `tournament:start`,
 > che accetta l'opzione `--start-round <n>` (default `1`) per l'**aggancio
@@ -1311,6 +1331,18 @@ con `[TEST MODE]`. Le email **ricevute** dai giocatori (i loro pick) non
 portano il banner (il sistema non può modificare le email in ingresso), ma si
 riconoscono dal contenuto (squadre del calendario sintetico, riferimenti alle giornate di
 test) e dal fatto che sono state inviate durante la sessione di test.
+
+> **Pre-flight prima di un nuovo run (incidente UAT 2026-08-31).** La pulizia
+> della casella non è solo un'igiene di fine sessione: PRIMA di ogni nuovo
+> `tournament:start` (e DOPO un reset del DB o un run abortito) verifica con
+> `channel:email:fetch` che non ci siano email non lette residue. Il reset del
+> DB torneo NON pulisce la casella: un residuo non letto (pick, `PARTECIPO`,
+> risposta) verrebbe letto dal primo `channel:email:process` del nuovo run e
+> registrato come **pick fantasma** sul round corrente, producendo rifiuti
+> fuorvianti e il rischio di un'eliminazione per un pick mai inviato in quel
+> run. (Il sistema ora rifiuta anche i pick ricevuti prima dell'apertura del
+> round — `pick_before_round_open` — ma la casella pulita resta la pratica
+> corretta: nessuna registrazione valida va mai cancellata.)
 
 **Procedura di cleanup:**
 

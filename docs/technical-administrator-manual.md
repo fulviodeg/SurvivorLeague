@@ -712,6 +712,16 @@ auto-joined at `tournament:start`; the others declare with `PARTECIPO` /
 
 ### 6.3 Tournament start
 
+Before starting, **verify the shared mailbox**: run `channel:email:fetch` (§5.2) —
+it must report `Nessuna email non letta in casella`. Any unread message (a
+leftover pick, a subscription, a `PARTECIPO`) would be read by the first
+`channel:email:process` of the new run and could register a **ghost pick or
+profile** in the new tournament (UAT incident 2026-08-31: a residual pick email
+became a ghost pick and produced misleading rejections). If there are unread
+emails, the operator decides how to handle them — never delete valid
+registrations. This check is mandatory **after a reset/aborted run too**: the
+database reset does NOT clean the mailbox.
+
 The commissioner runs `tournament:start [--start-round <n>]` (default
 attachment to TC 1; any TC of the season can be chosen). The system:
 
@@ -824,13 +834,21 @@ has closed:
 1. **Verify the archive.** Confirm that the automatic export of the closed
    tournament exists in `TOURNAMENT_EXPORT_DIR` — it is the historical record
    that makes the restart safe.
-2. **Run `tournament:start [--start-round <n>]` again.** When the previous
+2. **Verify the mailbox (pre-flight).** Run `channel:email:fetch` (§5.2) — it
+   must report `Nessuna email non letta in casella`. The reset of the
+   tournament database does **not** clean the mailbox: any unread message left
+   from the previous run (pick, subscription, `PARTECIPO`) would be processed
+   by the first `channel:email:process` of the new run and could register a
+   **ghost pick or profile** (UAT incident 2026-08-31). If there are unread
+   emails, the operator decides how to handle them — never delete valid
+   registrations.
+3. **Run `tournament:start [--start-round <n>]` again.** When the previous
    tournament is closed, the start is re-admitted and **atomically resets
    only the tournament database** (profiles, picks, round state): the
    **platform database is untouched** — accounts, names and their
    `registerID`s persist across tournaments, so players do not need to
    re-register.
-3. Restore the `scheduler:tick` cron line if running in scheduler mode.
+4. Restore the `scheduler:tick` cron line if running in scheduler mode.
 
 The calendar data (`match` table) is not touched by the reset: the same
 season data serves the new tournament.

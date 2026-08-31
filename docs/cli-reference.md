@@ -523,7 +523,9 @@ pick:register --round <n> --profileId <id> --team <name> [--outcome <win|draw|lo
 **Purpose.** Validates a pick (same rules as automatic picks, always) and
 registers it atomically — one valid pick per profile per round (enforced by
 database uniqueness). This is the commissioner's override tool: `--reason`
-bypasses **only** the time checks (acceptance window), never the other rules.
+bypasses **only** the time checks (pick received before the round opened
+`pick_before_round_open`, acceptance window `after_acceptance`, anti-fraud
+kickoff `after_kickoff`), never the other rules.
 The profile's platform account must be `active`: otherwise the command exits
 with code `1` and a message naming the blocked account. With `--jolly` the
 pick is registered with `jolly_used=1` and the profile's `jollies_remaining`

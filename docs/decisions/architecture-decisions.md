@@ -27,6 +27,7 @@
 | [ADR-017](#adr-017-auto-pick-al-mancato-invio-autopick_on_missing) | Auto-pick al mancato invio (`AUTOPICK_ON_MISSING`) | Accepted (2026-08-30) |
 | [ADR-018](#adr-018-jolly--token-che-salva-dal-pareggio-in-win_only-jollies_per_player) | Jolly — token che salva dal pareggio in `win_only` (`JOLLIES_PER_PLAYER`) | Accepted (2026-08-30) |
 | [ADR-019](#adr-019-partecipazione-opt-in-registration-vs-join-e-rimozione-dellauto-join-al-primo-pick) | Partecipazione opt-in (registration ≠ join) e rimozione dell'auto-join al primo pick | Accepted (2026-08-30) |
+| [ADR-020](#adr-020-guardia-temporale-pick_before_round_open-e-riordino-della-cascata-pick) | Guardia temporale `pick_before_round_open` e riordino della cascata pick | Accepted (2026-08-31) |
 
 ---
 
@@ -506,6 +507,30 @@
 - *Secondo intento LLM "join" separato dal parser deterministico* — scartata (D13): entrambi gli implementatori del classificatore riconoscono `join`/`PARTECIPO`.
 
 **Conseguenze.** Il profilo esiste a partire da `tournament:start` (per gli auto-join ON) o dalla dichiarazione (per gli OFF/late): **l'autopick torna a coprire chi è in gara ma dimentica il pick**, che è il suo scopo (ADR-017). La decisione "chi partecipa" vive SOLO nel Game Engine (`registration.ts`/`tournament.ts`/`round-manager.ts`); canale e LLM ricevono dati già composti. I flag sono colonne additive (nessun rebuild, migrazioni idempotenti, default 1 coerente col comportamento reale). Nessuna nuova env var. La terminologia registration/join è vincolante nella documentazione e nel codice (intento `join` vs `subscribe`, `tournament:join` vs `platform:register`). L'**ADR-009 decisione 6 (auto-join al TT1) e il concetto "auto-join al primo pick" (RF-P5) sono sostituiti** dal modello qui descritto; la decisione 7 è emendata sulla matrice notifiche.
+
+---
+
+## ADR-020: Guardia temporale `pick_before_round_open` e riordino della cascata pick
+
+- **Status:** Accepted
+- **Date:** 2026-08-31
+- **Riferimenti:** ADR-001 (`receivedAt` autorevole) · ADR-003 · ADR-008 (US10 override) · ADR-016 (cascata `invalid_outcome`) · PRD (RF-08 un pick per profilo per round, RF-10/CS5 squadre bruciate) · LLD §3.1 (cascata pick) · Piano `.kilo/plans/1788191141330-fix-post-uat-residual-email-pick.md` (incidente UAT 2026-08-31)
+
+**Contesto.** Nel run UAT del 2026-08-31 (scheduler automatico) un'email **residua** di un run precedente (reply "milan", rimasta non letta in casella dopo il reset del solo DB torneo) è stata letta dal primo `channel:email:process` del nuovo run e registrata come **pick fantasma** per il round corrente (il processore assegna ogni email al round attualmente aperto; la casella non era stata pulita prima dell'avvio). Il vero pick del giocatore è stato poi rifiutato con il motivo fuorviante `team_already_used` (la cascata valuta `isBurned` — che include il pick del round corrente — PRIMA del check "pick già esistente"). Due difetti distinti: (1) **nessuna guardia temporale** contro pick ricevuti PRIMA dell'apertura del round; (2) **ordine della cascata** che maschera l'invariante primario RF-08 dietro il motivo squadra-bruciata.
+
+**Decisione.**
+
+1. **Guardia temporale `pick_before_round_open`.** In `checkAcceptance` (pick-processor) il round aperto è accettato solo se `receivedAt >= round_state.opened_at`: un pick ricevuto prima dell'apertura è un **residuo di un run precedente**, mai un pick legittimo (le istruzioni di pick partono con `round:open`, quindi un giocatore non può rispondere prima). Rifiuto con nuovo reason `pick_before_round_open` (catalogo `PICK_REJECT_REASONS`), tradotto in italiano nel canale email. La colonna `opened_at` è già nello schema (nessuna migrazione). **È un check temporale** → coperto dall'override US10 `pick:register --reason` (come `after_acceptance`/`after_kickoff`). Con `TEST_OFFSET_DAYS>0` (replay) `opened_at` e `receivedAt` sono shiftati dello STESSO delta → ordine preservato, nessun falso positivo.
+2. **Riordino della cascata (RF-08 primario).** In `validatePick` il check "esiste già un pick per profilo+round" (`pick_already_exists`) viene PRIMA del check delle squadre bruciate (`team_already_used`): qualunque nuovo invio a round già coperto è un **duplicato** a prescindere dalla squadra. `team_already_used` resta per squadre bruciate in round PRECEDENTI (profilo senza pick nel round corrente). Nessuna modifica a `isBurned`/`getBurnedTeams` (i frozen contano, include il round corrente) e nessun cambiamento di accettazione: i pick rifiutati restano rifiutati, cambia solo il motivo per i duplicati.
+3. **Difesa in profondità + pratica operativa.** La guardia (1) rende innocuo un residuo processato per errore, ma la pratica corretta resta il **pre-flight casella**: `channel:email:fetch` prima di `tournament:start` e dopo un reset/run abortito (guida test-mode §2.4/§2.5/§8, manuale §6.3/§6.7). Nessuna pulizia automatica della casella (fuori scope POC, LLD §6.4).
+
+**Alternative considerate.**
+- *Pulizia automatica della casella a `tournament:start`* — scartata: il reset del DB non deve toccare il canale email (mai cancellare registrazioni valide; la decisione resta dell'operatore).
+- *Ancorare il pick al round "più recente" via subject/header* — scartata: fragile e fuori dal contratto ADR-001 (`receivedAt` è l'unico timestamp autorevole).
+- *Filtrare il residuo nel processor (confronto con `opened_at` lì)* — scartata: la regola temporale è logica di gioco e vive nel Game Engine (AGENTS.md §1.3), non nel wiring.
+- *Tenere `team_already_used` per i duplicati* — scartata: motivo fuorviante per il giocatore (l'email dice "squadra già scelta" quando il problema è "pick già inviato") e incoerente con RF-08.
+
+**Conseguenze.** Un'email residua processata a round aperto è rifiutata con `pick_before_round_open` e NON crea più pick fantasma (nessun impatto sullo stato di gioco; il messaggio resta non letto → visto dal pre-flight o marcato letto dal processore come rifiuto). I duplicati nello stesso round restituiscono `pick_already_exists` (messaggi più chiari, "First valid Pick wins" invariato). `PICK_REJECT_REASONS` cresce di un motivo (13) e l'enum riflette il nuovo ordine di applicazione; test unit/integrazione aggiornati (incluso il test anti-codici del renderer). Documentazione operativa aggiornata col pre-flight casella.
 
 ---
 
