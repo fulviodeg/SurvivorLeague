@@ -13,6 +13,12 @@ build/
 
 # --- Dati di runtime e log (database SQLite, log, file temporanei) ---
 data/
+# Eccezione obbligatoria: `data/` ignora QUALSIASI cartella chiamata `data`,
+# inclusa `src/data/` che contiene CODICE SORGENTE (SeasonDataProvider e
+# generatore sintetico). Senza questa eccezione i sorgenti della stagione
+# non vengono MAI tracciati e un clone fresco del repo non compila (scoperta
+# 2026-08-31). I database di runtime in `data/` restano ignorati.
+!src/data/
 .tmp/
 coverage/
 *.log
