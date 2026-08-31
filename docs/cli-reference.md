@@ -1138,6 +1138,17 @@ required), an explicit "pareggia"/"perde" is **not** recognized (→
 resolving the team; with jolly disabled the keyword is noise (ignored). The
 output shows `, jolly: true` when present.
 
+**Note (alias, 2026-08-31).** In `--mode llm` the extracted team is resolved
+against the canonical list **and** the alias table (shared `team-terms`
+module): if the LLM returns an abbreviated name (e.g. "Parma" or "Inter") as
+the `team`, it is accepted with the canonical name (e.g. `Parma Calcio 1913`,
+`FC Internazionale Milano`); a name not resolvable to any canonical is still
+rejected (`team: null`). As in the email channel (`AI_EMAIL_PARSER=true`),
+the LLM path is wrapped in the deterministic fallback: on `LLMError` or
+doubtful results (`other`/`pick:null`) the deterministic classifier decides
+(`llm_false_negative` warning). The deterministic mode (`--mode
+deterministic`) already resolved aliases via longest-match.
+
 ---
 
 ### `llm:classify`
@@ -1171,6 +1182,15 @@ mode-aware: a bare team name is a valid pick `{team, "win"}`, an explicit
 `JOLLIES_PER_PLAYER ≥ 1`), the keyword "jolly" sets `jolly: true` in the
 pick (the output shows `, jolly: true` when present); the keyword never
 changes the outcome (always `win` in `win_only`).
+
+**Note (alias, 2026-08-31).** In `--mode llm` the pick's team is resolved
+against the canonical list **and** the alias table: an abbreviated name
+returned by the LLM (e.g. "Parma") is accepted with the canonical name; a
+name not resolvable to any canonical is still rejected (`pick: null`). As in
+the email channel (`AI_EMAIL_PARSER=true`), the LLM path is wrapped in the
+deterministic fallback: on `LLMError` or doubtful results (`other`/
+`pick:null`) the deterministic classifier decides (`llm_false_negative`
+warning).
 
 ---
 

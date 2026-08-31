@@ -28,11 +28,16 @@
  *
  * Invariati: interfacce (`LLMIntentClassifier`, `PickParseOptions`), Game
  * Engine, Platform Registry, Reply Cleaner.
+ *
+ * Termini squadra e normalizzazione: modulo condiviso `src/llm/team-terms.ts`
+ * (Task 2, AGENTS.md §1.3: nessuna duplicazione — il filtro del classificatore
+ * LLM riusa gli stessi termini per la soluzione alias, soluzione B).
  */
 import type { IntentClassification, LLMIntentClassifier } from './intent-classifier.js';
 import type { PickExtraction, PickParseOptions } from './parser.js';
 import { LLMError } from './errors.js';
 import type { WarnLogger } from './deterministic-generator.js';
+import { buildTeamTerms, normalize, resolveTeam, type TeamTerm } from './team-terms.js';
 
 /** Lunghezza massima del nome estratto dalla formula `ISCRIZIONE [NOME]`. */
 const MAX_NAME_CHARS = 40;
@@ -41,64 +46,6 @@ const MAX_NAME_CHARS = 40;
 const WIN_WORDS = ['vince', 'vincera', 'vittoria', 'win'] as const;
 const DRAW_WORDS = ['pareggia', 'pareggio', 'draw'] as const;
 const LOSE_WORDS = ['perde', 'perdera', 'sconfitta', 'lose'] as const;
-
-/**
- * Normalizza un testo per il confronto: minuscolo, trim e rimozione degli
- * accenti (NFD + strip dei combining mark) — "vincerà" → "vincera",
- * "Catanzaro" → "catanzaro".
- */
-function normalize(text: string): string {
-  return text
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim();
-}
-
-/** Termine confrontabile (normalizzato) → nome canonico della squadra. */
-interface TeamTerm {
-  term: string;
-  canonical: string;
-}
-
-/**
- * Costruisce i termini di squadra confrontabili: nomi canonici (da `teams`,
- * iniettati) + alias (parse della tabella markdown `aliases`, formato
- * `team-aliases.md`/`team-aliases-synthetic.md`). Le righe di intestazione e
- * separatore sono scartate perché il loro "canonico" non è in `teams`.
- * Ordinati per lunghezza DECRESCENTE per il longest-match.
- */
-function buildTeamTerms(teams: string[], aliases: string): TeamTerm[] {
-  const teamSet = new Set(teams);
-  const terms: TeamTerm[] = [];
-  for (const team of teams) {
-    terms.push({ term: normalize(team), canonical: team });
-  }
-  for (const line of aliases.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('|')) continue;
-    const cells = trimmed.split('|').map((cell) => cell.trim());
-    const aliasCell = cells[1];
-    const canonical = cells[2];
-    if (aliasCell === undefined || canonical === undefined) continue;
-    if (!teamSet.has(canonical)) continue;
-    for (const alias of aliasCell.split(',')) {
-      const term = normalize(alias);
-      if (term !== '') terms.push({ term, canonical });
-    }
-  }
-  terms.sort((a, b) => b.term.length - a.term.length);
-  return terms;
-}
-
-/** Risolve la squadra dal testo (longest-match): null se nessun termine combacia. */
-function resolveTeam(text: string, terms: TeamTerm[]): string | null {
-  const normalized = normalize(text);
-  for (const { term, canonical } of terms) {
-    if (normalized.includes(term)) return canonical;
-  }
-  return null;
-}
 
 /** Esito con la posizione del primo sinonimo trovato (word boundary). */
 function findOutcome(normalized: string): { outcome: PickExtraction['outcome']; index: number } | null {
@@ -245,11 +192,19 @@ export class DeterministicIntentClassifier implements LLMIntentClassifier {
 
 /**
  * Classificatore con fallback deterministico (modalità `AI_EMAIL_PARSER=true`,
- * decisione 2): avvolge l'`OpenAIIntentClassifier`; su `LLMError` ripiega sul
- * `DeterministicIntentClassifier` e logga un warn pino `{reason, type}` — il
- * messaggio viene comunque classificato e il batch NON si ferma. Gli esiti di
- * contenuto legittimi (`other`/`pick:null`) NON vengono rieseguiti (nessun
- * doppio passaggio). Gli errori NON-LLM sono rilanciati.
+ * decisione 2 + soluzione A del piano
+ * `.kilo/plans/1788161325462-abbreviated-name-never-fail.md`): avvolge
+ * l'`OpenAIIntentClassifier`. Su `LLMError` ripiega sul
+ * `DeterministicIntentClassifier` e logga un warn pino `{reason: 'llm_error'}`
+ * — il messaggio viene comunque classificato e il batch NON si ferma. Sugli
+ * esiti di CONTENUTO "dubbiosi" (`other` o `pick:null` — bug UAT 2026-08-30:
+ * l'LLM con successo può avere falsi negativi su nomi abbreviati validi) il
+ * deterministico è consultato come SECONDA OPINIONE: se riconosce un pick,
+ * vince lui con warn `{reason: 'llm_false_negative'}`; altrimenti resta
+ * l'esito LLM. Regole: SOLO upgrade a pick (subscribe/unsubscribe/join restano
+ * come classificati dall'LLM), MAI il contrario (doppia barriera D2/C: un pick
+ * non viene mai accettato se il deterministico non lo conferma). Gli errori
+ * NON-LLM sono rilanciati.
  */
 export class FallbackIntentClassifier implements LLMIntentClassifier {
   private readonly llm: LLMIntentClassifier;
@@ -264,7 +219,24 @@ export class FallbackIntentClassifier implements LLMIntentClassifier {
 
   async classify(body: string, opts: PickParseOptions): Promise<IntentClassification> {
     try {
-      return await this.llm.classify(body, opts);
+      const llmResult = await this.llm.classify(body, opts);
+      // Esito "dubbioso" dell'LLM: `other` o intento `pick` senza pick. Sono
+      // i casi in cui un falso negativo su un nome abbreviato valido finirebbe
+      // in clarification: il deterministico (formule univoche + alias) decide
+      // se c'è davvero un pick riconoscibile.
+      const doubtful =
+        llmResult.intent === 'other' || (llmResult.intent === 'pick' && llmResult.pick === null);
+      if (doubtful) {
+        const det = await this.deterministic.classify(body, opts);
+        if (det.intent === 'pick' && det.pick !== null) {
+          this.logger.warn(
+            { reason: 'llm_false_negative' },
+            'LLM returned non-pick but deterministic classifier found a valid pick — using deterministic result'
+          );
+          return det;
+        }
+      }
+      return llmResult;
     } catch (error) {
       if (error instanceof LLMError) {
         this.logger.warn(

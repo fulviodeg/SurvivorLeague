@@ -32,6 +32,7 @@ import { z } from 'zod';
 import type { PickExtraction, PickParseOptions } from './parser.js';
 import { OpenAIClient } from './openai-client.js';
 import { UNSUBSCRIBE_CONFIRM_WORDS } from './templates.js';
+import { buildTeamTerms, resolveTeamField } from './team-terms.js';
 
 /** Intenti riconosciuti dal classificatore (ADR-009, LLD §6.2; ADR-019 `join`). */
 export type MessageIntent = 'subscribe' | 'unsubscribe' | 'join' | 'pick' | 'other';
@@ -93,6 +94,9 @@ export function buildClassifySystemPrompt(opts: PickParseOptions): string {
   // ADR-016 (win_only): istruzioni dedicate quando la modalità è attiva — il
   // giocatore sceglie SOLO la squadra vincente; una squadra nuda è sufficiente
   // (outcome 'win' implicito), un pareggio/sconfitta esplicito invalida il pick.
+  // Rafforzamento (soluzione C, bug UAT 2026-08-30): esempio esplicito di
+  // squadra NUDO ABBREVIATO → pick valido, per ridurre i falsi negativi
+  // dell'LLM sui nomi abbreviati.
   const winOnlyRules =
     opts.winOnly === true
       ? [
@@ -100,6 +104,8 @@ export function buildClassifySystemPrompt(opts: PickParseOptions): string {
           'MODALITÀ WIN_ONLY: il giocatore sceglie SOLO la squadra che vincerà;',
           'l\'outcome è SEMPRE "win". Se il testo nomina solo una squadra senza esito,',
           'imposta "outcome": "win".',
+          'Una squadra nuda (anche abbreviata) è un pick VALIDO:',
+          'es. "Parma" → {"intent": "pick", "pick": {"team": "Parma Calcio 1913", "outcome": "win"}}.',
           'Se il testo esprime esplicitamente un pareggio o una sconfitta della squadra',
           '("pareggia"/"perde"), il pick NON è valido: rispondi con',
           '"pick": {"team": null, "outcome": null} (l\'intent resta "pick").'
@@ -122,6 +128,25 @@ export function buildClassifySystemPrompt(opts: PickParseOptions): string {
   const jsonFormat = opts.jollyEnabled === true
     ? '{"intent": "subscribe"|"unsubscribe"|"join"|"pick"|"other", "pick": {"team": "<nome canonico o null>", "outcome": "win"|"draw"|"lose"|null, "jolly": true|false|null} | null, "name": "<nome del giocatore o null>"}'
     : '{"intent": "subscribe"|"unsubscribe"|"join"|"pick"|"other", "pick": {"team": "<nome canonico o null>", "outcome": "win"|"draw"|"lose"|null} | null, "name": "<nome del giocatore o null>"}';
+  // Esempi di risoluzione alias (soluzione C, bug UAT 2026-08-30): il campo
+  // "team" DEVE essere il nome canonico esatto, mai l'alias; in win_only gli
+  // esempi sono squadre nude (outcome implicito 'win'), in classica con esito.
+  const aliasExamples =
+    opts.winOnly === true
+      ? [
+          '',
+          'Esempi di risoluzione alias (il campo "team" DEVE essere il nome canonico esatto):',
+          '- "Parma" → {"intent": "pick", "pick": {"team": "Parma Calcio 1913", "outcome": "win"}}',
+          '- "Inter" → {"intent": "pick", "pick": {"team": "FC Internazionale Milano", "outcome": "win"}}',
+          '- "Milan" → {"intent": "pick", "pick": {"team": "AC Milan", "outcome": "win"}}'
+        ]
+      : [
+          '',
+          'Esempi di risoluzione alias (il campo "team" DEVE essere il nome canonico esatto):',
+          '- "juve vince" → {"intent": "pick", "pick": {"team": "Juventus FC", "outcome": "win"}}',
+          '- "milan pareggia" → {"intent": "pick", "pick": {"team": "AC Milan", "outcome": "draw"}}',
+          '- "l\'Inter perde" → {"intent": "pick", "pick": {"team": "FC Internazionale Milano", "outcome": "lose"}}'
+        ];
   return [
     `Sei il classificatore di Survivor League, ${league}`,
     'Il giocatore scrive un\'email in italiano. Classifica l\'intento del messaggio:',
@@ -153,9 +178,12 @@ export function buildClassifySystemPrompt(opts: PickParseOptions): string {
     '',
     'Alias noti che il giocatore può usare (risolvili verso il nome canonico):',
     opts.aliases,
+    ...aliasExamples,
     '',
     'Regole:',
     '- Se il team è ambiguo o non riconducibile a UN SOLO nome della lista, rispondi {"intent": "pick", "pick": {"team": null, "outcome": null}}.',
+    '- Se il testo nomina una squadra riconoscibile (nome canonico o alias della lista),',
+    '  rispondere "other" o con "team": null è un ERRORE GRAVE: DEVI riconoscere il pick.',
     '- MAI inventare nomi di squadre: non esiste alcun nome fuori dalla lista.',
     '- L\'esito si riferisce alla squadra scelta: win = vince la squadra scelta,',
     '  draw = pareggio, lose = perde la squadra scelta.',
@@ -177,13 +205,14 @@ export class OpenAIIntentClassifier implements LLMIntentClassifier {
 
   /**
    * Classifica il corpo: prompt di sistema (lista+alias iniettati) + testo →
-   * JSON validato con zod → filtro deterministico esatto sul pick. Contenuto
-   * ambiguo/malformato → `other`/`pick:null` (mai eccezioni, CS7); errori di
-   * trasporto/HTTP → `LLMError` rilanciata (D3). L'INTENTO è classificato
-   * anche con lista squadre vuota (es. DB torneo senza dati stagione):
-   * subscribe/unsubscribe restano indipendenti dai dati del torneo (ADR-009,
-   * "indipendenti dai round"); il filtro esatto su `parseClassification`
-   * azzera comunque il pick (nessun nome della lista vuota può matchare).
+   * JSON validato con zod → filtro deterministico esatto sul pick (con
+   * risoluzione alias, soluzione B). Contenuto ambiguo/malformato →
+   * `other`/`pick:null` (mai eccezioni, CS7); errori di trasporto/HTTP →
+   * `LLMError` rilanciata (D3). L'INTENTO è classificato anche con lista
+   * squadre vuota (es. DB torneo senza dati stagione): subscribe/unsubscribe
+   * restano indipendenti dai dati del torneo (ADR-009, "indipendenti dai
+   * round"); il filtro esatto su `parseClassification` azzera comunque il
+   * pick (nessun nome della lista vuota può matchare).
    */
   async classify(body: string, opts: PickParseOptions): Promise<IntentClassification> {
     const raw = await this.client.chatCompletion(
@@ -191,19 +220,32 @@ export class OpenAIIntentClassifier implements LLMIntentClassifier {
       'json_object'
     );
 
-    return this.parseClassification(raw, opts.teams, opts.winOnly === true, opts.jollyEnabled === true);
+    return this.parseClassification(
+      raw,
+      opts.teams,
+      opts.aliases,
+      opts.winOnly === true,
+      opts.jollyEnabled === true
+    );
   }
 
   /**
-   * Valida il testo restituito dall'LLM: JSON → zod → filtro esatto sulla
-   * lista canonica. Qualsiasi scostamento strutturale (JSON malformato,
-   * intento sconosciuto) → `{intent:'other', pick:null}` senza eccezioni
-   * (CS7); intento `pick` con squadra fuori lista o esito invalido → pick
-   * azzerato a null (l'LLM propone, il check dispone — doppia barriera D2/C).
+   * Valida il testo restituito dall'LLM: JSON → zod → filtro deterministico
+   * sul pick. Il filtro (D2, soluzione B — bug UAT 2026-08-30) risolve il
+   * campo `team` contro canonici + alias tramite il modulo condiviso
+   * `team-terms.ts` (stessi termini del parser deterministico): l'LLM può
+   * emettere un alias (es. "Parma", "l'Inter") come nome della squadra → viene
+   * accettato col NOME CANONICO; un valore non riconducibile → pick azzerato
+   * (mai nomi inventati fuori dall'I/O). Qualsiasi scostamento strutturale
+   * (JSON malformato, intento sconosciuto) → `{intent:'other', pick:null}`
+   * senza eccezioni (CS7); intento `pick` con squadra non risolta o esito
+   * invalido → pick azzerato a null (l'LLM propone, il check dispone — doppia
+   * barriera D2/C).
    */
   private parseClassification(
     raw: string,
     teams: string[],
+    aliases: string,
     winOnly = false,
     jollyEnabled = false
   ): IntentClassification {
@@ -227,9 +269,12 @@ export class OpenAIIntentClassifier implements LLMIntentClassifier {
     // Feature JOLLY (D4): il flag viaggia dall'I/O al motore SOLO quando i
     // jolly sono attivi (jollyEnabled); altrimenti è azzerato (rumore).
     const jolly = jollyEnabled && pick.jolly === true;
-    // Filtro deterministico esatto (D2): solo nomi canonici ed esiti validi.
+    // Filtro deterministico (D2, soluzione B): il campo `team` è risolto
+    // contro canonici + alias (confronto esatto normalizzato); solo nomi
+    // canonici ed esiti validi escono dall'I/O.
     if (team === null) return { intent: 'pick', pick: null, name: null };
-    if (!teams.includes(team)) return { intent: 'pick', pick: null, name: null };
+    const resolved = resolveTeamField(team, buildTeamTerms(teams, aliases));
+    if (resolved === null) return { intent: 'pick', pick: null, name: null };
     // ADR-016 (win_only): l'unico esito ammesso è 'win' — un outcome
     // draw/lose esplicito rende il pick non valido (→ pick null, chiarimento);
     // outcome null o 'win' → 'win' (il giocatore sceglie solo la squadra).
@@ -237,12 +282,16 @@ export class OpenAIIntentClassifier implements LLMIntentClassifier {
       if (outcome === 'draw' || outcome === 'lose') {
         return { intent: 'pick', pick: null, name: null };
       }
-      return { intent: 'pick', pick: jolly ? { team, outcome: 'win', jolly } : { team, outcome: 'win' }, name: null };
+      return {
+        intent: 'pick',
+        pick: jolly ? { team: resolved, outcome: 'win', jolly } : { team: resolved, outcome: 'win' },
+        name: null
+      };
     }
     if (outcome === null) return { intent: 'pick', pick: null, name: null };
     return {
       intent: 'pick',
-      pick: jolly ? { team, outcome, jolly } : { team, outcome },
+      pick: jolly ? { team: resolved, outcome, jolly } : { team: resolved, outcome },
       name: null
     };
   }

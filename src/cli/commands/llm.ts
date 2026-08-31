@@ -29,10 +29,14 @@ import { createConnection } from '../../db/connection.js';
 import { migrate } from '../../db/schema.js';
 import { EMAIL_TYPES, OpenAIGenerator, subjectFor, type EmailContext } from '../../llm/generator.js';
 import { DeterministicGenerator } from '../../llm/deterministic-generator.js';
-import { DeterministicIntentClassifier } from '../../llm/deterministic-parser.js';
+import {
+  DeterministicIntentClassifier,
+  FallbackIntentClassifier
+} from '../../llm/deterministic-parser.js';
 import { OpenAIIntentClassifier } from '../../llm/intent-classifier.js';
 import { OpenAIClient } from '../../llm/openai-client.js';
-import { loadTeamAliasesFor, OpenAIParser } from '../../llm/parser.js';
+import { loadTeamAliasesFor } from '../../llm/parser.js';
+import { createLogger } from '../../logger.js';
 import { modeFor } from '../../game/mode.js';
 import { jsonWithTestMode, printTestModeBanner } from '../output.js';
 
@@ -79,18 +83,34 @@ export const llmParseCommand: CommandModule<object, JsonArg & { input: string; m
         jollyEnabled: config.WIN_ONLY && config.JOLLIES_PER_PLAYER >= 1
       };
       // `--mode` esplicito prevale sulla config; senza --mode si segue la config
-      // (default deterministico, email v3 Parte B).
+      // (default deterministico, email v3 Parte B). In modalità LLM il
+      // classificatore è avvolto dal `FallbackIntentClassifier` (come il
+      // wiring email, AI_EMAIL_PARSER=true): su LLMError e sugli esiti
+      // dubbiosi (other/pick:null) il deterministico decide — la diagnostica
+      // CLI replica il comportamento reale del canale (bug UAT 2026-08-30).
       const useLlm = argv.mode === 'llm' || (argv.mode === undefined && config.AI_EMAIL_PARSER);
+      const logger = createLogger(
+        config.LOG_LEVEL,
+        undefined,
+        config.testMode,
+        config.TIMEZONE,
+        config.LOG_FILE
+      );
+      const client = new OpenAIClient({
+        baseUrl: config.LLM_API_BASE_URL,
+        apiKey: config.LLM_API_KEY,
+        models: config.LLM_MODEL,
+        timeoutMs: config.LLM_TIMEOUT_MS,
+        retries: config.LLM_RETRIES
+      });
       const result = useLlm
-        ? await new OpenAIParser(
-            new OpenAIClient({
-              baseUrl: config.LLM_API_BASE_URL,
-              apiKey: config.LLM_API_KEY,
-              models: config.LLM_MODEL,
-              timeoutMs: config.LLM_TIMEOUT_MS,
-              retries: config.LLM_RETRIES
-            })
-          ).extractPick(argv.input, opts)
+        ? (
+            await new FallbackIntentClassifier(
+              new OpenAIIntentClassifier(client),
+              new DeterministicIntentClassifier(),
+              logger
+            ).classify(argv.input, opts)
+          ).pick
         : (await new DeterministicIntentClassifier().classify(argv.input, opts)).pick;
       const output = result ?? { team: null };
       if (argv.json) {
@@ -171,17 +191,32 @@ export const llmClassifyCommand: CommandModule<object, ClassifyArgs> = {
       const teams = await provider.getTeams();
       const aliases = await loadTeamAliasesFor(config.testMode);
       // `--mode` esplicito prevale sulla config; senza --mode si segue la config
-      // (default deterministico, email v3 Parte B).
+      // (default deterministico, email v3 Parte B). In modalità LLM il
+      // classificatore è avvolto dal `FallbackIntentClassifier` (come il
+      // wiring email, AI_EMAIL_PARSER=true): su LLMError e sugli esiti
+      // dubbiosi (other/pick:null) il deterministico decide — la diagnostica
+      // CLI replica il comportamento reale del canale (bug UAT 2026-08-30).
       const useLlm = argv.mode === 'llm' || (argv.mode === undefined && config.AI_EMAIL_PARSER);
+      const logger = createLogger(
+        config.LOG_LEVEL,
+        undefined,
+        config.testMode,
+        config.TIMEZONE,
+        config.LOG_FILE
+      );
       const classifier = useLlm
-        ? new OpenAIIntentClassifier(
-            new OpenAIClient({
-              baseUrl: config.LLM_API_BASE_URL,
-              apiKey: config.LLM_API_KEY,
-              models: config.LLM_MODEL,
-              timeoutMs: config.LLM_TIMEOUT_MS,
-              retries: config.LLM_RETRIES
-            })
+        ? new FallbackIntentClassifier(
+            new OpenAIIntentClassifier(
+              new OpenAIClient({
+                baseUrl: config.LLM_API_BASE_URL,
+                apiKey: config.LLM_API_KEY,
+                models: config.LLM_MODEL,
+                timeoutMs: config.LLM_TIMEOUT_MS,
+                retries: config.LLM_RETRIES
+              })
+            ),
+            new DeterministicIntentClassifier(),
+            logger
           )
         : new DeterministicIntentClassifier();
       const body = classifyInputBody(argv.input);

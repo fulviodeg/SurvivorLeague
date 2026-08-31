@@ -377,4 +377,95 @@ describe('FallbackIntentClassifier (modalità AI_EMAIL_PARSER=true)', () => {
     await expect(fallback.classify('x', opts)).rejects.toThrow('errore inatteso');
     expect(logger.calls).toHaveLength(0);
   });
+
+  // Bug UAT 2026-08-30: l'LLM con successo può classificare `other`/`pick:null`
+  // un nome abbreviato valido (es. "Parma" → clarification). Il fallback deve
+  // consultare il deterministico anche sugli esiti di CONTENUTO dubbiosi e,
+  // se il deterministico riconosce un pick, deve vincerlo (warn
+  // {reason:'llm_false_negative'}). Mai il contrario (doppia barriera D2/C).
+  const UAT_TEAMS = ['Parma Calcio 1913', 'FC Internazionale Milano', 'AC Milan'];
+  const UAT_ALIASES = [
+    '| Alias | Nome canonico |',
+    '|---|---|',
+    '| parma, crociati, ducali | Parma Calcio 1913 |',
+    '| inter, l\'inter, nerazzurri, milano | FC Internazionale Milano |',
+    '| milan, rossoneri, diavolo | AC Milan |'
+  ].join('\n');
+  // Stessa configurazione del flusso reale UAT: win_only + jolly attivi.
+  const uatOpts = { teams: UAT_TEAMS, aliases: UAT_ALIASES, winOnly: true, jollyEnabled: true };
+
+  it('su LLM other (successo) e nome abbreviato valido → vince il deterministico + warn (bug UAT 2026-08-30)', async () => {
+    const llm: LLMIntentClassifier = {
+      classify: async () => ({ intent: 'other', pick: null, name: null })
+    };
+    const logger = fakeLogger();
+    const fallback = new FallbackIntentClassifier(llm, new DeterministicIntentClassifier(), logger);
+
+    const result = await fallback.classify('Parma', uatOpts);
+
+    expect(result).toMatchObject({
+      intent: 'pick',
+      pick: { team: 'Parma Calcio 1913', outcome: 'win' }
+    });
+    expect(logger.calls).toHaveLength(1);
+    expect(logger.calls[0]?.obj).toMatchObject({ reason: 'llm_false_negative' });
+  });
+
+  it('su LLM pick:null (successo) e nome abbreviato valido → vince il deterministico (falso negativo)', async () => {
+    const llm: LLMIntentClassifier = {
+      classify: async () => ({ intent: 'pick', pick: null, name: null })
+    };
+    const logger = fakeLogger();
+    const fallback = new FallbackIntentClassifier(llm, new DeterministicIntentClassifier(), logger);
+
+    const result = await fallback.classify('Inter', uatOpts);
+
+    expect(result).toMatchObject({
+      intent: 'pick',
+      pick: { team: 'FC Internazionale Milano', outcome: 'win' }
+    });
+    expect(logger.calls).toHaveLength(1);
+    expect(logger.calls[0]?.obj).toMatchObject({ reason: 'llm_false_negative' });
+  });
+
+  it('su LLM other con testo non riconducibile (anche per il deterministico) → resta other senza warn (nessun falso positivo)', async () => {
+    const llm: LLMIntentClassifier = {
+      classify: async () => ({ intent: 'other', pick: null, name: null })
+    };
+    const logger = fakeLogger();
+    const fallback = new FallbackIntentClassifier(llm, new DeterministicIntentClassifier(), logger);
+
+    const result = await fallback.classify('come funziona il torneo?', uatOpts);
+
+    expect(result).toMatchObject({ intent: 'other', pick: null });
+    expect(logger.calls).toHaveLength(0);
+  });
+
+  it('su LLM other e formula non-pick del deterministico (join) → resta other (scope pick-only)', async () => {
+    const llm: LLMIntentClassifier = {
+      classify: async () => ({ intent: 'other', pick: null, name: null })
+    };
+    const logger = fakeLogger();
+    const fallback = new FallbackIntentClassifier(llm, new DeterministicIntentClassifier(), logger);
+
+    const result = await fallback.classify('PARTECIPO', uatOpts);
+
+    expect(result).toMatchObject({ intent: 'other', pick: null });
+    expect(logger.calls).toHaveLength(0);
+  });
+
+  it('su LLM other e pick con jolly del deterministico → pick con jolly preservato', async () => {
+    const llm: LLMIntentClassifier = {
+      classify: async () => ({ intent: 'other', pick: null, name: null })
+    };
+    const logger = fakeLogger();
+    const fallback = new FallbackIntentClassifier(llm, new DeterministicIntentClassifier(), logger);
+
+    const result = await fallback.classify('Parma Jolly', uatOpts);
+
+    expect(result).toMatchObject({
+      intent: 'pick',
+      pick: { team: 'Parma Calcio 1913', outcome: 'win', jolly: true }
+    });
+  });
 });

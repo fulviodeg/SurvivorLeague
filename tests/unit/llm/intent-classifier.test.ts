@@ -211,6 +211,64 @@ describe('Intent Classifier — barriera deterministica esatta (D2/C) e contenut
   });
 });
 
+describe('Intent Classifier — alias nel campo team risolti al canonico (bug UAT 2026-08-30)', () => {
+  // Tabella alias in formato Markdown (come team-aliases-synthetic.md): la
+  // risorsa vera del prompt; il filtro del classificatore deve risolvere gli
+  // alias verso il nome canonico (mai nomi abbreviati fuori dall'I/O).
+  const MD_TEAMS = ['Parma Calcio 1913', 'FC Internazionale Milano', 'AC Milan'];
+  const MD_ALIASES = [
+    '| Alias | Nome canonico |',
+    '|---|---|',
+    '| parma, crociati, ducali | Parma Calcio 1913 |',
+    '| inter, l\'inter, nerazzurri, milano | FC Internazionale Milano |',
+    '| milan, rossoneri, diavolo | AC Milan |'
+  ].join('\n');
+
+  it('LLM restituisce l\'alias come team → risolto al nome canonico', async () => {
+    const { classifier } = makeClassifier(() =>
+      Promise.resolve(jsonText('{"intent": "pick", "pick": {"team": "Parma", "outcome": "win"}}'))
+    );
+    expect(await classifier.classify('Parma', { teams: MD_TEAMS, aliases: MD_ALIASES, winOnly: true })).toEqual({
+      intent: 'pick',
+      pick: { team: 'Parma Calcio 1913', outcome: 'win' },
+      name: null
+    });
+  });
+
+  it('LLM restituisce un alias con apostrofo e case diverso (l\'Inter) → risolto al canonico', async () => {
+    const { classifier } = makeClassifier(() =>
+      Promise.resolve(jsonText('{"intent": "pick", "pick": {"team": "l\'Inter", "outcome": null}}'))
+    );
+    expect(await classifier.classify('Inter', { teams: MD_TEAMS, aliases: MD_ALIASES, winOnly: true })).toEqual({
+      intent: 'pick',
+      pick: { team: 'FC Internazionale Milano', outcome: 'win' },
+      name: null
+    });
+  });
+
+  it('LLM restituisce un nome NON riconducibile → pick azzerato (barriera D2/C invariata)', async () => {
+    const { classifier } = makeClassifier(() =>
+      Promise.resolve(jsonText('{"intent": "pick", "pick": {"team": "Squadra Inventata", "outcome": "win"}}'))
+    );
+    expect(await classifier.classify('x', { teams: MD_TEAMS, aliases: MD_ALIASES, winOnly: true })).toEqual({
+      intent: 'pick',
+      pick: null,
+      name: null
+    });
+  });
+
+  it('LLM restituisce il nome canonico esatto → invariato (nessuna regressione)', async () => {
+    const { classifier } = makeClassifier(() =>
+      Promise.resolve(jsonText('{"intent": "pick", "pick": {"team": "AC Milan", "outcome": "win"}}'))
+    );
+    expect(await classifier.classify('Milan', { teams: MD_TEAMS, aliases: MD_ALIASES, winOnly: true })).toEqual({
+      intent: 'pick',
+      pick: { team: 'AC Milan', outcome: 'win' },
+      name: null
+    });
+  });
+});
+
 describe('Intent Classifier — contratto d\'errore (D3)', () => {
   it('401 → LLMError rilanciata (trasporto, non contenuto)', async () => {
     const { classifier } = makeClassifier(() =>
@@ -310,6 +368,35 @@ describe('Intent Classifier — win_only (ADR-016)', () => {
       pick: null,
       name: null
     });
+  });
+});
+
+describe('buildClassifySystemPrompt — rafforzamento squadra nuda e alias (soluzione C, bug UAT 2026-08-30)', () => {
+  it('win_only: il prompt mostra l\'esempio di squadra nuda abbreviata → pick valido', () => {
+    const prompt = buildClassifySystemPrompt({ ...opts, winOnly: true });
+    expect(prompt).toContain('Una squadra nuda (anche abbreviata) è un pick VALIDO');
+    expect(prompt).toContain('"Parma" → {"intent": "pick", "pick": {"team": "Parma Calcio 1913", "outcome": "win"}}');
+  });
+
+  it('il prompt contiene esempi di risoluzione alias → nome canonico esatto', () => {
+    const prompt = buildClassifySystemPrompt({ ...opts, winOnly: true });
+    expect(prompt).toContain('Esempi di risoluzione alias');
+    expect(prompt).toContain('"Inter" → {"intent": "pick", "pick": {"team": "FC Internazionale Milano", "outcome": "win"}}');
+    expect(prompt).toContain('"Milan" → {"intent": "pick", "pick": {"team": "AC Milan", "outcome": "win"}}');
+  });
+
+  it('il prompt vieta esplicitamente other/team:null su squadra riconoscibile (ERRORE GRAVE)', () => {
+    const prompt = buildClassifySystemPrompt({ ...opts, winOnly: true });
+    expect(prompt).toContain('rispondere "other" o con "team": null è un ERRORE GRAVE');
+    expect(prompt).toContain('DEVI riconoscere il pick');
+  });
+
+  it('modalità classica: esempi alias con esito esplicito, NIENTE esempio squadra nuda', () => {
+    const prompt = buildClassifySystemPrompt(opts);
+    expect(prompt).toContain('"juve vince" → {"intent": "pick", "pick": {"team": "Juventus FC", "outcome": "win"}}');
+    expect(prompt).toContain('Esempi di risoluzione alias');
+    expect(prompt).not.toContain('Una squadra nuda (anche abbreviata) è un pick VALIDO');
+    expect(prompt).not.toContain('"Parma" → {"intent": "pick"');
   });
 });
 

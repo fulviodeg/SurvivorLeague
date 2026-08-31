@@ -28,6 +28,10 @@ import { DbPlatformRegistry } from '../../src/platform/registry.js';
 import type { GameContext } from '../../src/game/context.js';
 import { closeRound, openRound } from '../../src/game/round-manager.js';
 import { LLMError } from '../../src/llm/errors.js';
+import {
+  DeterministicIntentClassifier,
+  FallbackIntentClassifier
+} from '../../src/llm/deterministic-parser.js';
 import type { EmailContext, LLMGenerator } from '../../src/llm/generator.js';
 import type {
   IntentClassification,
@@ -174,6 +178,23 @@ function useClassifier(ctx: GameContext, script: Map<string, IntentClassificatio
   const classifier = new FakeClassifier(script, throwError);
   ctx.classifier = classifier;
   return classifier;
+}
+
+/**
+ * Registra un profilo attivo per l'email (player+profile con register_id).
+ * Helper UNICO a livello di file (usato dai describe join/jolly/cross-check):
+ * un cambio di schema richiede un solo aggiornamento (review 2026-08-31).
+ */
+function registerProfile(db: Database.Database, platform: DbPlatformRegistry, email: string): void {
+  const account = platform.register(email, null, T_OPEN);
+  db.prepare('INSERT INTO player (email, name, register_id) VALUES (?, ?, ?)').run(
+    email,
+    'Aldo',
+    account.registerId
+  );
+  db.prepare(
+    'INSERT INTO profile (player_id, register_id) VALUES ((SELECT id FROM player WHERE email = ?), ?)'
+  ).run(email, account.registerId);
 }
 
 describe('channel:email:process — subscribe (RF-P1/P3, ADR-009)', () => {
@@ -533,19 +554,6 @@ describe('channel:email:process — pick (RF-P4; senza profilo → join, ADR-019
 });
 
 describe('channel:email:process — join (ADR-019, PARTECIPO = partecipazione)', () => {
-  /** Registra un profilo torneo per l'email (player+profile con register_id). */
-  function registerProfile(db: Database.Database, platform: DbPlatformRegistry, email: string): void {
-    const account = platform.register(email, null, T_OPEN);
-    db.prepare('INSERT INTO player (email, name, register_id) VALUES (?, ?, ?)').run(
-      email,
-      'Aldo',
-      account.registerId
-    );
-    db.prepare(
-      'INSERT INTO profile (player_id, register_id) VALUES ((SELECT id FROM player WHERE email = ?), ?)'
-    ).run(email, account.registerId);
-  }
-
   it('PARTECIPO da account active senza profilo → profilo creato + tournament_join_confirmed', async () => {
     const { db, ctx, platform, generator, deps, seen } = makeHarness();
     platform.register('nuovo@test.it', null, T_OPEN);
@@ -862,19 +870,6 @@ describe('channel:email:process — win_only (ADR-016)', () => {
 });
 
 describe('channel:email:process — jolly (feature JOLLY, D4/D11)', () => {
-  /** Registra un profilo attivo per l'email (player+profile con register_id). */
-  function registerProfile(db: Database.Database, platform: DbPlatformRegistry, email: string): void {
-    const account = platform.register(email, null, T_OPEN);
-    db.prepare('INSERT INTO player (email, name, register_id) VALUES (?, ?, ?)').run(
-      email,
-      'Aldo',
-      account.registerId
-    );
-    db.prepare(
-      'INSERT INTO profile (player_id, register_id) VALUES ((SELECT id FROM player WHERE email = ?), ?)'
-    ).run(email, account.registerId);
-  }
-
   it('il wiring passa jollyEnabled al classificatore quando i jolly sono attivi', async () => {
     const { ctx, platform, deps } = makeHarness({ winOnly: true });
     registerProfile(ctx.db, platform, 'a@test.it');
@@ -929,5 +924,65 @@ describe('channel:email:process — jolly (feature JOLLY, D4/D11)', () => {
 
     expect(classifier.calls[0]?.jollyEnabled).toBe(false);
     expect(generator.contexts[0]).toMatchObject({ type: 'pick_confirmed', jollyUsed: false });
+  });
+});
+
+describe('channel:email:process — cross-check deterministico su nomi abbreviati (bug UAT 2026-08-30, piano Task 6)', () => {
+  /**
+   * Wiring reale della modalità LLM: `FallbackIntentClassifier` attorno a un
+   * LLM scriptato (che risponde `other` con SUCCESSO — il caso UAT reale,
+   * mistral-nemo) e al `DeterministicIntentClassifier` vero. `deps` con la
+   * tabella alias in formato markdown (come la risorsa sintetica).
+   */
+  function llmWiringWithOther(ctx: GameContext, base: Parameters<typeof processEmailBatch>[2]) {
+    const llm: LLMIntentClassifier = {
+      classify: async () => ({ intent: 'other', pick: null, name: null })
+    };
+    ctx.classifier = new FallbackIntentClassifier(
+      llm,
+      new DeterministicIntentClassifier(),
+      pino({ level: 'silent' })
+    );
+    return {
+      ...base,
+      aliases:
+        '| Alias | Nome canonico |\n|---|---|\n| inter, l\'inter, nerazzurri, milano | FC Internazionale Milano |'
+    };
+  }
+
+  it('email "Inter" con LLM che risponde other → pick_registered (il deterministico vince, niente clarification)', async () => {
+    const { db, ctx, platform, generator, deps } = makeHarness({ winOnly: true });
+    registerProfile(db, platform, 'a@test.it');
+    const d = llmWiringWithOther(ctx, deps());
+
+    const result = await processEmailBatch(
+      ctx,
+      [incoming('a@test.it', 'Inter', T_PICK, '1')],
+      d
+    );
+
+    const stored = db.prepare('SELECT team, outcome, status FROM pick').get();
+    expect(stored).toMatchObject({ team: 'FC Internazionale Milano', outcome: 'win', status: 'pending' });
+    expect(generator.contexts[0]).toMatchObject({
+      type: 'pick_confirmed',
+      team: 'FC Internazionale Milano',
+      outcome: 'win'
+    });
+    expect(result.messages[0]).toMatchObject({ action: 'pick_registered', seen: true });
+  });
+
+  it('testo non riconducibile con LLM other e deterministico other → resta clarification (nessun falso positivo)', async () => {
+    const { db, ctx, platform, generator, deps } = makeHarness({ winOnly: true });
+    registerProfile(db, platform, 'a@test.it');
+    const d = llmWiringWithOther(ctx, deps());
+
+    const result = await processEmailBatch(
+      ctx,
+      [incoming('a@test.it', 'ciao a tutti', T_PICK, '1')],
+      d
+    );
+
+    expect(generator.contexts[0]).toMatchObject({ type: 'clarification' });
+    expect(result.messages[0]).toMatchObject({ action: 'clarification', seen: true });
   });
 });
