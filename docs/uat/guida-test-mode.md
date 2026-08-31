@@ -121,7 +121,7 @@ i seguenti componenti cambiano comportamento rispetto alla produzione:
 | **Timestamp di ricezione email** | `receivedAt` reale (internaldate IMAP) | Spostato indietro dello **stesso** `TEST_OFFSET_DAYS` **solo se** > 0 (replay); con 0 resta reale |
 | **Scheduler — refresh dati** | Aggiorna i risultati dall'API a ogni tick | Con `TEST_REFRESH_ALLOWED=false` (default) **salta** il refresh e lo segnala a log; con `=true` esegue ma emette un WARN di consenso a ogni operazione |
 
-**Nota email v3 Parte B (parser deterministico, ADR-014).** Con `AI_EMAIL_PARSER=false` (default) l'intento NON è classificato dall'LLM ma da un parser deterministico che riconosce SOLO formule univoche nel subject o nel corpo: `ISCRIZIONE [NOME]` (iscrizione, nome dopo la keyword), `DISISCRIZIONE` (disiscrizione) e `<TEAM> <ESITO>` (pick: squadra — nome canonico o alias — + esito `win`/`draw`/`lose` o sinonimi italiani). Qualunque altra cosa → chiarimento (`other`). Le formule libere ("voglio iscrivermi", "mi iscrivo") NON sono riconosciute. Con `AI_EMAIL_PARSER=true` si usa l'LLM con fallback per-messaggio sul deterministico. Con `AI_EMAIL_GENERATOR=false` e `AI_EMAIL_PARSER=false` la `LLM_API_KEY` non è richiesta (run senza IA).
+**Nota email v3 Parte B (parser deterministico, ADR-014).** Con `AI_EMAIL_PARSER=false` (default) l'intento NON è classificato dall'LLM ma da un parser deterministico che riconosce SOLO formule univoche nel subject o nel corpo: `ISCRIZIONE [NOME]` (iscrizione, nome dopo la keyword), `DISISCRIZIONE` (disiscrizione), **`PARTECIPO` (partecipazione al torneo, ADR-019)** e `<TEAM> <ESITO>` (pick: squadra — nome canonico o alias — + esito `win`/`draw`/`lose` o sinonimi italiani). Qualunque altra cosa → chiarimento (`other`). Le formule libere ("voglio iscrivermi", "mi iscrivo") NON sono riconosciute. Con `AI_EMAIL_PARSER=true` si usa l'LLM con fallback per-messaggio sul deterministico. Con `AI_EMAIL_GENERATOR=false` e `AI_EMAIL_PARSER=false` la `LLM_API_KEY` non è richiesta (run senza IA).
 
 **Nota modalità `win_only` (ADR-016).** Con `WIN_ONLY=true` (modalità di DEFAULT) il giocatore sceglie SOLO la squadra che vincerà: la formula pick cambia — nel parser deterministico una **squadra nuda** ("Napoli") è un pick valido `{Napoli, win}` (niente esito esplicito richiesto), mentre "Napoli pareggia"/"Napoli perde" NON sono riconosciuti (→ chiarimento, perché pareggio/sconfitta = eliminazione). `win_only` è la modalità di default (in `.env.uat` è già `WIN_ONLY=true`): per tornare alla classica impostare `WIN_ONLY=false` PRIMA di `tournament:start` e non modificarla a torneo aperto (una variazione fa abortire il processo con un errore fatale).
 
@@ -346,8 +346,8 @@ ENV_FILE=.env.uat npm run cli -- round:score --round <N>
 > non futura (…): apertura rifiutata (nessun pick sarebbe accettabile)` — e NON
 > scrive nulla. È la protezione contro la trappola reale osservata in UAT:
 > un round aperto 24 secondi dopo la sua deadline produceva ZERO pick
-> registrati e ZERO profili creati (ogni pick veniva rifiutato dal gate RF-31
-> e l'auto-join faceva ROLLBACK), con i giocatori invitati a fare
+> registrati e ZERO profili creati (ogni pick veniva rifiutato dal gate RF-31),
+> con i giocatori invitati a fare
 > l'impossibile. Se incontri l'errore: **non forzare** — rifai il seed con
 > margini ampi (`--first-kickoff-offset-min 60` e i valori di §1.3) e apri il
 > round SUBITO dopo il seed, prima della deadline.
@@ -409,22 +409,33 @@ Dopo l'avvio verifichi l'aggancio con:
 - `tournament:status` → riga `Stagione: avviata (start TC <n>, <N> TC, confine <b>)`;
 - `tournament:history --email <email>` → righe `TTnTCm` (es. `TT1TC3`) per ogni pick.
 
-**Iscrizione alla piattaforma (ADR-009).** Non esiste più una finestra di
-iscrizione da aprire/chiudere: l'iscrizione alla **piattaforma** è **sempre
-disponibile** via email (intento classificato dall'LLM) o via CLI, e la
-**partecipazione al torneo** nasce **da sola al primo pick valido nel TT 1**
-(auto-join, RF-P5):
+**Iscrizione alla piattaforma e partecipazione opt-in (ADR-009/019).** Non
+esiste più una finestra di iscrizione da aprire/chiudere: l'iscrizione alla
+**piattaforma** è **sempre disponibile** via email (intento classificato
+dall'LLM o dal parser deterministico) o via CLI. La **partecipazione al
+torneo** è **opt-in** (ADR-019): nasce per **auto-join a `tournament:start`**
+(account `active` con `tournament_auto_join = ON`, snapshot unico) o per
+**dichiarazione esplicita** nella finestra del TT 1:
 
-- **via email:** il giocatore scrive `ISCRIZIONE [NOME]` (es. `ISCRIZIONE Mario`) → il sistema crea
+- **via email (registration):** il giocatore scrive `ISCRIZIONE [NOME]` (es. `ISCRIZIONE Mario`) → il sistema crea
   l'account (con un `registerID` stabile, riusato a ogni re-iscrizione) e
-  risponde `platform_registered`; il suo **primo pick valido nel
-  TT1** lo rende partecipante (risposta `pick_confirmed`, nessuna conferma di
-  iscrizione separata);
+  risponde `platform_registered`;
+- **via email (join):** un iscritto che scrive **`PARTECIPO`** dichiara la
+  **partecipazione al torneo** → il sistema crea il profilo e risponde
+  `tournament_join_confirmed` (nella finestra del TT 1; se l'account è già in
+  gara → `tournament_already_joined`); da un account sconosciuto/disiscritto →
+  nessuna risposta (log interno, anti-spam);
 - **già iscritto:** un account `active` che riscrive `ISCRIZIONE [NOME]`
   riceve la risposta `platform_already_registered` (oggetto "Già iscritto
   alla piattaforma"), nessun account duplicato;
 - **via CLI (unico comando di creazione account, NON crea profili):**
-  `platform:register --email <email> [--name <nome>] [--reason <motivo>]`;
+  `platform:register --email <email> [--name <nome>] [--auto-join] [--receive-notifications] [--reason <motivo>]`
+  — i flag opt-in (ADR-019) si impostano qui (default `true`) o dopo con
+  `platform:preferences --email <email> [--auto-join on|off] [--receive-notifications on|off]`
+  (un cambio flag impatta il torneo SUCCESSIVO, non quello in corso);
+- **dichiarazione via CLI:** `tournament:join --email <email> [--reason <motivo>]`
+  — crea il profilo nella finestra TT 1 (nessuna email); dopo la chiusura del
+  TT 1 richiede `--reason` (override late, ADR-008 §6);
 - **disiscrizione a due passi (RF-P2):** primo "voglio disiscrivermi" →
   account `pending_unsubscribe` + email `platform_unsubscribe_confirm`
   (nessuna cancellazione); la cancellazione effettiva (soft-delete
@@ -438,28 +449,31 @@ disponibile** via email (intento classificato dall'LLM) o via CLI, e la
 - **re-iscrizione (RF-P3):** un `subscribe` o un `pick` mentre l'account è
   `pending_unsubscribe` lo riporta `active`; da `unsubscribed`, una nuova
   iscrizione riattiva lo **stesso** `registerID` (lo storico torneo non è
-  toccato);
+  toccato; i flag di partecipazione NON sono toccati dalla riattivazione);
 - **disiscrizione dal commissioner:** `platform:unregister --email <email>
   [--reason <motivo>]` (soft-delete diretto, il profilo torneo resta intatto);
 - **consultazione:** `platform:list [--json]` (registerID, email, status,
-  date);
-- **anti-spam (RF-P4):** un pick da un mittente non iscritto (mai iscritto o
-  disiscritto) produce solo un log interno, **nessuna risposta**; anche il
-  chiarimento "non ho capito" (intento `other`) parte **solo** verso account
-  `active`: da account `unsubscribed` o `pending_unsubscribe` → nessuna
-  risposta (log interno).
+  flag partecipazione, date);
+- **anti-spam (RF-P4):** un pick (o un join) da un mittente non iscritto (mai
+  iscritto o disiscritto) produce solo un log interno, **nessuna risposta**;
+  anche il chiarimento "non ho capito" (intento `other`) parte **solo** verso
+  account `active`: da account `unsubscribed` o `pending_unsubscribe` →
+  nessuna risposta (log interno).
 
-**Matrice notifiche (RF-P6).** Ogni email in uscita va **solo ad account
-`active`**: apertura torneo (`tournament_open`) a **tutti gli iscritti
-attivi**; apertura round (`pick_instructions`) ai **soli partecipanti attivi**
-(`eliminated = 0`) e, **all'apertura del TT 1**, anche agli **iscritti attivi
-senza profilo** (amendment 2026-08-21: al round 1 i profili non esistono
-ancora, auto-join RF-P5); chiusura round → riepilogo `round_closed_survived`
-**ai soli sopravvissuti** (inviato **una sola volta** alla contabilizzazione);
-gli eliminati ricevono **solo** `pick_missing_elimination` (alla chiusura) e
-`round_result_wrong` (alla contabilizzazione); con **AUTOPICK** (ADR-017) i
-profili auto-assegnati ricevono alla chiusura `pick_auto_assigned` (conferma a
-posteriori, senza sezione deadline) al posto di `pick_missing_elimination`. Un
+**Matrice notifiche (RF-P6, ADR-019).** Ogni email in uscita va **solo ad account
+`active`**: apertura torneo (`tournament_open`) ai **soli account attivi con
+`receive_tournament_start_notification = ON`** (e insegna la partecipazione:
+"rispondi con 'PARTECIPO'"); apertura round (`pick_instructions`) ai **soli
+partecipanti attivi** (`eliminated = 0`); chiusura round → riepilogo
+`round_closed_survived` **ai soli sopravvissuti** (inviato **una sola volta**
+alla contabilizzazione); gli eliminati ricevono **solo**
+`pick_missing_elimination` (alla chiusura) e `round_result_wrong` (alla
+contabilizzazione); con **AUTOPICK** (ADR-017) i profili auto-assegnati
+ricevono alla chiusura `pick_auto_assigned` (conferma a posteriori, senza
+sezione deadline) al posto di `pick_missing_elimination`. Le risposte di
+partecipazione (`tournament_join_confirmed`/`tournament_already_joined`/
+`tournament_join_rejected`) partono sempre verso l'account `active` che
+dichiara (flusso di partecipazione, come le conferme di registration). Un
 account `unsubscribed` o `pending_unsubscribe` **non riceve alcuna email di
 torneo**.
 
@@ -500,10 +514,11 @@ crontab del sistema (ogni minuto):
   la prima si apre all'avvio del torneo;
 - chiude la giornata al superamento della deadline (auto-chiusura);
 - contabilizza le giornate chiuse (`round:score`, se `SCHEDULER_AUTO_SCORE=true`).
-- **Nota ADR-009:** non esiste più alcuna finestra di iscrizione da
+- **Nota ADR-009/ADR-019:** non esiste più alcuna finestra di iscrizione da
   aprire/chiudere — le azioni `register_close_auto`/`register_close_safety`
   sono rimosse: l'iscrizione piattaforma è sempre aperta e la partecipazione
-  è gated dalla deadline del TT1 (auto-join).
+  è opt-in (auto-join a `tournament:start` con flag ON o dichiarazione
+  `PARTECIPO`/`tournament:join` entro la chiusura del TT1).
 
 > **Nota ADR-011 — torneo chiuso automaticamente (attività di chiusura del
 > commissioner).** Quando il sistema identifica il vincitore (dopo `round:close`
@@ -868,7 +883,8 @@ data:seed-synthetic --teams 8 --rounds 6 --spacing-min 45 --first-kickoff-offset
 **Vincolo temporale (RF-21).** Con offset 60 e spacing 45, la deadline di
 TC 3 cade **~120 minuti dopo il seed** (kickoff di TC 3 = 60 + 45×2 = 150
 minuti, meno l'anticipo di 30). `tournament:start --start-round 3` e le
-iscrizioni piattaforma (che dovranno poi entrare in torneo con un pick nel TT1, auto-join)
+iscrizioni piattaforma (gli account `active` con flag ON saranno auto-joinati
+a `tournament:start`; gli altri dichiareranno con `PARTECIPO`/`tournament:join`)
 vanno quindi fatti **entro quel lasso**: altrimenti l'avvio viene
 rifiutato con `Deadline del TT 1 non futura (<ISO>): avvio rifiutato (RF-21)`.
 
@@ -977,7 +993,7 @@ ENV_FILE=.env.uat npm run cli -- tournament:start
 ENV_FILE=.env.uat npm run cli -- round:open --round 1
 #    (i giocatori inviano i pick via email entro la deadline del TT1)
 
-# 4. Acquisizione pick (auto-join al TT1, RF-P5)
+# 4. Acquisizione pick (i profili esistono già: auto-join a tournament:start o PARTECIPO)
 ENV_FILE=.env.uat npm run cli -- channel:email:process
 
 # 5. Chiusura + PRIMO score CON risultati assenti
@@ -1029,13 +1045,97 @@ ENV_FILE=.env.uat npm run cli -- round:score --round 1
 
 ---
 
+### 5.6 Partecipazione opt-in (ADR-019) — flag, dichiarazione e ingressi al torneo
+
+**Cosa dimostra:** il modello **registration ≠ join** — il profilo nasce per
+**auto-join a `tournament:start`** (flag `tournament_auto_join` ON) o per
+**dichiarazione esplicita** (`PARTECIPO`/`tournament:join`) nella finestra del
+TT 1; un **pick non crea mai più un profilo**; dopo la chiusura del TT 1 la
+dichiarazione è rifiutata e l'unico ingresso è l'override CLI `--reason`.
+
+**Setup (una volta):**
+
+```bash
+ENV_FILE=.env.uat npm run cli -- db:migrate
+ENV_FILE=.env.uat npm run cli -- platform:migrate
+ENV_FILE=.env.uat npm run cli -- data:seed-synthetic --teams 4 --rounds 2 --spacing-min 45 --first-kickoff-offset-min 60 --seed 42
+```
+
+**Account con flag diversi (prima di `tournament:start`):**
+
+```bash
+# Alice: default (auto-join ON + notifiche ON) → sarà auto-joinata a tournament:start
+ENV_FILE=.env.uat npm run cli -- platform:register --email alice@example.com --reason "test opt-in"
+# Bob: auto-join OFF → NON sarà auto-joinato, deve dichiarare con PARTECIPO/tournament:join
+ENV_FILE=.env.uat npm run cli -- platform:register --email bob@example.com --auto-join off --reason "test opt-in"
+# Carol: notifiche OFF → NON riceve tournament_open
+ENV_FILE=.env.uat npm run cli -- platform:register --email carol@example.com --receive-notifications off --reason "test opt-in"
+# Dave: auto-join OFF → resta SENZA profilo (per il pick senza profilo e la dichiarazione post-deadline)
+ENV_FILE=.env.uat npm run cli -- platform:register --email dave@example.com --auto-join off --reason "test opt-in"
+# Verifica dei flag: platform:list mostra "auto-join on/off, notifiche apertura on/off"
+ENV_FILE=.env.uat npm run cli -- platform:list
+# (Un cambio flag con platform:preferences prima di tournament:start influisce sullo
+# snapshot di QUESTO torneo; dopo l'avvio impatta solo i tornei SUCCESSIVI — vedi nota in fondo.)
+```
+
+**Avvio e verifiche:**
+
+```bash
+# Avvio: auto-join bulk (Alice e Carol; Bob e Dave con flag OFF restano senza profilo) +
+# tournament_open a chi ha le notifiche ON (Alice e Bob, NON Carol; Dave le ha ON ma
+# l'esempio usa il CLI).
+ENV_FILE=.env.uat npm run cli -- tournament:start
+# Output atteso: "Auto-join a start: 2 profili creati (account con flag ON), notifiche apertura: 2"
+# Verifica profili: solo alice@example.com e carol@example.com hanno un profile
+ENV_FILE=.env.uat npm run cli -- tournament:status
+# Bob dichiara la partecipazione (finestra TT1, round 1 ancora pending):
+ENV_FILE=.env.uat npm run cli -- tournament:join --email bob@example.com
+# Output atteso: "Partecipazione confermata: profilo <id> per bob@example.com"
+# (oppure via email: Bob risponde "PARTECIPO" → channel:email:process → tournament_join_confirmed)
+ENV_FILE=.env.uat npm run cli -- tournament:join --email bob@example.com
+# Output atteso: "bob@example.com è già in gara (partecipazione esistente)" (idempotenza)
+# Un pick da un account attivo SENZA profilo NON crea più il profilo (ADR-019):
+# Dave invia un pick nel TT1 → risposta tournament_join_rejected (not_in_tournament,
+# "per partecipare invia PARTECIPO") invece dell'auto-join del passato
+```
+
+**Dichiarazione post-deadline (rifiuto e override):**
+
+```bash
+# Chiudi il TT1 (round 1) — la finestra di partecipazione si chiude con esso
+ENV_FILE=.env.uat npm run cli -- round:close --round 1 --force --reason "test opt-in"
+# Dichiarazione dopo la chiusura del TT1 (Dave, ancora senza profilo) → rifiutata (--reason richiesto):
+ENV_FILE=.env.uat npm run cli -- tournament:join --email dave@example.com
+# Output atteso: "Il torneo è già iniziato: la partecipazione è chiusa — per un ingresso tardivo usa --reason (override, D10)"
+# Ingresso tardivo con override auditato (profilo creato, pool intatto):
+ENV_FILE=.env.uat npm run cli -- tournament:join --email dave@example.com --reason "ingresso tardivo per test"
+# Output atteso: "Partecipazione confermata: profilo <id> per dave@example.com"
+```
+
+**Autopick su un auto-joinato senza pick (ADR-017/019, opzionale).** Con
+`AUTOPICK_ON_MISSING=true` nel `.env.uat` **prima di** `tournament:start`, un
+profilo auto-joinato a start che NON invia il pick al round 1 (deadline reale)
+riceve alla chiusura `pick_auto_assigned` (prima squadra disponibile per
+`short_name`) invece dell'eliminazione `missing_pick` — è esattamente il caso
+che il vecchio "auto-join al primo pick" lasciava scoperto (un iscritto senza
+profilo non era mai "in gara").
+
+**Nota:** un cambio flag con `platform:preferences` a torneo APERTO NON
+modifica i partecipanti del torneo corrente: lo snapshot dell'auto-join è
+stato preso a `tournament:start`. Per verificarlo, cambia un flag a metà run e
+controlla che il profilo esistente resti in gara.
+
+---
+
 ## 6. Scope del test mode (cosa si può dimostrare e cosa no)
 
 ### 6.1 Cosa si PUÒ dimostrare in test mode (UAT su calendario sintetico)
 
 - **Flusso email completo:** iscrizione/disiscrizione piattaforma (due
   passi) e re-iscrizione (stesso account), risposta "già iscritto" a chi si
-  re-iscrive da `active`, invio del pick (auto-join al TT1),
+  re-iscrive da `active`, **partecipazione opt-in** (auto-join a
+  `tournament:start` con flag ON / dichiarazione `PARTECIPO` →
+  `tournament_join_confirmed`), invio del pick,
   conferma o rifiuto con motivazione, il tutto via Gmail reale e LLM reale.
 - **Guard anti-frode su timestamp veri:** l'orologio e i timestamp di
   ricezione delle email sono reali (`TEST_OFFSET_DAYS=0`), quindi un pick
@@ -1053,6 +1153,14 @@ ENV_FILE=.env.uat npm run cli -- round:score --round 1
   round che lasciano un mancante: il caso "nessuna squadra disponibile" resta
   `missing_pick` + warn log. La deadline NULL (chiusura di sicurezza, RF-30)
   NON esercita l'auto-assign (i mancanti restano eliminati).
+- **Partecipazione opt-in (ADR-019):** flag per-account gestiti via CLI
+  (`platform:register --auto-join/--receive-notifications`,
+  `platform:preferences`); auto-join a `tournament:start` (flag ON, snapshot
+  unico) vs dichiarazione `PARTECIPO`/`tournament:join` (flag OFF o late
+  registrant); pick da attivo senza profilo → `tournament_join_rejected`
+  (`not_in_tournament`, guida `PARTECIPO`) nel TT1 e rifiuto dal TT2;
+  dichiarazione dopo la chiusura del TT1 → rifiuto, unico ingresso =
+  `tournament:join --reason` (override auditato). Scenario completo: §5.6.
 - **Reset del pool** al confine di girone (andata/ritorno): le squadre tornano
   disponibili una volta superato il confine.
 - **Aggancio asincrono** a un TC > 1 (RF-20): avvio del torneo da un turno di
@@ -1245,8 +1353,10 @@ test) e dal fatto che sono state inviate durante la sessione di test.
 | **TTnTCm** | Il token compatto che identifica un turno: `TT` numero del turno di torneo, `TC` numero della giornata di campionato (es. `TT2TC7` = secondo turno di gioco, agganciato alla giornata 7). Compare nelle righe di `tournament:history` e nei log; nell'oggetto delle email compare il solo `TC` ("Turno {TC} di Campionato"), la coppia estesa "Round del torneo N · Turno di Campionato M" sta nel corpo (email v4, ADR-015). |
 | **Pool (rosa)** | L'insieme di squadre ancora utilizzabili da un giocatore nel girone corrente. Si resetta al confine di girone (andata/ritorno). |
 | **Account piattaforma / registerID** | L'account persistente creato dall'iscrizione alla piattaforma (ADR-009): identificato da un `registerID` interno stabile (riusato a ogni re-iscrizione), con email e stato `active`/`pending_unsubscribe`/`unsubscribed`. Vive in un DB separato (`PLATFORM_DB_PATH`). |
-| **Iscritto vs partecipante** | L'**iscritto** è chi ha un account piattaforma; il **partecipante** è l'iscritto che ha un `profile` nel torneo. Si diventa partecipanti **solo** inviando il primo pick valido nel TT1 (auto-join). |
-| **Auto-join (RF-P5)** | L'ingresso automatico nel torneo al **primo pick valido** nel TT1: crea profilo + pick in un'unica operazione. Sostituisce la vecchia "auto-iscrizione" (RF-27, deprecata). |
+| **Iscritto vs partecipante** | L'**iscritto** è chi ha un account piattaforma; il **partecipante** è l'iscritto che ha un `profile` nel torneo. La partecipazione è **opt-in** (ADR-019): si diventa partecipanti per **auto-join a `tournament:start`** (flag `tournament_auto_join` ON) o **dichiarando** con `PARTECIPO`/`tournament:join` nella finestra del TT 1 — mai inviando un pick. |
+| **Auto-join (ADR-019)** | L'ingresso automatico al torneo a **`tournament:start`**: ogni account piattaforma `active` con `tournament_auto_join = ON` riceve il profilo (snapshot unico). Sostituisce la vecchia "auto-iscrizione" (RF-27) e l'auto-join al primo pick (RF-P5, rimosso). |
+| **PARTECIPO (join)** | La formula email con cui un iscritto **dichiara la partecipazione al torneo** (ADR-019). NON è una registrazione alla piattaforma: l'account deve già esistere. La risposta è `tournament_join_confirmed` (o `tournament_already_joined` se già in gara; `tournament_join_rejected` se rifiutata). |
+| **Flag di partecipazione** | Le due preferenze per-account gestite SOLO via CLI (`platform:register`/`platform:preferences`): `tournament_auto_join` (auto-join a `tournament:start`) e `receive_tournament_start_notification` (ricezione della mail `tournament_open`). Un cambio impatta i tornei successivi. |
 | **Soft-delete / disiscrizione a due passi** | La disiscrizione non cancella l'account: lo marca `unsubscribed` (soft-delete) solo dopo una **conferma** esplicita (secondo messaggio con body `confermo`/`sì`/`si`/`yes`). Lo storico non si perde e la re-iscrizione riusa lo stesso `registerID`. |
 | **UAT** | User Acceptance Test: il collaudo finale con utenti veri per accettare il sistema. |
 | **Env file** | Un file di configurazione (`.env`, `.env.uat`, `.env.uat-replay`) con i parametri del sistema. Si seleziona con la variabile `ENV_FILE`. |

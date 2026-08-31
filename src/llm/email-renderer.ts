@@ -139,6 +139,19 @@ function pickConfirmedKey(ctx: EmailContext, mode: GameMode): string {
 }
 
 /**
+ * Motivo della mail `tournament_join_rejected` (ADR-019) in forma UMANA: le
+ * chiavi `no_tournament`/`tournament_started`/`not_in_tournament` sono
+ * tradotte in italiano per il messaggio chiave. Chiave sconosciuta → testo
+ * generico (mai spazzatura).
+ */
+function joinRejectedReasonText(reason: string | undefined): string {
+  if (reason === 'no_tournament') return 'nessun torneo aperto in questo momento';
+  if (reason === 'tournament_started') return 'il torneo è iniziato: la partecipazione è chiusa';
+  if (reason === 'not_in_tournament') return 'per partecipare al torneo invia PARTECIPO';
+  return 'partecipazione non confermata';
+}
+
+/**
  * Messaggio chiave deterministico per tipo, in MAIUSCOLO (email v3):
  * l'equivalente plain-text del "grassetto +20%". Le mail di ESITO round
  * NON hanno `keyMessage`: usano l'esito ✅/❌ di `resultLine` (separato).
@@ -179,6 +192,12 @@ function keyMessage(ctx: EmailContext, mode: GameMode): string | null {
       return '🏆 VITTORIA CONDIVISA!';
     case 'clarification':
       return 'NON HO CAPITO LA TUA RICHIESTA';
+    case 'tournament_join_confirmed':
+      return 'PARTECIPAZIONE CONFERMATA: SEI IN GARA!';
+    case 'tournament_already_joined':
+      return 'SEI GIÀ IN GARA';
+    case 'tournament_join_rejected':
+      return `PARTECIPAZIONE NON CONFERMATA: ${joinRejectedReasonText(ctx.reason)}`;
     default:
       return null;
   }
@@ -189,7 +208,10 @@ const PICK_EMAIL_TYPES: readonly EmailType[] = [
   'pick_instructions',
   'pick_confirmed',
   'pick_rejected',
-  'clarification'
+  'clarification',
+  // ADR-019: la conferma di partecipazione chiede di inviare il pick (deadline
+  // in coda SE un round è aperto — l'email-processor la inietta solo in quel caso).
+  'tournament_join_confirmed'
 ];
 
 /**
@@ -399,9 +421,11 @@ function ctaFor(ctx: EmailContext, mode: GameMode): string | null {
       return section('📌 PROSSIMO PASSO', ['Ti aggiorneremo appena la partita verrà giocata.']);
     case 'tournament_open':
       // Convenzione 8/correzione PO: SOLO annuncio, niente invito al pick né
-      // date (non note all'invio: decide commissioner/scheduler).
+      // date (non note all'invio: decide commissioner/scheduler). ADR-019
+      // (D14): la mail insegna la formula di partecipazione opt-in PARTECIPO.
       return section('⏳ COSA SUCCEDE ORA', [
-        'Le istruzioni con la scadenza del pick arriveranno con una mail dedicata.'
+        'Le istruzioni con la scadenza del pick arriveranno con una mail dedicata.',
+        'Per partecipare al torneo, rispondi con "PARTECIPO".'
       ]);
     case 'platform_registered':
       return section('➡️ COSA FARE ORA', [

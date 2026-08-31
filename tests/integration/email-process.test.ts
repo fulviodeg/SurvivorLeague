@@ -9,7 +9,7 @@
  * subscribe (nuovo/già attivo/riattivazione con stesso registerID, RF-P1/P3),
  * unsubscribe a due passi (pending → conferma; soft-delete solo col secondo
  * messaggio, RF-P2), silenzio anti-spam (pick/other/unsubscribe da sconosciuto
- * o unsubscribed, RF-P4), auto-join al TT1 (RF-P5, risposta pick_confirmed),
+ * o unsubscribed, RF-P4), join al TT1 (ADR-019, risposta tournament_join_confirmed),
  * rifiuto post-TT1, ri-iscrizione con stesso registerID, subscribe+pick nello
  * STESSO batch (mittenti rivalutati per messaggio, HIGH-2), gate round (CL3),
  * guard RF-31, flag \Seen a successo e stop del batch su LLMError (D7).
@@ -390,7 +390,7 @@ describe('channel:email:process — unsubscribe a due passi (RF-P2)', () => {
   });
 });
 
-describe('channel:email:process — pick (RF-P4/P5, auto-join)', () => {
+describe('channel:email:process — pick (RF-P4; senza profilo → join, ADR-019)', () => {
   it('pick da sconosciuto o unsubscribed → log interno, NESSUNA risposta, marcato letto (RF-P4)', async () => {
     const { ctx, platform, channel, deps, seen } = makeHarness();
     platform.register('a@test.it', null, T_OPEN);
@@ -455,7 +455,7 @@ describe('channel:email:process — pick (RF-P4/P5, auto-join)', () => {
     expect(seen).toEqual(['1']);
   });
 
-  it('pick da active senza profilo nel TT1 → auto-join: profilo+pick atomici, risposta pick_confirmed (RF-P5)', async () => {
+  it('pick da active senza profilo nel TT1 → guida alla dichiarazione (join_rejected not_in_tournament, NESSUNA auto-join)', async () => {
     const { db, ctx, platform, channel, generator, deps } = makeHarness();
     platform.register('nuovo@test.it', null, T_OPEN);
     useClassifier(ctx, new Map([[`vado di ${JU}`, pick(JU, 'win')]]));
@@ -466,36 +466,31 @@ describe('channel:email:process — pick (RF-P4/P5, auto-join)', () => {
       deps()
     );
 
-    const player = db.prepare('SELECT id, register_id FROM player WHERE email = ?').get('nuovo@test.it') as {
-      id: number;
-      register_id: number;
-    };
-    expect(player).toBeDefined();
-    const profile = db
-      .prepare('SELECT register_id FROM profile WHERE player_id = ?')
-      .get(player.id) as { register_id: number };
-    expect(profile.register_id).toBe(platform.find('nuovo@test.it')?.registerId);
-    const stored = db
-      .prepare('SELECT team, outcome FROM pick WHERE profile_id = (SELECT id FROM profile WHERE player_id = ?)')
-      .get(player.id) as { team: string; outcome: string };
-    expect(stored).toMatchObject({ team: JU, outcome: 'win' });
-    // RF-P5/D5: UN UNICO messaggio, pick_confirmed (nessuna conferma separata).
-    expect(generator.contexts[0]).toMatchObject({ type: 'pick_confirmed', round: 1, championshipRound: 1, deadline: new Date('2026-09-12T15:30:00.000Z') });
+    // ADR-019: il pick NON crea più profili (rimosso RF-P5) — l'account deve
+    // prima dichiarare la partecipazione (PARTECIPO).
+    expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM pick').get()).toEqual({ n: 0 });
+    expect(generator.contexts[0]).toMatchObject({
+      type: 'tournament_join_rejected',
+      reason: 'not_in_tournament'
+    });
     expect(channel.sent).toHaveLength(1);
-    expect(result.messages[0]).toMatchObject({ action: 'auto_joined', seen: true });
+    expect(result.messages[0]).toMatchObject({ action: 'join_rejected', seen: true });
   });
 
-  it('pick da active senza profilo con pick non estratto → chiarimento senza profilo (CL5)', async () => {
-    const { db, ctx, platform, deps } = makeHarness();
+  it('pick da active senza profilo con pick non estratto → chiarimento che insegna PARTECIPO, senza profilo (CL5)', async () => {
+    const { db, ctx, platform, generator, deps } = makeHarness();
     platform.register('nuovo@test.it', null, T_OPEN);
     useClassifier(ctx, new Map([['ciao!', { intent: 'pick', pick: null, name: null }]]));
 
     await processEmailBatch(ctx, [incoming('nuovo@test.it', 'ciao!', T_PICK, '1')], deps());
 
     expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 0 });
+    expect(generator.contexts[0]).toMatchObject({ type: 'clarification' });
+    expect(generator.contexts[0]?.reason).toContain('PARTECIPO');
   });
 
-  it('pick da active senza profilo oltre il kickoff → rollback senza profilo (RF-31)', async () => {
+  it('pick da active senza profilo oltre il kickoff → guida alla dichiarazione (join_rejected), nessun profilo', async () => {
     const { db, ctx, platform, generator, deps } = makeHarness();
     platform.register('tardivo@test.it', null, T_OPEN);
     useClassifier(ctx, new Map([[`vado di ${JU}`, pick(JU, 'win')]]));
@@ -507,7 +502,12 @@ describe('channel:email:process — pick (RF-P4/P5, auto-join)', () => {
     );
 
     expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 0 });
-    expect(generator.contexts[0]).toMatchObject({ type: 'pick_rejected', reason: 'after_kickoff' });
+    // ADR-019: il pick da senza-profilo non passa più la cascata (RF-31 non
+    // si applica: non c'è registrazione) — si guida alla dichiarazione.
+    expect(generator.contexts[0]).toMatchObject({
+      type: 'tournament_join_rejected',
+      reason: 'not_in_tournament'
+    });
   });
 
   it('pick da active senza profilo dal TT2 → rifiuto "torneo iniziato" (post-TT1)', async () => {
@@ -529,6 +529,112 @@ describe('channel:email:process — pick (RF-P4/P5, auto-join)', () => {
       type: 'pick_rejected',
       reason: expect.stringContaining('torneo iniziato')
     } as EmailContext);
+  });
+});
+
+describe('channel:email:process — join (ADR-019, PARTECIPO = partecipazione)', () => {
+  /** Registra un profilo torneo per l'email (player+profile con register_id). */
+  function registerProfile(db: Database.Database, platform: DbPlatformRegistry, email: string): void {
+    const account = platform.register(email, null, T_OPEN);
+    db.prepare('INSERT INTO player (email, name, register_id) VALUES (?, ?, ?)').run(
+      email,
+      'Aldo',
+      account.registerId
+    );
+    db.prepare(
+      'INSERT INTO profile (player_id, register_id) VALUES ((SELECT id FROM player WHERE email = ?), ?)'
+    ).run(email, account.registerId);
+  }
+
+  it('PARTECIPO da account active senza profilo → profilo creato + tournament_join_confirmed', async () => {
+    const { db, ctx, platform, generator, deps, seen } = makeHarness();
+    platform.register('nuovo@test.it', null, T_OPEN);
+    useClassifier(ctx, new Map([['PARTECIPO', { intent: 'join', pick: null, name: null }]]));
+
+    const result = await processEmailBatch(
+      ctx,
+      [incoming('nuovo@test.it', 'PARTECIPO', T_PICK, '1')],
+      deps()
+    );
+
+    expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 1 });
+    expect(generator.contexts[0]).toMatchObject({
+      type: 'tournament_join_confirmed',
+      playerName: 'nuovo@test.it'
+    });
+    expect(result.messages[0]).toMatchObject({ action: 'join_confirmed', seen: true });
+    expect(seen).toEqual(['1']);
+  });
+
+  it('PARTECIPO da account già in gara → tournament_already_joined (idempotenza D8)', async () => {
+    const { db, ctx, platform, generator, deps } = makeHarness();
+    registerProfile(db, platform, 'a@test.it');
+    useClassifier(ctx, new Map([['PARTECIPO', { intent: 'join', pick: null, name: null }]]));
+
+    const result = await processEmailBatch(
+      ctx,
+      [incoming('a@test.it', 'PARTECIPO', T_PICK, '1')],
+      deps()
+    );
+
+    expect(generator.contexts[0]).toMatchObject({ type: 'tournament_already_joined' });
+    expect(result.messages[0]).toMatchObject({ action: 'already_joined', seen: true });
+  });
+
+  it('PARTECIPO senza torneo avviato → tournament_join_rejected reason no_tournament', async () => {
+    const { ctx, platform, generator, deps } = makeHarness({ startTournament: false });
+    platform.register('a@test.it', null, T_OPEN);
+    useClassifier(ctx, new Map([['PARTECIPO', { intent: 'join', pick: null, name: null }]]));
+
+    const result = await processEmailBatch(
+      ctx,
+      [incoming('a@test.it', 'PARTECIPO', T_PICK, '1')],
+      deps()
+    );
+
+    expect(generator.contexts[0]).toMatchObject({
+      type: 'tournament_join_rejected',
+      reason: 'no_tournament'
+    });
+    expect(result.messages[0]).toMatchObject({ action: 'join_rejected', detail: 'no_tournament', seen: true });
+  });
+
+  it('PARTECIPO a TT1 chiuso → tournament_join_rejected reason tournament_started (D7)', async () => {
+    const { db, ctx, platform, generator, deps } = makeHarness();
+    platform.register('a@test.it', null, T_OPEN);
+    // Chiude il round 1 → dichiarazione fuori finestra.
+    await closeRound(ctx, 1);
+    useClassifier(ctx, new Map([['PARTECIPO', { intent: 'join', pick: null, name: null }]]));
+
+    const result = await processEmailBatch(
+      ctx,
+      [incoming('a@test.it', 'PARTECIPO', T_PICK, '1')],
+      deps()
+    );
+
+    expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 0 });
+    expect(generator.contexts[0]).toMatchObject({
+      type: 'tournament_join_rejected',
+      reason: 'tournament_started'
+    });
+    expect(result.messages[0]).toMatchObject({ action: 'join_rejected', detail: 'tournament_started', seen: true });
+  });
+
+  it('PARTECIPO da mittente sconosciuto → log silenzioso, nessuna risposta, marcato letto (RF-P4)', async () => {
+    const { ctx, platform, channel, deps, seen } = makeHarness();
+    useClassifier(ctx, new Map([['PARTECIPO', { intent: 'join', pick: null, name: null }]]));
+
+    const result = await processEmailBatch(
+      ctx,
+      [incoming('sconosciuto@test.it', 'PARTECIPO', T_PICK, '1')],
+      deps()
+    );
+
+    // Un join da account inesistente NON è mai una registration (ADR-019).
+    expect(channel.sent).toHaveLength(0);
+    expect(platform.list()).toHaveLength(0);
+    expect(result.messages[0]).toMatchObject({ action: 'silent_other', seen: true });
+    expect(seen).toEqual(['1']);
   });
 });
 
@@ -674,7 +780,7 @@ describe('channel:email:process — other, unknown, gate round (ADR-009)', () =>
 });
 
 describe('channel:email:process — mittenti rivalutati per messaggio (HIGH-2)', () => {
-  it('subscribe + pick dello stesso mittente nello STESSO batch → il pick è accettato (auto-join)', async () => {
+  it('subscribe + pick dello stesso mittente nello STESSO batch → il pick è guidato alla dichiarazione (ADR-019)', async () => {
     const { db, ctx, platform, generator, deps } = makeHarness();
     useClassifier(ctx, new Map([
       ['vorrei iscrivermi', { intent: 'subscribe', pick: null, name: null }],
@@ -691,14 +797,15 @@ describe('channel:email:process — mittenti rivalutati per messaggio (HIGH-2)',
     );
 
     // Il secondo messaggio vede l'account appena creato dal primo (nessuno
-    // snapshot di inizio batch): auto-join riuscito.
+    // snapshot di inizio batch), ma il pick da account senza profilo NON crea
+    // il profilo (ADR-019): risposta join_rejected not_in_tournament.
     expect(platform.find('sconosciuto@test.it')?.status).toBe('active');
-    expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 1 });
-    expect(db.prepare('SELECT COUNT(*) AS n FROM pick').get()).toEqual({ n: 1 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM profile').get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM pick').get()).toEqual({ n: 0 });
     expect(generator.contexts[0]).toMatchObject({ type: 'platform_registered' });
-    expect(generator.contexts[1]).toMatchObject({ type: 'pick_confirmed' });
+    expect(generator.contexts[1]).toMatchObject({ type: 'tournament_join_rejected' });
     expect(result.messages[0]).toMatchObject({ action: 'subscribed', seen: true });
-    expect(result.messages[1]).toMatchObject({ action: 'auto_joined', seen: true });
+    expect(result.messages[1]).toMatchObject({ action: 'join_rejected', seen: true });
   });
 });
 

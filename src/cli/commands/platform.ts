@@ -5,14 +5,17 @@
  * storage separato (`PLATFORM_DB_PATH`):
  *   - `platform:migrate` — crea/migra le tabelle del DB piattaforma
  *     (idempotente, RF-P7);
- *   - `platform:register --email [--reason]` — UNICO comando di
- *     creazione account (RF-P1): crea/riattiva l'account con registerID
- *     stabile e NON crea profili (la partecipazione avviene solo via
- *     auto-join al TT1, RF-P5);
+ *   - `platform:register --email [--name] [--auto-join] [--receive-notifications]`
+ *     — UNICO comando di creazione account (RF-P1): crea/riattiva l'account con
+ *     registerID stabile e NON crea profili (partecipazione opt-in, ADR-019);
+ *     i due flag di partecipazione sono scritti via `setPreferences`;
+ *   - `platform:preferences --email [--auto-join on|off]
+ *     [--receive-notifications on|off]` — legge/aggiorna i flag di
+ *     partecipazione opt-in (ADR-019), gestiti SOLO via CLI;
  *   - `platform:unregister --email [--reason]` — soft-delete DIRETTO
  *     (`unsubscribed`, US8/RF-P2): il profilo torneo resta intatto;
  *   - `platform:list [--json]` — elenco account (registerID, email, status,
- *     date) in ordine di registerID (US7).
+ *     flag partecipazione, date) in ordine di registerID (US7).
  *
  * Pattern CLI consolidato (briefing §1-I): il comando costruisce config →
  * connessione PIATTAFORMA → migrazione → registry; la logica vive nel modulo
@@ -69,12 +72,14 @@ interface RegisterArgs extends JsonArg {
   email: string;
   name?: string;
   reason?: string;
+  autoJoin: boolean;
+  receiveNotifications: boolean;
 }
 
 export const platformRegisterCommand: CommandModule<object, RegisterArgs> = {
   command: 'platform:register',
   describe:
-    'UNICO comando di creazione account (RF-P1): crea/riattiva l\'account con registerID stabile; NON crea profili (auto-join al TT1, RF-P5)',
+    'UNICO comando di creazione account (RF-P1): crea/riattiva l\'account con registerID stabile; NON crea profili (partecipazione opt-in, ADR-019)',
   builder: (yargs: Argv<object>) =>
     jsonOption(yargs)
       .option('email', {
@@ -90,6 +95,18 @@ export const platformRegisterCommand: CommandModule<object, RegisterArgs> = {
       .option('reason', {
         type: 'string' as const,
         describe: 'Motivo auditato dell\'operazione (tracciabilità, US10)'
+      })
+      .option('autoJoin', {
+        type: 'boolean' as const,
+        default: true,
+        describe:
+          'Preferenza di partecipazione opt-in (ADR-019, D2): true = auto-join a tournament:start; false = solo dichiarazione esplicita (PARTECIPO/tournament:join). Default true. Applicata SOLO alla prima creazione (le riattivazioni preservano la preferenza)'
+      })
+      .option('receiveNotifications', {
+        type: 'boolean' as const,
+        default: true,
+        describe:
+          'Preferenza di notifica (ADR-019, D9): true = riceve la mail tournament_open; false = nessuna mail di apertura. Default true. Applicata SOLO alla prima creazione (le riattivazioni preservano la preferenza)'
       }),
   handler: (argv) => {
     const config = getConfig();
@@ -100,13 +117,24 @@ export const platformRegisterCommand: CommandModule<object, RegisterArgs> = {
       // Normalizzazione identità (K): stessa normalizzazione del Message Router
       // (trim, minuscolo, rimozione nome visualizzato) — identità coerente RNF2.
       const email = normalizeEmail(argv.email);
-      const account = registry.register(email, argv.name ?? null, makeNow(config));
+      // ADR-019 (D2/D4): i flag di partecipazione sono scritti via setPreferences
+      // SOLO alla PRIMA creazione (le riattivazioni NON li toccano: registration-
+      // pure). Un account esistente riattivato con platform:register conserva la
+      // preferenza; per cambiarla si usa platform:preferences.
+      const isNew = registry.find(email) === null;
+      registry.register(email, argv.name ?? null, makeNow(config));
+      const account = isNew
+        ? registry.setPreferences(email, {
+            tournamentAutoJoin: argv.autoJoin,
+            receiveTournamentStartNotification: argv.receiveNotifications
+          })
+        : registry.find(email);
       if (argv.json) {
         console.log(jsonWithTestMode(config, { account, reason: argv.reason }));
       } else {
         printTestModeBanner(config);
         console.log(
-          `Account ${account.email} (registerID ${account.registerId}) — status ${account.status}`
+          `Account ${account?.email} (registerID ${account?.registerId}) — status ${account?.status} — auto-join ${account?.tournamentAutoJoin ? 'on' : 'off'}, notifiche apertura ${account?.receiveTournamentStartNotification ? 'on' : 'off'}`
         );
       }
     } finally {
@@ -163,7 +191,7 @@ export const platformUnregisterCommand: CommandModule<object, UnregisterArgs> = 
 export const platformListCommand: CommandModule<object, JsonArg> = {
   command: 'platform:list',
   describe:
-    'Elenco account piattaforma (registerID, email, status, date) in ordine di registerID (US7)',
+    'Elenco account piattaforma (registerID, email, status, flag partecipazione, date) in ordine di registerID (US7)',
   builder: jsonOption,
   handler: (argv) => {
     const config = getConfig();
@@ -181,10 +209,73 @@ export const platformListCommand: CommandModule<object, JsonArg> = {
         } else {
           for (const a of accounts) {
             console.log(
-              `  [${a.registerId}] ${a.email} — ${a.status}${a.unsubscribedAt !== null ? ` (disiscritto il ${a.unsubscribedAt})` : ''}`
+              `  [${a.registerId}] ${a.email} — ${a.status} — auto-join ${a.tournamentAutoJoin ? 'on' : 'off'}, notifiche apertura ${a.receiveTournamentStartNotification ? 'on' : 'off'}${
+                a.unsubscribedAt !== null ? ` (disiscritto il ${a.unsubscribedAt})` : ''
+              }`
             );
           }
         }
+      }
+    } finally {
+      db.close();
+    }
+  }
+};
+
+/** Converte una preferenza `on`/`off` in booleano (assente → undefined = invariata). */
+function parseOnOff(value: 'on' | 'off' | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  return value === 'on';
+}
+
+interface PreferencesArgs extends JsonArg {
+  email: string;
+  autoJoin?: 'on' | 'off';
+  receiveNotifications?: 'on' | 'off';
+}
+
+export const platformPreferencesCommand: CommandModule<object, PreferencesArgs> = {
+  command: 'platform:preferences',
+  describe:
+    'Legge/aggiorna le preferenze di partecipazione opt-in (ADR-019): senza flag legge, con flag aggiorna (auto-join + notifica apertura)',
+  builder: (yargs: Argv<object>) =>
+    jsonOption(yargs)
+      .option('email', {
+        type: 'string' as const,
+        demandOption: true,
+        describe: 'Email dell\'account (normalizzata, K)'
+      })
+      .option('autoJoin', {
+        type: 'string' as const,
+        choices: ['on', 'off'] as const,
+        describe: 'Auto-join a tournament:start (ADR-019, D2): on | off'
+      })
+      .option('receiveNotifications', {
+        type: 'string' as const,
+        choices: ['on', 'off'] as const,
+        describe: 'Ricezione mail tournament_open (ADR-019, D9): on | off'
+      }),
+  handler: (argv) => {
+    const config = getConfig();
+    const db = createConnection(config.PLATFORM_DB_PATH);
+    try {
+      migratePlatform(db);
+      const registry = new DbPlatformRegistry(db);
+      const email = normalizeEmail(argv.email);
+      const account = registry.setPreferences(email, {
+        tournamentAutoJoin: parseOnOff(argv.autoJoin),
+        receiveTournamentStartNotification: parseOnOff(argv.receiveNotifications)
+      });
+      if (argv.json) {
+        console.log(jsonWithTestMode(config, { account }));
+      } else if (account === null) {
+        printTestModeBanner(config);
+        console.log(`Nessun account per ${email} (mai iscritto)`);
+      } else {
+        printTestModeBanner(config);
+        console.log(
+          `${account.email} (registerID ${account.registerId}) — auto-join ${account.tournamentAutoJoin ? 'on' : 'off'}, notifiche apertura ${account.receiveTournamentStartNotification ? 'on' : 'off'}`
+        );
       }
     } finally {
       db.close();

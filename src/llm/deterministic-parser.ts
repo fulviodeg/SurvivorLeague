@@ -11,15 +11,18 @@
  *   - `ISCRIZIONE [NOME]` → `subscribe` (nome = testo dopo la keyword, fine
  *     riga, trim, max ~40 char; vuoto → null → il sistema usa l'email RF-P1);
  *   - `DISISCRIZIONE` → `unsubscribe`;
+ *   - `PARTECIPO` → `join` (ADR-019: partecipazione al torneo in corso, NON
+ *     iscrizione alla piattaforma);
  *   - `<TEAM> <ESITO>` → `pick` (squadra = lista canonica + tabella alias,
  *     longest-match, normalizzazione minuscolo/trim/accenti; esito = sinonimi
  *     win/draw/lose);
  *   - qualunque altra cosa → `other` (→ chiarimento CL5, che insegna le
  *     formule).
  *
- * Le formule libere ("voglio iscrivermi", "mi iscrivo", "partecipo") NON sono
- * riconosciute (decisione 1 del piano: SOLO formule univoche). Lista squadre
- * vuota → `other` deterministico senza chiamate. In modalità LLM
+ * Le formule libere ("voglio iscrivermi", "mi iscrivo") NON sono riconosciute
+ * (decisione 1 del piano: SOLO formule univoche). `partecipo` NON è più una
+ * formula libera: è la formula univoca dell'intento `join` (ADR-019). Lista
+ * squadre vuota → `other` deterministico senza chiamate. In modalità LLM
  * (`AI_EMAIL_PARSER=true`) il subject NON viene iniettato nel prompt: resta
  * un'ancora del solo parser deterministico.
  *
@@ -177,7 +180,8 @@ function resolvePick(
 /**
  * Classifica il testo di una singola fonte (subject o corpo) con le formule
  * univoche; null se nessuna formula è riconosciuta. L'ordine conta:
- * `disiscrizione` PRIMA di `iscrizione` (la prima contiene la seconda).
+ * `disiscrizione` PRIMA di `iscrizione` (la prima contiene la seconda), poi
+ * `partecipo` (join, ADR-019), poi il pick.
  */
 function classifyText(
   text: string,
@@ -199,6 +203,13 @@ function classifyText(
     const firstLine = after.split('\n')[0] ?? '';
     const name = firstLine.trim().slice(0, MAX_NAME_CHARS);
     return { intent: 'subscribe', pick: null, name: name !== '' ? name : null };
+  }
+
+  // `PARTECIPO` (join, ADR-019): partecipazione al torneo in corso. Formula
+  // univoca, case/accenti-insensibile (normalize). DOPO iscrizione e PRIMA
+  // del pick.
+  if (normalized.includes('partecipo')) {
+    return { intent: 'join', pick: null, name: null };
   }
 
   const pick = resolvePick(text, terms, winOnly, jollyEnabled);

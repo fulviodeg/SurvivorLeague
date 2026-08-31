@@ -492,10 +492,13 @@ describe('riavvio del torneo dopo la chiusura (ADR-011 §5.5)', () => {
     const restarted = await startTournament(h.ctx, { allowPastDeadline: true });
     expect(restarted.startRound).toBe(1);
 
-    // DB di gioco azzerato; tournament_state ripristinato per il nuovo torneo.
-    expect((h.db.prepare('SELECT COUNT(*) AS n FROM player').get() as { n: number }).n).toBe(0);
-    expect((h.db.prepare('SELECT COUNT(*) AS n FROM profile').get() as { n: number }).n).toBe(0);
+    // DB di gioco azzerato (nessun pick); tournament_state ripristinato per il
+    // nuovo torneo. ADR-019: l'auto-join a start RICREA i profili degli account
+    // con flag ON (a e b sono ON di default), quindi player/profile = 2.
     expect((h.db.prepare('SELECT COUNT(*) AS n FROM pick').get() as { n: number }).n).toBe(0);
+    expect((h.db.prepare('SELECT COUNT(*) AS n FROM player').get() as { n: number }).n).toBe(2);
+    expect((h.db.prepare('SELECT COUNT(*) AS n FROM profile').get() as { n: number }).n).toBe(2);
+    expect(restarted.autoJoined).toBe(2);
     const state = h.db
       .prepare('SELECT season_started, winner_notified, finished_at FROM tournament_state WHERE id = 1')
       .get() as { season_started: number; winner_notified: number; finished_at: string | null };
@@ -506,19 +509,21 @@ describe('riavvio del torneo dopo la chiusura (ADR-011 §5.5)', () => {
     expect(h.platform.list().map((a) => a.email).sort()).toEqual(['a@test.it', 'b@test.it']);
     expect(h.platform.find('a@test.it')?.name).toBe('Aldo');
 
-    // Nuovo torneo GIOCABILE: apertura round e pick funzionano di nuovo.
+    // Nuovo torneo GIOCABILE: i profili auto-joinati possono inviare un pick.
     h.ctx.now = NOW;
     const opened = await openRound(h.ctx, 1);
     expect(opened.status).toBe('open');
-    const autoJoin = await import('../../../src/game/registration.js');
-    const joined = await autoJoin.autoJoinFromPick(
-      h.ctx,
-      { channel: 'email', identifier: 'a@test.it' },
-      { team: IM, outcome: 'win' },
-      1,
-      T_PICK
-    );
-    expect(joined.ok).toBe(true);
+    const profile = h.db
+      .prepare('SELECT p.id FROM profile p JOIN player pl ON pl.id = p.player_id WHERE pl.email = ?')
+      .get('a@test.it') as { id: number };
+    const pick = await registerPick(h.ctx, {
+      profileId: profile.id,
+      round: 1,
+      team: IM,
+      outcome: 'win',
+      receivedAt: T_PICK
+    });
+    expect(pick.ok).toBe(true);
     const player = h.db.prepare('SELECT name FROM player WHERE email = ?').get('a@test.it') as {
       name: string;
     };

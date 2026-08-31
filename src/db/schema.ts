@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS player (
 );
 
 -- Profilo (partecipazione al torneo)
--- Nella PoC: 1 profilo per giocatore; nasce per AUTO-JOIN al primo pick valido nel TT 1 (RF-P5)
+-- Nella PoC: 1 profilo per giocatore; nasce per auto-join a tournament:start o dichiarazione esplicita (ADR-019)
 CREATE TABLE IF NOT EXISTS profile (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   player_id         INTEGER NOT NULL UNIQUE REFERENCES player(id),

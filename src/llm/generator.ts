@@ -47,7 +47,7 @@ export const EMAIL_TYPES = [
   'platform_already_registered', // re-iscrizione da account già active (ADR-009, decisione (f)/B6)
   'tournament_open', // apertura torneo a tutti gli iscritti attivi (RF-P6): SOLO annuncio
   'pick_instructions', // apertura round: istruzioni + squadre disponibili
-  'pick_confirmed', // conferma di registrazione pick; per l'auto-join è l'UNICO messaggio (RF-P5, D5)
+  'pick_confirmed', // conferma di registrazione pick (ADR-019: l'auto-join non usa più questo messaggio)
   'pick_rejected', // rifiuto pick con motivo
   'pick_missing_elimination', // eliminazione per pick mancante
   'pick_auto_assigned', // auto-pick assegnato a chiusura (feature AUTOPICK): conferma a posteriori
@@ -58,7 +58,10 @@ export const EMAIL_TYPES = [
   'tournament_won', // vittoria del torneo
   'tournament_shared_win', // vittoria condivisa
   'clarification', // chiarimento su messaggio non interpretabile (ADR-011, Task 7)
-  'tournament_closed' // chiusura torneo con storico per-round (ADR-015, email v4)
+  'tournament_closed', // chiusura torneo con storico per-round (ADR-015, email v4)
+  'tournament_join_confirmed', // partecipazione confermata (ADR-019, join riuscito)
+  'tournament_already_joined', // dichiarazione da account già in gara (ADR-019, idempotenza D8)
+  'tournament_join_rejected' // partecipazione non confermata (ADR-019, con reason)
 ] as const;
 
 /** Tipi di email previsti dal POC. */
@@ -250,7 +253,10 @@ const SUBJECT_LABELS: Record<EmailType, string> = {
   tournament_won: 'Hai Vinto',
   tournament_shared_win: 'Vittoria Condivisa',
   clarification: 'Non Ho Capito',
-  tournament_closed: 'Chiusura Torneo'
+  tournament_closed: 'Chiusura Torneo',
+  tournament_join_confirmed: 'Partecipazione Confermata',
+  tournament_already_joined: 'Già in Gara',
+  tournament_join_rejected: 'Partecipazione Non Confermata'
 };
 
 /**

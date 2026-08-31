@@ -3,7 +3,7 @@
  *
  * Ruolo: valida un pick con la CASCATA di regole (LLD §3.1) con motivo dedicato
  * e registra atomicamente sulla tabella `pick`. È il modulo a cui delegano il
- * Round Manager (Task 3.5) e l'auto-join (RF-P5, ADR-009): stesse regole per
+ * Round Manager (Task 3.5) e i flussi di partecipazione (ADR-019): stesse regole per
  * pick automatici e manuali (decisione 9 del piano, US10).
  *
  * La cascata (ordine = base dei messaggi di risposta, briefing §1-F):
@@ -200,9 +200,8 @@ export async function checkAcceptance(
 }
 
 /**
- * Inserimento ATOMICO della riga pick (stato pending) — usato da registerPick,
- * dall'auto-join RF-P5 (profilo+pick in un'unica transazione, ADR-009) e
- * dall'AUTO-PICK del Round Manager (`closeRound`, feature AUTOPICK) che
+ * Inserimento ATOMICO della riga pick (stato pending) — usato da registerPick
+ * e dall'AUTO-PICK del Round Manager (`closeRound`, feature AUTOPICK) che
  * bypassa la cascata `validatePick` (a chiusura rifiuterebbe con
  * `after_acceptance`/`round_not_open`).
  *
@@ -220,7 +219,7 @@ export async function checkAcceptance(
  * additiva `pick.jolly_used`, default 0). Il flag NON altera lo scoring:
  * trasporta ai renderer il fatto che il pick aveva un jolly (marcatore e
  * testi "🎯 Jolly"); il consumo del contatore è gestito dal chiamante
- * (registerPick/autoJoinFromPick) nella stessa transazione.
+ * (registerPick) nella stessa transazione.
  */
 export function insertPendingPick(
   db: Database.Database,

@@ -1,8 +1,9 @@
 /**
  * Seam di eligibilità (ADR-008 n. 8 + ADR-009, LLD §6.5; piano Task 7).
  *
- * Ruolo: gate PRE-partecipazione: ogni ingresso nel torneo (auto-join al TT1,
- * RF-P5) passa da `checkEligibility(ctx, identity)`. L'identità è normalizzata
+ * Ruolo: gate PRE-partecipazione: ogni ingresso nel torneo (auto-join a
+ * `tournament:start` o dichiarazione esplicita, ADR-019) passa da
+ * `checkEligibility(ctx, identity)`. L'identità è normalizzata
  * dal canale (`ExternalIdentity {channel, identifier}` — per l'email:
  * `{channel:'email', identifier: <indirizzo>}`, mai più "email = identificativo"
  * come identità grezza).

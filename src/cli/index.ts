@@ -21,6 +21,7 @@ import {
 import {
   tournamentExportCommand,
   tournamentHistoryCommand,
+  tournamentJoinCommand,
   tournamentLeaderboardCommand,
   tournamentStartCommand,
   tournamentStatusCommand
@@ -43,6 +44,7 @@ import { schedulerStatusCommand, schedulerTickCommand } from './commands/schedul
 import {
   platformListCommand,
   platformMigrateCommand,
+  platformPreferencesCommand,
   platformRegisterCommand,
   platformUnregisterCommand
 } from './commands/platform.js';
@@ -65,6 +67,7 @@ export function createCli(argv: string[] = hideBin(process.argv)) {
     .command(dbMigrateCommand)
     .command(platformMigrateCommand)
     .command(platformRegisterCommand)
+    .command(platformPreferencesCommand)
     .command(platformUnregisterCommand)
     .command(platformListCommand)
     .command(dataImportCommand)
@@ -88,6 +91,7 @@ export function createCli(argv: string[] = hideBin(process.argv)) {
     .command(roundStatusCommand)
     .command(roundDeadlineCommand)
     .command(tournamentStartCommand)
+    .command(tournamentJoinCommand)
     .command(tournamentStatusCommand)
     .command(tournamentHistoryCommand)
     .command(tournamentLeaderboardCommand)

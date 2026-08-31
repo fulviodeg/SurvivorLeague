@@ -174,3 +174,103 @@ describe('PlatformRegistry (ADR-009, RF-P1/P2/P3/P8)', () => {
     expect(registry.list()).toHaveLength(1);
   });
 });
+
+describe('PlatformRegistry — flag partecipazione opt-in (ADR-019, D2/D9)', () => {
+  it('register scrive ENTRAMBI i flag a true alla PRIMA creazione (default opt-in)', () => {
+    const registry = makeRegistry();
+    const account = registry.register('mario@example.com', null, new Date('2026-08-20T12:00:00.000Z'));
+
+    expect(account.receiveTournamentStartNotification).toBe(true);
+    expect(account.tournamentAutoJoin).toBe(true);
+  });
+
+  it('le riattivazioni NON toccano i flag (registration-pure): una preferenza cambiata resta', () => {
+    const registry = makeRegistry();
+    const now = new Date('2026-08-20T12:00:00.000Z');
+    registry.register('mario@example.com', null, now);
+    // Cambio preferenza via setPreferences (auto-join OFF).
+    registry.setPreferences('mario@example.com', { tournamentAutoJoin: false });
+    // Disiscrizione + re-iscrizione: il flag resta OFF (non riasserito).
+    registry.beginUnsubscribe('mario@example.com', now);
+    registry.confirmUnsubscribe('mario@example.com', now);
+    const reactivated = registry.register('mario@example.com', null, now);
+
+    expect(reactivated.status).toBe('active');
+    expect(reactivated.tournamentAutoJoin).toBe(false);
+  });
+
+  it('setPreferences aggiorna solo i campi indicati e non scrive timestamp', () => {
+    const registry = makeRegistry();
+    const now = new Date('2026-08-20T12:00:00.000Z');
+    registry.register('mario@example.com', null, now);
+
+    const updated = registry.setPreferences('mario@example.com', { tournamentAutoJoin: false });
+
+    expect(updated?.tournamentAutoJoin).toBe(false);
+    // Il campo non indicato resta invariato.
+    expect(updated?.receiveTournamentStartNotification).toBe(true);
+    // created_at e unsubscribed_at restano quelli originali (nessuna data scritta).
+    expect(updated?.createdAt).toBe('2026-08-20T12:00:00.000Z');
+    expect(updated?.unsubscribedAt).toBeNull();
+  });
+
+  it('setPreferences con prefs vuoto è una sola lettura; account sconosciuto → null', () => {
+    const registry = makeRegistry();
+    registry.register('mario@example.com', null, new Date('2026-08-20T12:00:00.000Z'));
+
+    expect(registry.setPreferences('mario@example.com', {})).toMatchObject({
+      email: 'mario@example.com',
+      tournamentAutoJoin: true
+    });
+    expect(registry.setPreferences('sconosciuto@example.com', { tournamentAutoJoin: false })).toBeNull();
+  });
+
+  it('find/list/activeAccounts espongono i due flag (booleani)', () => {
+    const registry = makeRegistry();
+    const now = new Date('2026-08-20T12:00:00.000Z');
+    registry.register('a@example.com', null, now);
+    registry.register('b@example.com', null, now);
+    registry.setPreferences('b@example.com', { receiveTournamentStartNotification: false });
+    registry.beginUnsubscribe('a@example.com', now); // a non è più active
+
+    expect(registry.find('b@example.com')).toMatchObject({
+      tournamentAutoJoin: true,
+      receiveTournamentStartNotification: false
+    });
+    // activeAccounts: SOLO gli active (a escluso), con i flag.
+    expect(registry.activeAccounts()).toEqual([
+      expect.objectContaining({ email: 'b@example.com', tournamentAutoJoin: true, receiveTournamentStartNotification: false })
+    ]);
+    // list: TUTTI gli account (incluso a), flag inclusi.
+    expect(registry.list().map((acc) => acc.email)).toEqual(['a@example.com', 'b@example.com']);
+  });
+
+  it('migrazione additiva: un DB legacy senza le colonne le guadagna con default 1', () => {
+    const db = new Database(':memory:');
+    // Schema "legacy" (pre-opt-in): la DDL attuale include già le colonne, quindi
+    // si ricrea la tabella senza i due flag per verificare la migrazione additiva.
+    db.exec(`
+      CREATE TABLE platform_account (
+        register_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+        email           TEXT NOT NULL UNIQUE,
+        name            TEXT,
+        status          TEXT NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active', 'pending_unsubscribe', 'unsubscribed')),
+        created_at      TEXT NOT NULL,
+        unsubscribed_at TEXT
+      );
+    `);
+    db.prepare(
+      "INSERT INTO platform_account (email, name, status, created_at) VALUES ('legacy@example.com', NULL, 'active', '2026-08-01T00:00:00.000Z')"
+    ).run();
+
+    migratePlatform(db);
+
+    const registry = new DbPlatformRegistry(db);
+    const account = registry.find('legacy@example.com');
+    expect(account).toMatchObject({
+      receiveTournamentStartNotification: true,
+      tournamentAutoJoin: true
+    });
+  });
+});

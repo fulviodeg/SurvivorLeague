@@ -8,9 +8,8 @@
  * `active`:
  *   - round:open → pick_instructions ai soli partecipanti attivi
  *     (eliminated = 0) con account `active`;
- *   - round:open al TT 1 → pick_instructions ANCHE agli account `active`
- *     SENZA profilo (amendment RF-P6, 2026-08-21), con dedup sui profili e
- *     squadre in giornata; dal TT 2 nessun invio ai senza-profilo;
+ *   - round:open al TT 1 → NESSUNA eccezione per gli account `active` SENZA
+ *     profilo (ADR-019: la nascita dei profili non è più legata al pick);
  *   - round:close → pick_missing_elimination ai soli account `active`;
  *   - round:score → round_result_correct/wrong ai soli account `active`;
  *   - round:score alla transizione closed→scored → round_closed_survived ai
@@ -22,8 +21,9 @@
  *     l'invio è best-effort per destinatario (try/catch + warn pino in
  *     inglese, il loop continua) e `scoreRound` risolve senza lanciare;
  *     l'idempotenza del riepilogo è invariata;
- *   - tournament:start → tournament_open a tutti gli activeEmails() (e SOLO a
- *     quelli: pending/unsubscribed esclusi);
+ *   - tournament:start → tournament_open ai soli account `active` CON
+ *     `receive_tournament_start_notification=ON` (D9; pending/unsubscribed e
+ *     notifiche OFF esclusi);
  *   - contesto con channel + generator ma SENZA registry (D4, A4/B3): il
  *     filtro notifiche FALLISCE CHIUSO — nessuna email parte (simmetria con
  *     checkEligibility → platform_unavailable); il broadcast di
@@ -47,7 +47,7 @@ import { startTournament } from '../../../src/game/tournament.js';
 import { createLogger } from '../../../src/logger.js';
 import { FIXTURE_TEAMS, loadBaseSeason } from '../../fixtures/season.js';
 
-const [IM, AC, JU, MA] = FIXTURE_TEAMS;
+const [IM, , JU] = FIXTURE_TEAMS;
 
 const NOW = new Date('2026-09-01T10:00:00.000Z');
 const T_PICK = new Date('2026-09-12T15:00:00.000Z'); // entro deadline TT1
@@ -193,14 +193,15 @@ describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
     expect(recipients).toHaveLength(1);
   });
 
-  it('TT1: account active SENZA profilo ricevono pick_instructions con le squadre in giornata (amendment RF-P6, dedup sui profili)', async () => {
+  it('TT1: account active SENZA profilo NON riceve pick_instructions (ADR-019: la mail pick va SOLO ai partecipanti)', async () => {
     const { db, platform, ctx, channel, generator } = await makeContext();
-    // a: account active SENZA profilo → deve ricevere (amendment RF-P6).
+    // a: account active SENZA profilo → NON riceve la mail pick (eccezione
+    // RF-P6 RIMOSSA da ADR-019: la nascita dei profili non è più legata al pick).
     platform.register('a@test.it', null, NOW);
-    // b: account active CON profilo → UNA sola email (dedup col loop profili).
+    // b: account active CON profilo → UNA email (dal loop profili).
     const b = platform.register('b@test.it', null, NOW);
     insertProfile(db, 'b@test.it', b.registerId);
-    // c (pending_unsubscribe) e d (unsubscribed): SENZA profilo ma esclusi.
+    // c (pending_unsubscribe) e d (unsubscribed): SENZA profilo, esclusi.
     platform.register('c@test.it', null, NOW);
     platform.beginUnsubscribe('c@test.it', NOW);
     platform.register('d@test.it', null, NOW);
@@ -209,34 +210,19 @@ describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
 
     const result = await openRound(ctx, 1);
 
-    expect(result).toMatchObject({ round: 1, tt: 1, tc: 1, notified: 1, registeredNotified: 1 });
-    const invites = generator.byType('pick_instructions');
-    expect(invites).toHaveLength(2);
-    // L'email del senza-profilo ha le squadre in giornata (stessa fonte di
-    // getAvailableTeams, ordinate come getTeams()) e ADR-011: il nome
-    // arriva dall'account piattaforma — senza nome registrato vale l'email.
-    const noProfile = invites.find((c) => c.playerName === 'a@test.it');
-    expect(noProfile).toMatchObject({
-      type: 'pick_instructions',
-      round: 1,
-      championshipRound: 1,
-      availableTeams: [AC, MA, IM, JU],
-      deadline: new Date('2026-09-12T15:30:00.000Z'),
-      deadlineRemaining: expect.stringContaining('ore')
-    });
-    // Dedup: il profilo di b riceve UNA sola email (dal loop profili).
-    expect(channel.sent.filter((s) => s.to === 'b@test.it')).toHaveLength(1);
-    // pending_unsubscribe/unsubscribed (senza profilo) non ricevono nulla.
-    expect(channel.sent.map((s) => s.to)).toEqual(expect.not.arrayContaining(['c@test.it', 'd@test.it']));
+    expect(result).toMatchObject({ round: 1, tt: 1, tc: 1, notified: 1 });
+    // SOLO il profilo di b riceve la mail; a (senza profilo) è escluso.
+    expect(generator.byType('pick_instructions')).toHaveLength(1);
+    expect(channel.sent.map((s) => s.to)).toEqual(['b@test.it']);
   });
 
-  it('TT2: account SENZA profilo NON ricevono nulla (amendment RF-P6 solo al TT 1)', async () => {
+  it('TT2: account SENZA profilo NON ricevono nulla (solo i partecipanti, ADR-019)', async () => {
     const { db, platform, ctx, channel, generator } = await makeContext();
     platform.register('a@test.it', null, NOW); // SENZA profilo
     const b = platform.register('b@test.it', null, NOW);
     insertProfile(db, 'b@test.it', b.registerId); // CON profilo
 
-    // TT1: anche il senza-profilo a viene notificato (comportamento atteso).
+    // TT1: solo b (con profilo) viene notificato.
     await openRound(ctx, 1);
     channel.sent = [];
     generator.contexts = [];
@@ -244,7 +230,7 @@ describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
     // TT2: solo i profili attivi — a (senza profilo) non riceve nulla.
     const result = await openRound(ctx, 2);
 
-    expect(result).toMatchObject({ tt: 2, notified: 1, registeredNotified: 0 });
+    expect(result).toMatchObject({ tt: 2, notified: 1 });
     expect(generator.byType('pick_instructions')).toHaveLength(1);
     expect(channel.sent.map((s) => s.to)).toEqual(['b@test.it']);
   });
@@ -560,7 +546,7 @@ describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
     expect(channel.sent).toHaveLength(0);
   });
 
-  it('tournament:start → tournament_open a tutti gli activeEmails (pending/unsubscribed esclusi)', async () => {
+  it('tournament:start → tournament_open ai soli account active con receive_tournament_start_notification=ON (D9)', async () => {
     const db = new Database(':memory:');
     migrate(db);
     loadBaseSeason(db);
@@ -569,12 +555,17 @@ describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
     const platform = new DbPlatformRegistry(platformDb);
     const channel = new FakeChannel();
     const generator = new FakeGenerator();
+    // a: active + notifiche ON → notificato.
     platform.register('a@test.it', null, NOW);
+    // b: active + notifiche OFF → NON notificato (D9).
     platform.register('b@test.it', null, NOW);
-    platform.beginUnsubscribe('b@test.it', NOW);
+    platform.setPreferences('b@test.it', { receiveTournamentStartNotification: false });
+    // c: pending → escluso; d: unsubscribed → escluso.
     platform.register('c@test.it', null, NOW);
     platform.beginUnsubscribe('c@test.it', NOW);
-    platform.confirmUnsubscribe('c@test.it', NOW);
+    platform.register('d@test.it', null, NOW);
+    platform.beginUnsubscribe('d@test.it', NOW);
+    platform.confirmUnsubscribe('d@test.it', NOW);
     const ctx: GameContext = {
       db,
       dataProvider: new DbSeasonDataProvider(db),
@@ -597,5 +588,7 @@ describe('filtro account active sulle notifiche (RF-P6, ADR-009)', () => {
     expect(result.notified).toBe(1);
     expect(generator.byType('tournament_open')).toHaveLength(1);
     expect(channel.sent.map((s) => s.to)).toEqual(['a@test.it']);
+    // platformCount = account ATTIVI (2), non i destinatari (1).
+    expect(generator.byType('tournament_open')[0]?.platformCount).toBe(2);
   });
 });

@@ -85,7 +85,8 @@ attivo e non serve re-iscriversi; per partecipare al torneo basta inviare la pri
   tournament_open: `${COMMON_HEADER}
 Argomento: ANNUNCIO DI APERTURA DEL TORNEO. Trasmetti entusiasmo: il torneo è ufficialmente
 aperto e il round 1 parte a breve — stai pronto! NON invitare ancora a fare un pick e NON citare
-date: le istruzioni con la scadenza arrivano con una mail dedicata all'apertura del round.`,
+date: le istruzioni con la scadenza arrivano con una mail dedicata all'apertura del round.
+Ricorda che per partecipare al torneo basta rispondere con "PARTECIPO".`,
 
   pick_instructions: `${COMMON_HEADER}
 Argomento: ISTRUZIONI PER IL PICK. Il round è aperto: incoraggia il giocatore a scegliere UNA
@@ -144,15 +145,29 @@ dalle regole; congratulazioni al giocatore, campione insieme ai suoi compagni di
 
   clarification: `${COMMON_HEADER}
 Argomento: CHIARIMENTO. Non hai capito la richiesta del giocatore: dillo con leggerezza e
-simpatica, poi elenca le tre cose che può fare: iscriversi, disiscriversi, o inviare un pick
-(squadra + esito). Se nel contesto c'è una scadenza attiva, accenna solo che il tempo stringe
-(senza date). Se non è iscritto, ricorda la formula: dire il proprio nome e scrivere "voglio
-iscrivermi".`,
+simpatica, poi elenca le quattro cose che può fare: iscriversi, disiscriversi, partecipare al
+torneo (formula "PARTECIPO"), o inviare un pick (squadra + esito). Se nel contesto c'è una
+scadenza attiva, accenna solo che il tempo stringe (senza date). Se non è iscritto, ricorda la
+formula: dire il proprio nome e scrivere "voglio iscrivermi".`,
 
   tournament_closed: `${COMMON_HEADER}
 Argomento: CHIUSURA DEL TORNEO. Il torneo è terminato: dai un saluto finale caloroso e
 sportivo. Lo storico completo per round è nel box del sistema: NON ripetere elenchi, nomi,
-squadre o risultati.`
+squadre o risultati.`,
+
+  tournament_join_confirmed: `${COMMON_HEADER}
+Argomento: PARTECIPAZIONE CONFERMATA. Il giocatore è ora in gara nel torneo: festeggia
+l'ingresso e spiega che il prossimo passo è inviare il pick quando il round si aprirà
+(la scadenza, se presente, è nel box del sistema).`,
+
+  tournament_already_joined: `${COMMON_HEADER}
+Argomento: GIÀ IN GARA. Il giocatore ha dichiarato di partecipare ma era già in gara:
+rassicuralo con tono positivo, nessuna nuova iscrizione è necessaria.`,
+
+  tournament_join_rejected: `${COMMON_HEADER}
+Argomento: PARTECIPAZIONE NON CONFERMATA. La dichiarazione di partecipazione al torneo non
+è andata a buon fine: spiega il motivo (campo "motivo" del contesto) in modo semplice e
+incoraggiante.`
 };
 
 /**
@@ -177,7 +192,7 @@ export const DETERMINISTIC_NARRATIVES: Record<EmailType, string> = {
   platform_unsubscribed:
     'Non riceverai più comunicazioni. Per tornare, rispondi con "ISCRIZIONE [il tuo nome]" (nel subject o nel corpo).',
   platform_already_registered: "All'apertura del round riceverai le istruzioni per il pick.",
-  tournament_open: 'Il round 1 parte a breve: stai pronto.',
+  tournament_open: 'Il round 1 parte a breve: stai pronto. Per partecipare al torneo, rispondi con "PARTECIPO".',
   pick_instructions: "Scegli una squadra e l'esito (vittoria, pareggio, sconfitta).",
   pick_confirmed: '',
   pick_rejected: 'Riprova rispondendo con squadra + esito (win, draw, lose).',
@@ -191,8 +206,11 @@ export const DETERMINISTIC_NARRATIVES: Record<EmailType, string> = {
   tournament_won: "Sei rimasto l'ultimo in gara: la vittoria è tutta tua!",
   tournament_shared_win: 'Insieme ai tuoi compagni di vetta avete portato a casa il torneo.',
   clarification:
-    'Puoi:\n1. Iscriverti: scrivi "ISCRIZIONE [il tuo nome]" (es. "ISCRIZIONE Mario") nel subject o nel corpo.\n2. Disiscriverti: scrivi "DISISCRIZIONE".\n3. Inviare un pick: scrivi squadra + esito (win, draw, lose).',
-  tournament_closed: ''
+    'Puoi:\n1. Iscriverti: scrivi "ISCRIZIONE [il tuo nome]" (es. "ISCRIZIONE Mario") nel subject o nel corpo.\n2. Disiscriverti: scrivi "DISISCRIZIONE".\n3. Partecipare al torneo: scrivi "PARTECIPO".\n4. Inviare un pick: scrivi squadra + esito (win, draw, lose).',
+  tournament_closed: '',
+  tournament_join_confirmed: "Sei in gara! Invia il tuo pick quando il round è aperto.",
+  tournament_already_joined: 'Sei già in gara: non serve una nuova partecipazione.',
+  tournament_join_rejected: ''
 };
 
 /**
@@ -208,7 +226,7 @@ export const WIN_ONLY_NARRATIVE_OVERRIDES: Partial<Record<EmailType, string>> = 
   pick_instructions: 'Scegli la squadra che vincerà.',
   pick_rejected: 'Riprova rispondendo con il nome della squadra che vincerà.',
   clarification:
-    'Puoi:\n1. Iscriverti: scrivi "ISCRIZIONE [il tuo nome]" (es. "ISCRIZIONE Mario") nel subject o nel corpo.\n2. Disiscriverti: scrivi "DISISCRIZIONE".\n3. Inviare un pick: scrivi il nome della squadra che vincerà.'
+    'Puoi:\n1. Iscriverti: scrivi "ISCRIZIONE [il tuo nome]" (es. "ISCRIZIONE Mario") nel subject o nel corpo.\n2. Disiscriverti: scrivi "DISISCRIZIONE".\n3. Partecipare al torneo: scrivi "PARTECIPO".\n4. Inviare un pick: scrivi il nome della squadra che vincerà.'
 };
 
 /**
@@ -246,10 +264,10 @@ della squadra che vincerà in modo riconoscibile.`,
 
   clarification: `${COMMON_HEADER}
 Argomento: CHIARIMENTO. Non hai capito la richiesta del giocatore: dillo con leggerezza e
-simpatica, poi elenca le tre cose che può fare: iscriversi, disiscriversi, o inviare un pick
-(il nome della squadra che vincerà). Se nel contesto c'è una scadenza attiva, accenna solo che
-il tempo stringe (senza date). Se non è iscritto, ricorda la formula: dire il proprio nome e
-scrivere "voglio iscrivermi".`
+simpatica, poi elenca le quattro cose che può fare: iscriversi, disiscriversi, partecipare al
+torneo (formula "PARTECIPO"), o inviare un pick (il nome della squadra che vincerà). Se nel
+contesto c'è una scadenza attiva, accenna solo che il tempo stringe (senza date). Se non è
+iscritto, ricorda la formula: dire il proprio nome e scrivere "voglio iscrivermi".`
 };
 
 /**

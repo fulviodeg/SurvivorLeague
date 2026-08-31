@@ -145,6 +145,18 @@ describe('LLM Generator v2 — contract test per ogni tipo (ADR-011)', () => {
     );
   });
 
+  it('soggetti dei tipi di partecipazione opt-in (ADR-019)', () => {
+    expect(subjectFor({ type: 'tournament_join_confirmed' })).toBe(
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Partecipazione Confermata'
+    );
+    expect(subjectFor({ type: 'tournament_already_joined' })).toBe(
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Già in Gara'
+    );
+    expect(subjectFor({ type: 'tournament_join_rejected' })).toBe(
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Partecipazione Non Confermata'
+    );
+  });
+
   it('tournament_won/tournament_shared_win includono il turno quando TC noto (D1)', () => {
     const pair = { round: 3, championshipRound: 5 };
     expect(subjectFor({ type: 'tournament_won', ...pair })).toBe(

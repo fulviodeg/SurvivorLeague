@@ -5,7 +5,7 @@
  * Ruolo: ORCHESTRATORE SOTTILE del flusso end-to-end delle email in ingresso:
  * fetch → Message Router (preparazione, D6/K) → Intent Classifier LLM
  * (intento + pick, UNA chiamata, ADR-009) → PlatformRegistry (subscribe/
- * unsubscribe a due passi) e moduli di gioco (auto-join RF-P5, cascata pick) →
+ * unsubscribe a due passi) e moduli di gioco (dichiarazione/auto-join ADR-019, cascata pick) →
  * risposte email → flag \Seen (D7). NON contiene logica di gioco: ogni
  * decisione è delegata a registry/moduli (AGENTS.md §1.3).
  *
@@ -25,21 +25,29 @@
  *     `other` dall'LLM reale (D1/D2); secondo messaggio con intento
  *     `unsubscribe` e body NON in lista → conferma ripetuta, resta pending;
  *     da `unsubscribed`/sconosciuto → **log silenzioso**, marcato letto (RF-P2);
+ *   - intento `join` (ADR-019, `PARTECIPO` = partecipazione al torneo, NON
+ *     registration): da sconosciuto/`unsubscribed` → log interno, marcato
+ *     letto, NESSUNA risposta (anti-spam, RF-P4 — mai una registration);
+ *     da `pending_unsubscribe` → riattiva `active` (come pick); poi
+ *     `declareParticipation` → `tournament_join_confirmed` /
+ *     `tournament_already_joined` / `tournament_join_rejected`;
  *   - intento `pick`: da sconosciuto/`unsubscribed` → **log interno, nessuna
  *     risposta** (anti-spam, RF-P4); da `pending_unsubscribe` → riattiva
  *     `active` e prosegue; da `active` con profilo → cascata attuale
  *     (`pick_confirmed`/`pick_rejected`); da `active` SENZA profilo →
- *     `autoJoinFromPick` nel TT1 (RF-P5, risposta `pick_confirmed` — nessuna
- *     conferma di iscrizione separata) o rifiuto "torneo iniziato" dal TT2;
+ *     NESSUNA auto-join (ADR-019): nel TT1 `tournament_join_rejected` reason
+ *     `not_in_tournament` (testo "per partecipare invia PARTECIPO") o rifiuto
+ *     "torneo iniziato" dal TT2;
  *   - intento `other`: da account `active` → chiarimento; da sconosciuto o
  *     da account NON `active` (`unsubscribed`/`pending_unsubscribe`) → log
  *     silenzioso, marcato letto, NESSUNA risposta (decisione 7/ADR-009,
  *     decisione (e)/B5, istanza D3).
- *   - ORDINE (ADR-009): subscribe/unsubscribe gestiti PRIMA del gate
+ *   - ORDINE (ADR-009): subscribe/unsubscribe/join gestiti PRIMA del gate
  *     `round_not_open` (indipendenti dai round); il ramo pick richiede un
- *     round aperto (CL3). Le risposte dei rami subscribe/unsubscribe partono
- *     SEMPRE (sono il flusso di conferma RF-P1/P2); le notifiche di torneo
- *     (round/broadcast/riepilogo) sono filtrate altrove su account `active`.
+ *     round aperto (CL3). Le risposte dei rami subscribe/unsubscribe/join
+ *     partono SEMPRE (flussi di conferma RF-P1/P2 e di partecipazione
+ *     ADR-019); le notifiche di torneo (round/broadcast/riepilogo) sono
+ *     filtrate altrove su account `active`.
  *   - MITTENTI ATTIVI RIVALUTATI PER MESSAGGIO (HIGH-2): nessuno snapshot di
  *     inizio batch — lo stato dell'account è riletto dal registry a ogni
  *     messaggio, così un `subscribe` seguito da un `pick` dello stesso
@@ -53,7 +61,7 @@ import type { Logger } from 'pino';
 
 import type { IncomingMessage } from './adapter.js';
 import type { GameContext } from '../game/context.js';
-import { autoJoinFromPick } from '../game/registration.js';
+import { declareParticipation } from '../game/registration.js';
 import { registerPick } from '../game/pick-processor.js';
 import { formatRemaining } from '../game/round-time.js';
 import { getStartRound, turnFor } from '../game/turn.js';
@@ -92,8 +100,9 @@ export type ProcessedAction =
   | 'pick_registered'
   | 'pick_rejected'
   | 'clarification' // formato non riconosciuto / other da account active (B5)
-  | 'auto_joined' // auto-join RF-P5 riuscito (risposta pick_confirmed)
-  | 'auto_rejected' // auto-join rifiutato (cascata/not_tt1/round chiuso)
+  | 'join_confirmed' // dichiarazione PARTECIPO riuscita (ADR-019)
+  | 'join_rejected' // dichiarazione rifiutata (nessun torneo / torneo iniziato)
+  | 'already_joined' // dichiarazione da account già in gara (idempotenza D8)
   | 'rejected_tt2' // iscritto senza profilo dal TT2
   | 'silent_pick' // pick da sconosciuto/disiscritto (RF-P4)
   | 'silent_other' // other da sconosciuto o account non active (RF-P4, decisione (e)/B5)
@@ -135,7 +144,7 @@ function pickFormula(winOnly: boolean): string {
 /**
  * Motivi di rifiuto jolly in forma UMANA (feature JOLLY, D11): i motivi
  * `no_jollies_left` e `jolly_not_allowed` sono tradotti in italiano per le
- * risposte `pick_rejected`/`auto_rejected` (la chiave del renderer è
+ * risposte `pick_rejected` (la chiave del renderer è
  * "PICK NON REGISTRATO: <motivo>"). Gli altri motivi restano invariati (null
  * → il chiamante usa il motivo grezzo).
  */
@@ -214,7 +223,7 @@ async function sendReply(
 }
 
 /**
- * Testo del rifiuto "torneo iniziato" (RF-P5, dal TT2). Il TC può mancare
+ * Testo del rifiuto "torneo iniziato" (ADR-019, dal TT2). Il TC può mancare
  * quando non esiste un round aperto: in tal caso il messaggio omette la coppia.
  */
 function startedRejectionReason(tc: number | null | undefined): string {
@@ -365,6 +374,77 @@ async function processOne(
     return { from: message.from, kind, action: 'unsubscribe_pending', seen: true };
   }
 
+  // --- Ramo join (ADR-019): PARTECIPO = partecipazione al torneo (NON
+  // registration). Da sconosciuto/unsubscribed → log silenzioso, marcato
+  // letto (RF-P4: un join non è mai una registration); da pending →
+  // riattiva active (come pick); poi declareParticipation. Il ramo è PRIMA
+  // del gate round_not_open: la dichiarazione è ammessa anche con round 1
+  // `pending` (finestra TT1, simmetrica all'auto-join). ---
+  if (clazz.intent === 'join') {
+    if (account === null || account.status === 'unsubscribed') {
+      deps.logger.info(
+        { email: identity.identifier, intent: 'join' },
+        'email:process: join da mittente non iscritto — log interno, nessuna risposta (RF-P4)'
+      );
+      await deps.markSeen(message);
+      return { from: message.from, kind, action: 'silent_other', seen: true };
+    }
+    if (account.status === 'pending_unsubscribe') {
+      // RF-P2: una dichiarazione mentre pending riporta l'account ad active.
+      platform.reactivate(identity.identifier, ctx.now);
+    }
+
+    const joined = declareParticipation(ctx, identity, {});
+    if (joined.ok) {
+      await sendReply(ctx, identity.identifier, {
+        type: 'tournament_join_confirmed',
+        // ADR-011: box deadline presente SOLO se un round è aperto (la
+        // dichiarazione può arrivare con round 1 ancora `pending`).
+        ...(round === null ? {} : roundEmailContext(ctx, round)),
+        playerName: account.name ?? account.email
+      });
+      await deps.markSeen(message);
+      deps.logger.info(
+        { email: identity.identifier, profileId: joined.profileId, intent: 'join' },
+        'email:process: join confermato'
+      );
+      return { from: message.from, kind, action: 'join_confirmed', seen: true };
+    }
+    if (joined.reason === 'already_joined') {
+      await sendReply(ctx, identity.identifier, {
+        type: 'tournament_already_joined',
+        playerName: account.name ?? account.email
+      });
+      await deps.markSeen(message);
+      return { from: message.from, kind, action: 'already_joined', seen: true };
+    }
+    if (joined.reason === 'no_tournament') {
+      await sendReply(ctx, identity.identifier, {
+        type: 'tournament_join_rejected',
+        playerName: account.name ?? account.email,
+        reason: 'no_tournament'
+      });
+      await deps.markSeen(message);
+      return { from: message.from, kind, action: 'join_rejected', detail: 'no_tournament', seen: true };
+    }
+    // late_requires_reason: il torneo è iniziato, partecipazione chiusa — il
+    // testo al giocatore è "il torneo è iniziato" (mai il motivo di override,
+    // che è SOLO CLI, D10). Il reason dell'email è `tournament_started`.
+    await sendReply(ctx, identity.identifier, {
+      type: 'tournament_join_rejected',
+      playerName: account.name ?? account.email,
+      reason: 'tournament_started'
+    });
+    await deps.markSeen(message);
+    return {
+      from: message.from,
+      kind,
+      action: 'join_rejected',
+      detail: 'tournament_started',
+      seen: true
+    };
+  }
+
   // --- Ramo pick: richiede un round aperto (CL3); da sconosciuto/unsubscribed
   // → log interno SENZA risposta (anti-spam, RF-P4); da pending → riattiva. ---
   if (clazz.intent === 'pick') {
@@ -402,12 +482,16 @@ async function processOne(
       .get(identity.identifier) as { id: number } | undefined;
 
     if (profile === undefined) {
-      // Iscritto SENZA profilo: auto-join nel TT1 (RF-P5) o rifiuto dal TT2.
+      // Iscritto SENZA profilo (ADR-019): il pick NON crea più profili
+      // (rimosso l'auto-join al primo pick, RF-P5 di ADR-009). Se il pick non
+      // è riconoscibile → chiarimento che insegna la formula di join; dal TT2
+      // → rifiuto "torneo iniziato" (invariato); nel TT1 con pick valido →
+      // guida alla dichiarazione (PARTECIPO).
       if (clazz.pick === null) {
         await sendReply(ctx, identity.identifier, {
-          type: 'pick_rejected',
+          type: 'clarification',
           ...roundCtx,
-          reason: `non ho riconosciuto la tua scelta: per entrare nel torneo invia ${pickFormula(ctx.config.WIN_ONLY)}`
+          reason: `non ho riconosciuto la tua richiesta: per partecipare al torneo invia PARTECIPO`
         });
         await deps.markSeen(message);
         return { from: message.from, kind, action: 'clarification', seen: true };
@@ -421,38 +505,22 @@ async function processOne(
         await deps.markSeen(message);
         return { from: message.from, kind, action: 'rejected_tt2', seen: true };
       }
-      const joined = await autoJoinFromPick(ctx, identity, clazz.pick, round, message.receivedAt);
-      if (joined.ok) {
-        // RF-P5/D5: risposta UNICA `pick_confirmed` (nessuna conferma separata).
-        // Feature JOLLY: jolly dichiarato + contatore del nuovo profilo.
-        const jolliesRemaining = (
-          db.prepare('SELECT jollies_remaining FROM profile WHERE id = ?').get(joined.profileId) as {
-            jollies_remaining: number;
-          }
-        ).jollies_remaining;
-        await sendReply(ctx, identity.identifier, {
-          type: 'pick_confirmed',
-          ...roundCtx,
-          team: clazz.pick.team,
-          outcome: clazz.pick.outcome,
-          jollyUsed: clazz.pick.jolly === true,
-          jolliesRemaining
-        });
-        await deps.markSeen(message);
-        return { from: message.from, kind, action: 'auto_joined', seen: true };
-      }
-      const detail =
-        joined.reason === 'pick_rejected' ? (joined.pickReason ?? 'pick_rejected') : joined.reason;
+      // TT1 + pick valido ma SENZA profilo: non si può ancora inviare un pick
+      // (nessuna auto-join) → guida alla dichiarazione (join).
       await sendReply(ctx, identity.identifier, {
-        type: 'pick_rejected',
+        type: 'tournament_join_rejected',
         ...roundCtx,
-        team: clazz.pick.team,
-        outcome: clazz.pick.outcome,
-        // Feature JOLLY (D11): i motivi jolly in italiano, gli altri invariati.
-        reason: readableReason(detail)
+        playerName: account.name ?? account.email,
+        reason: 'not_in_tournament'
       });
       await deps.markSeen(message);
-      return { from: message.from, kind, action: 'auto_rejected', detail, seen: true };
+      return {
+        from: message.from,
+        kind,
+        action: 'join_rejected',
+        detail: 'not_in_tournament',
+        seen: true
+      };
     }
 
     // Iscritto CON profilo: cascata attuale (CL5/CS7 su pick non estratto).
@@ -532,7 +600,7 @@ async function processOne(
   await sendReply(ctx, identity.identifier, {
     type: 'clarification',
     ...(round === null ? {} : roundEmailContext(ctx, round)),
-    reason: `non ho capito la tua richiesta: puoi iscriverti ("voglio iscrivermi"), disiscriverti ("voglio disiscrivermi") o inviare un pick (${pickFormula(ctx.config.WIN_ONLY)})`
+    reason: `non ho capito la tua richiesta: puoi iscriverti ("voglio iscrivermi"), disiscriverti ("voglio disiscrivermi"), partecipare al torneo ("PARTECIPO") o inviare un pick (${pickFormula(ctx.config.WIN_ONLY)})`
   });
   await deps.markSeen(message);
   return { from: message.from, kind, action: 'clarification', seen: true };
@@ -571,7 +639,7 @@ export async function processEmailBatch(
 
   // Offset test-only unificato (D9): il receivedAt di ogni messaggio è
   // shiftato UNA SOLA volta all'ingresso del batch, PRIMA della cascata
-  // registerPick/autoJoinFromPick (che usano message.receivedAt come
+  // registerPick (che usa message.receivedAt come
   // evidenza anti-frode). Shift monotono: stesso delta a tutti i messaggi →
   // ordine di arrivo preservato. MAI applicare anche nel comando channel.ts
   // (doppio shift).

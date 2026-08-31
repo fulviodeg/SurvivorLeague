@@ -30,7 +30,7 @@ import { loadBaseSeason, setScore } from '../fixtures/season.js';
 /**
  * Crea il contesto con DB in-memory migrato + mini-stagione (clock fisso) e
  * DB PIATTAFORMA in-memory pulito con registry iniettato (ADR-009: il seed
- * crea account piattaforma, i profili nascono per auto-join al TT1).
+ * crea account piattaforma, i profili nascono per auto-join a tournament:start).
  */
 function makeCtx(winOnly = false, jolliesPerPlayer?: number): {
   db: Database.Database;
@@ -179,7 +179,7 @@ describe('simulateSeason (CS3, RNF1, R3)', () => {
 });
 
 describe('simulateRound (Task 7.1/10, ADR-009)', () => {
-  it('round singolo su DB fresco: crea tournament_state con start_round, auto-join al TT1, round → scored', async () => {
+  it('round singolo su DB fresco: crea tournament_state con start_round, auto-join a start, round → scored', async () => {
     const { db, platform, ctx } = makeCtx();
     playAllMatches(db);
 
@@ -187,7 +187,7 @@ describe('simulateRound (Task 7.1/10, ADR-009)', () => {
 
     expect(report.rounds).toHaveLength(1);
     expect(report.rounds[0]).toMatchObject({ round: 1, tc: 1, tt: 1, status: 'scored' });
-    // La riga tournament_state è stata creata con start_round = round (RF-P5);
+    // La riga tournament_state è stata creata con start_round = round (ADR-008);
     // nessuna finestra di iscrizione (ADR-009: registration_open resta 0).
     expect(
       db.prepare('SELECT season_started, start_round, registration_open FROM tournament_state WHERE id = 1').get()

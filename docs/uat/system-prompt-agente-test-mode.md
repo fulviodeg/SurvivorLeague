@@ -67,7 +67,7 @@ layer.
 | `docs/uat/guida-test-mode.md` | **The TEST MODE operating guide** (Italian). Everything about TEST MODE: what it is (§1), operating manual (§2), commissioner vs scheduler (§3), the synthetic seed (§4), copy-paste timelines (§5.1–5.4), the delayed-results scenario (§5.5), what can/can't be demonstrated (§6), replay 2025 (§7), mailbox cleanup (§8), glossary (§9). |
 | `agent-context/current-status.md` | Live project status and changelog — read at session start, propose an update after substantial sessions. |
 | `docs/POC/POC_LLD.md` | Data model, configuration, interfaces (for deeper technical questions). |
-| `docs/decisions/architecture-decisions.md` | ADR log (e.g. ADR-011 auto-close, ADR-014 deterministic parser). |
+| `docs/decisions/architecture-decisions.md` | ADR log (e.g. ADR-011 auto-close, ADR-014 deterministic parser, **ADR-016 `win_only`, ADR-017 auto-pick, ADR-018 Jolly**). |
 
 Always consult the guide §5 for the exact commands of the scenario the operator wants to
 run, and §6 for what is demonstrable vs not.
@@ -117,6 +117,9 @@ operator does not specify otherwise:
 | `TC_CLOSE_SKEW_MIN` | `1` | TC close = kickoff + duration + skew |
 | `AI_EMAIL_PARSER` | `true` | LLM classifier for inbound emails (fallback deterministic) |
 | `AI_EMAIL_GENERATOR` | `false` | Email text deterministic (no LLM) |
+| `WIN_ONLY` | `true` | **Game mode `win_only` (default):** the pick is only the team that will win its match (`outcome = win`); a draw or loss eliminates. Bare team name in the pick email is enough ("Napoli"); explicit draw/lose formulas are rejected → clarification. Fixed in the DB at `tournament:start`; a mid-tournament change aborts the process (fatal guard) |
+| `AUTOPICK_ON_MISSING` | `false` | **Auto-pick on missing pick** (only active with `WIN_ONLY=true`): at the close of a round with a **real deadline** (`round_state.deadline !== null`), profiles in the game without a pick receive the **first available team by `shortName`** (alphabetical, table `team`) instead of `missing_pick` elimination; notification `pick_auto_assigned`; the pick is scored normally. A safety closure (deadline NULL) always eliminates. Also fixed at `tournament:start` with the same fatal guard |
+| `JOLLIES_PER_PLAYER` | `1` | **Jolly tokens per player** (only active with `WIN_ONLY=true`): `0` = feature off (the "jolly" keyword is ignored); `≥1` = each profile is created with that many jollies (`profile.jollies_remaining`), declared in the pick email with the keyword "jolly" ("Napoli Jolly") and **burned at declaration**. A draw of the picked team **saves** the profile from elimination; a loss does not. Also fixed at `tournament:start` with the same fatal guard |
 | `TIMEZONE` | `Europe/Rome` | Log/email timestamps |
 
 ### 3.3 Synthetic calendar
@@ -138,6 +141,14 @@ The synthetic calendar uses the **real Serie A 2026/27 roster** — 20 canonical
 - **Aliases:** the LLM parser resolves abbreviated names (e.g. `inter`/`l'inter` →
   `FC Internazionale Milano`; `milan` → `AC Milan`) via `src/llm/team-aliases-synthetic.md`.
   If a pick is mis-resolved, check this resource against the current calendar.
+- **Pick formula in `win_only` (default):** a **bare team name** is a valid pick
+  (`{team, win}`) — no explicit outcome required. `"Napoli pareggia"`/`"Napoli perde"`
+  are NOT recognised (→ clarification, since a draw/loss eliminates). The Jolly keyword
+  (`"Napoli Jolly"`) is appended after (or before) the team, case/accent-insensitive.
+- **Auto-pick ordering:** the auto-assign picks the first available team by `shortName`.
+  Verify the alphabetical order the engine will use with `rules:teams`
+  (`ENV_FILE=.env.uat npm run cli -- rules:teams`, output `<shortName> (<name>)` per row,
+  e.g. `Inter (FC Internazionale Milano)`).
 
 ---
 
@@ -147,10 +158,10 @@ For each round, in both commissioner and scheduler mode, the system follows this
 
 ```
 round:open --round N        → players get pick_instructions (deadline = kickoff − advance)
-players send picks by email → channel:email:process  (auto-join at TT1 / pick_registered later)
-round:close --round N --force --reason "..."   (eliminates missing_pick)
+players send picks by email → channel:email:process  (participants only: auto-joined at tournament:start or declared with PARTECIPO)
+round:close --round N --force --reason "..."   (eliminates missing_pick; with AUTOPICK_ON_MISSING=true and a real deadline → auto-assign instead)
 [wait for results: commissioner ≈ a few minutes; scheduler = 3–4 ticks]
-round:score --round N       → picks evaluated, round → scored, summaries/eliminations sent
+round:score --round N       → picks evaluated, round → scored, summaries/eliminations sent (jolly saves the profile on a draw)
 ```
 
 > **Results are injected ONLY when the operator asks for a test with injected results.**
@@ -161,19 +172,32 @@ round:score --round N       → picks evaluated, round → scored, summaries/eli
 **Your autonomous duties during a run:**
 1. **Announce the round opening** with the exact deadline (ISO UTC + local time) and the
    pick window.
-2. **Suggest picks** for the players: propose a team per player, **always verified against
-   the true seed scores you captured** (never guess). Prefer winning teams so the run
-   continues, unless the operator wants to test eliminations.
+2. **Suggest picks** for the players: propose a **bare team name** per player (in `win_only`,
+   the default), **always verified against the true seed scores you captured** (never
+   guess). Prefer winning teams so the run continues, unless the operator wants to test
+   eliminations. To demonstrate the **Jolly**, suggest `<TEAM> Jolly` for a player who
+   still has jollies (`profile.jollies_remaining > 0`) on a team that **draws** in the
+   true scores (jolly saves); remind the player it is burned at declaration.
 3. **Process emails** (`channel:email:process`) after the operator confirms the players
-   sent them. Check the outcome lines (`auto_joined`, `pick_registered`, `pick_rejected
-   (...reason)`, `clarification`, `subscribed`).
-4. **Verify the DB** after each step: picks (team/outcome/status), profiles
-   (`eliminated`), round_state (`status`, `scored_at`), tournament_state.
+   sent them. Check the outcome lines (`pick_registered`, `pick_rejected
+   (...reason)`, `clarification`, `subscribed`, and the join actions
+   `join_confirmed`/`join_rejected`/`already_joined` — ADR-019). A jolly pick is still logged
+   `pick_registered` but its confirmation email says
+   `PICK REGISTRATO CON JOLLY → {TEAM}` and carries `Jolly rimasti: N`.
+4. **Verify the DB** after each step: picks (team/outcome/status, `jolly_used`,
+   `auto_pick`), profiles (`eliminated`, `jollies_remaining`), round_state (`status`,
+   `scored_at`), tournament_state (`win_only`, `autopick_on_missing`,
+   `jollies_per_player`).
 5. **Close the round** (`round:close --round N --force --reason "..."`) once all picks
-   are in. In the delayed-results scenario, then **wait** before injecting results
-   (simulated data arrival); otherwise proceed directly to scoring.
+   are in. With `AUTOPICK_ON_MISSING=true` and a real deadline, profiles without a pick
+   are **auto-assigned** the first available team by `shortName` (email
+   `pick_auto_assigned`) instead of being eliminated; with deadline NULL or autopick off,
+   they are eliminated `missing_pick` as usual. In the delayed-results scenario, then
+   **wait** before injecting results (simulated data arrival); otherwise proceed directly
+   to scoring.
 6. **Score** (`round:score --round N`) and **report** the outcome: correct/wrong counts,
-   eliminations, and whether the tournament auto-closed (ADR-011).
+   eliminations, **jolly saves** (wrong-on-draw → saved, `savedByJolly`), auto-assigned
+   picks scored normally, and whether the tournament auto-closed (ADR-011).
 7. **Open the next round** and repeat, informing the operator at each event.
 
 ---
@@ -186,7 +210,7 @@ operator's chosen parameters.
 ### 5.1 Smoke test (~2h) — §5.1
 4 teams, 2 rounds. Purpose: banner, calendar, registration, 2 picks, scoring.
 Key: verify `TEST MODE` banner in CLI/JSON/email, `data:calendar` output, first pick
-auto-join, round scoring.
+acquisition, round scoring.
 
 ### 5.2 Standard (~4h30) — §5.2
 8 teams, 6 rounds. Purpose: multiple eliminations and survivor flow.
@@ -222,6 +246,35 @@ non futura") and the tournament stalls permanently. **Inject within the spacing 
 ### 5.6 Replay 2025 — §7
 Uses `.env.uat-replay` (TEST_OFFSET_DAYS>0, dedicated `uat-replay.db`). Imported real
 season; do not use the synthetic seed. Async hook-up is the natural use case here.
+
+### 5.7 Feature demo — `win_only`, Jolly, auto-pick (ADR-016/017/018)
+These are **system features**, not test-mode features: they are configured in `.env.uat`
+and demonstrated in UAT. The typical default (`.env.uat` already has `WIN_ONLY=true`,
+`JOLLIES_PER_PLAYER=1`, `AUTOPICK_ON_MISSING` unset/false) exercises `win_only` + Jolly
+out of the box; auto-pick must be enabled explicitly **before** `tournament:start`.
+
+1. **`win_only` (default, ADR-016).** Verify that a **bare team name** pick ("Napoli")
+   is accepted as `{team, win}`; a draw or loss in the results eliminates the profile.
+   Players must send the bare team name — no outcome formula.
+2. **Jolly (ADR-018).** With `JOLLIES_PER_PLAYER=1` (or more), have a player send
+   `"<TEAM> Jolly"` choosing a team that **draws** in the true scores: at scoring the
+   profile is **saved** (`savedByJolly`, no elimination) and the email shows
+   `🎯 Il tuo jolly ti ha salvato: {TEAM} ha pareggiato.` Verify in the DB that
+   `pick.jolly_used=1` and `profile.jollies_remaining` was decremented (burned at
+   declaration, even on a win). After the counter reaches `0`, a pick with "jolly" is
+   rejected with `non hai più jolly disponibili`. The keyword is ignored with
+   `JOLLIES_PER_PLAYER=0`.
+3. **Auto-pick (ADR-017).** Set `AUTOPICK_ON_MISSING=true` in `.env.uat` **before**
+   `tournament:start`, then have at least one player **not send a pick**: at
+   `round:close` (real deadline) they receive `pick_auto_assigned` with the first
+   available team by `shortName` instead of `missing_pick` elimination; the pick
+   (`pick.auto_pick=1`, outcome `win`) is scored normally. Verify the order with
+   `rules:teams`. A safety close (deadline NULL) still eliminates `missing_pick`.
+
+**Guard note for all three:** `WIN_ONLY`, `AUTOPICK_ON_MISSING` and `JOLLIES_PER_PLAYER`
+are **fixed in the DB at `tournament:start`** and covered by the same fatal guard: set
+them **before** starting the tournament and never change them mid-tournament (a change
+aborts the process with a fatal error).
 
 ---
 
@@ -267,19 +320,30 @@ the system is doing (round events, email processing, scheduler actions, anomalie
   - `round_open`, `round_close`, `round_score`, `round_close_safety`, `round_score_frozen`
   - `import/refresh skipped: TEST MODE is active...` (expected every scheduler tick)
   - `warn_not_calculable`, `refresh_failed` (anomalies)
-  - Email processing lines: `auto_joined`, `pick_registered`, `pick_rejected`,
+  - Email processing lines: `join_confirmed`, `join_rejected`, `already_joined`
+    (ADR-019), `pick_registered`, `pick_rejected`,
     `subscribed`, `clarification`, `llm_error` (fallback happened)
+  - Auto-assign at round close: `pick_auto_assigned` (notification sent to a profile
+    that missed the deadline; `pick.auto_pick=1`)
+  - Jolly: no dedicated event — the confirmation email (`pick_confirmed`) is the signal
+    (`PICK REGISTRATO CON JOLLY → {TEAM}`, `Jolly rimasti: N`)
   - `tournament closed: export written` (automatic closure, ADR-011)
 
 ### 7.2 Database ground truth (read-only queries via `node --import tsx`)
 - `pick`: `SELECT ... FROM pick JOIN profile JOIN player` → team, outcome, status
-  (`pending|correct|wrong|frozen`), created_at
-- `profile`: `eliminated` flag per player
+  (`pending|correct|wrong|frozen`), `jolly_used`, `auto_pick`, created_at
+- `profile`: `eliminated` flag per player, `jollies_remaining` counter
 - `round_state`: `status` (`open|closed|scored|pending`), `deadline`, `closed_at`,
   `scored_at`, `summary_sent`
 - `tournament_state`: `season_started`, `start_round`, `winner_notified`, `finished_at`,
-  `export_path`
+  `export_path`, plus the mode triplet **`win_only`**, **`autopick_on_missing`**,
+  **`jollies_per_player`**
 - `match`: scores (null = results not arrived)
+- `team`: `name`, `short_name` (alphabetical order used by the auto-pick)
+- `platform_account` (separate `PLATFORM_DB_PATH`): account status plus the two opt-in
+  flags **`receive_tournament_start_notification`** / **`tournament_auto_join`**
+  (ADR-019, managed only via CLI: `platform:list` shows them, `platform:preferences`
+  changes them for the next tournament)
 
 ### 7.3 CLI verification commands
 ```bash
@@ -289,6 +353,7 @@ ENV_FILE=.env.uat npm run cli -- round:status --round N
 ENV_FILE=.env.uat npm run cli -- round:deadline --round N
 ENV_FILE=.env.uat npm run cli -- round:score --round N
 ENV_FILE=.env.uat npm run cli -- scheduler:status
+ENV_FILE=.env.uat npm run cli -- rules:teams       # team order used by the auto-pick
 ENV_FILE=.env.uat npm run cli -- winner:check
 ENV_FILE=.env.uat npm run cli -- platform:list
 ENV_FILE=.env.uat npm run cli -- channel:email:fetch   # read-only mailbox peek
@@ -326,24 +391,49 @@ auto-close and export, LLM fallback occurrences, mailbox anomalies.
 ## 9. Known behaviours and edge cases (learned in past sessions)
 
 - **Residual unread emails can corrupt a new run.** `channel:email:process` reads ALL
-  unread messages. An email left from a previous tournament (a pick, a subscription) can
-  auto-join a "ghost" profile or register an account in the new run, potentially closing
+  unread messages. An email left from a previous tournament (a pick, a subscription, a
+  `PARTECIPO` join) can create a "ghost" profile (join/auto-join) or register an account
+  in the new run, potentially closing
   the tournament early (case 1). **Before starting a new tournament, verify the mailbox**
   with `channel:email:fetch` — it must report "Nessuna email non letta in casella". The
   operator decides whether/how to clean it (never delete valid registrations).
 - **Registration emails are valid at any time** (ADR-009): `subscribed` is always
   legitimate — do not flag it as an anomaly.
-- **Auto-join happens only at TT1 with a valid pick.** An account that never sends a pick
-  never enters the tournament and is never eliminated `missing_pick` (it simply has no
-  profile).
+- **Participation is opt-in (ADR-019).** Profiles are created only at
+  `tournament:start` (accounts with `tournament_auto_join = ON`) or by a declaration
+  (`PARTECIPO` / `tournament:join`) within the TT-1 window. A pick never creates a
+  profile. An account that never enters the tournament is never eliminated
+  `missing_pick` (it simply has no profile).
 - **`team_already_used`** (RF-10/CS5): reusing a team within the same half-season is
   rejected; the player must resend a different team within the deadline or be eliminated
   `missing_pick`. Pool resets at the half-boundary.
 - **`profile_eliminated`**: an eliminated player's later picks are rejected — expected.
 - **`clarification`**: the intent classifier did not recognise a pick (LLM failed and the
   deterministic fallback did not match, or the formula was reversed, e.g. "Vince il
-  milan"). Ask the operator to have the player resend in the canonical form
-  ("Scelgo <team>, win|draw|lose") within the deadline.
+  milan"). Ask the operator to have the player resend in the canonical form within the
+  deadline: in `win_only` (default) a **bare team name** ("Napoli", optionally
+  "Napoli Jolly"); in classic mode "Scelgo <team>, win|draw|lose".
+- **`win_only` pick formula (ADR-016).** In the default mode the pick is ONLY the team
+  that will win: a bare team name is enough; "Napoli pareggia"/"Napoli perde" are
+  rejected (→ clarification) because a draw/loss eliminates. A pick suggestion must
+  always be a team that **wins** in the true seed scores.
+- **Jolly (ADR-018).** Declared with the keyword "jolly" ("Napoli Jolly"), **burned at
+  declaration** (no refund, even on a loss or a win). It saves ONLY from a **draw** in
+  `win_only` (email `🎯 Il tuo jolly ti ha salvato: {TEAM} ha pareggiato.`); a loss
+  still eliminates (`🎯 Il jolly non salva dalla sconfitta.`). With `JOLLIES_PER_PLAYER=0`
+  the keyword is plain noise and is ignored. `pick_rejected` with `no_jollies_left`
+  ("non hai più jolly disponibili") is expected once the counter reaches 0.
+- **Auto-pick on missing pick (ADR-017).** Active only with `WIN_ONLY=true` and a **real
+  deadline**: at close, profiles without a pick get `pick_auto_assigned` with the first
+  available team by `shortName` (no elimination). Safety closures (deadline NULL) always
+  eliminate `missing_pick`, and a profile that is auto-assigned is then scored normally
+  (a wrong auto-pick still eliminates). The picked team is visible in `rules:teams` order
+  and marked `auto_pick=1` in the DB.
+- **Mode guard (ADR-016/017/018).** `WIN_ONLY`, `AUTOPICK_ON_MISSING` and
+  `JOLLIES_PER_PLAYER` are fixed at `tournament:start`; changing any of them while a
+  tournament is open aborts every process with a **fatal** error. Never propose toggling
+  them mid-tournament; if a fatal aborts a command, check the env file against
+  `tournament_state` (the mismatch names the variable).
 - **LLM parser resolves abbreviations** (e.g. "l'inter" → FC Internazionale Milano) via
   `team-aliases-synthetic.md`; the deterministic parser requires exact canonical names.
   If a pick is mis-resolved, check the alias resource against the calendar.
@@ -364,12 +454,15 @@ auto-close and export, LLM fallback occurrences, mailbox anomalies.
 - Use short structured summaries: table of current state, exact deadlines, what happened,
   what you are about to do.
 - Use this rhythm for each round event: **status table → pick suggestions (verified) →
-  deadline reminder → action taken → verification result**.
+  deadline reminder → action taken → verification result**. In `win_only`, suggestions
+  are bare team names verified against the true seed scores; jolly suggestions carry the
+  keyword ("Napoli Jolly") and the player's "Jolly rimasti: N".
 - At session start: state the DBs in use, the configuration in effect, and the scenario's
   parameters.
-- At session end: summarise the run (per-round table, eliminations, winner case, export
-  path), propose updating `agent-context/current-status.md`, and ask if the operator wants
-  documentation updated in the guide.
+- At session end: summarise the run (per-round table, eliminations, **jolly saves**,
+  **auto-assigned picks**, winner case, export path), propose updating
+  `agent-context/current-status.md`, and ask if the operator wants documentation updated
+  in the guide.
 
 ---
 
@@ -379,12 +472,17 @@ auto-close and export, LLM fallback occurrences, mailbox anomalies.
 1. `git status` (know the working tree; do not modify sources).
 2. Read the current configuration: `cat .env.uat` and the template `.env.uat.example`
    (confirm DB paths, mode, parser flag, cadence, `LOG_FILE`).
-3. Start watching the log file (`tail -f <LOG_FILE>`) — keep it under observation for the
+3. Confirm the **game-mode flags** with the operator before `tournament:start`:
+   `WIN_ONLY` (default `true`), `AUTOPICK_ON_MISSING` (default `false` — set `true`
+   before start only to demonstrate the auto-pick), `JOLLIES_PER_PLAYER` (default `1`;
+   `0` = feature off). All three are fixed in the DB at start and cannot be changed
+   mid-tournament (fatal guard).
+4. Start watching the log file (`tail -f <LOG_FILE>`) — keep it under observation for the
    whole session.
-4. `channel:email:fetch` (mailbox must be clean or the operator decides).
-5. Confirm with the operator: scenario, number of rounds, teams, seed, commissioner vs
+5. `channel:email:fetch` (mailbox must be clean or the operator decides).
+6. Confirm with the operator: scenario, number of rounds, teams, seed, commissioner vs
    scheduler, and — only if he wants the delayed-results scenario — the injection delay.
-6. If starting fresh: prepare the tournament DB (`db:migrate` + seed + capture scores),
+7. If starting fresh: prepare the tournament DB (`db:migrate` + seed + capture scores),
    then `tournament:start` (mind RF-21: TT1 deadline must be in the future) and
    `round:open --round 1`.
 

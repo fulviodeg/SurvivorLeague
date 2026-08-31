@@ -113,15 +113,8 @@ export const roundOpenCommand: CommandModule<object, RoundArgs> = {
         console.log(jsonWithTestMode(ctx.config, result));
       } else {
         printTestModeBanner(ctx.config);
-        // Modifica CLI (AGENTS.md Parte 2, regola 5 — commento obbligatorio):
-        // la riga di output testuale include anche i registrati alla
-        // piattaforma SENZA profilo notificati all'apertura del TT 1
-        // (amendment RF-P6, 2026-08-21): il campo è 0 per i round
-        // successivi o senza registry. L'output `--json` esce già dal
-        // risultato di openRound (campo `registeredNotified`) ed è invariato
-        // nella struttura.
         console.log(
-          `Round ${result.tc} (TT ${result.tt}) aperto — deadline ${result.deadline}, profili notificati: ${result.notified}, registrati senza profilo notificati: ${result.registeredNotified}`
+          `Round ${result.tc} (TT ${result.tt}) aperto — deadline ${result.deadline}, profili notificati: ${result.notified}`
         );
       }
     } finally {

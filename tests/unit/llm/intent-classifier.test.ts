@@ -385,3 +385,38 @@ describe('Intent Classifier — jolly (feature JOLLY, D4)', () => {
     });
   });
 });
+
+describe('Intent Classifier — join (ADR-019, partecipazione ≠ registration)', () => {
+  it('il prompt descrive "join" separato da subscribe e sposta "partecipo" sotto join', () => {
+    const prompt = buildClassifySystemPrompt(opts);
+    expect(prompt).toContain('"join"');
+    expect(prompt).toContain('"partecipo"');
+    // "partecipo" non è più un esempio di subscribe (ADR-019).
+    const subscribeLine = prompt.split('\n').find((l) => l.includes('"subscribe"'));
+    expect(subscribeLine).not.toContain('partecipo');
+  });
+
+  it('messaggio di partecipazione → join (pick null, name null)', async () => {
+    const { classifier } = makeClassifier(() =>
+      Promise.resolve(jsonText('{"intent": "join", "pick": null, "name": null}'))
+    );
+    expect(await classifier.classify('partecipo al torneo!', opts)).toEqual({
+      intent: 'join',
+      pick: null,
+      name: null
+    });
+  });
+
+  it('join con pick valorizzato dall\'LLM → pick forzato a null (intento non-pick)', async () => {
+    const { classifier } = makeClassifier(() =>
+      Promise.resolve(
+        jsonText('{"intent": "join", "pick": {"team": "Juventus FC", "outcome": "win"}, "name": null}')
+      )
+    );
+    expect(await classifier.classify('partecipo', opts)).toEqual({
+      intent: 'join',
+      pick: null,
+      name: null
+    });
+  });
+});

@@ -125,6 +125,7 @@ describe('renderEmailV2 (email v3/v4) — output esatto per i 17 template', () =
         '',
         '⏳ COSA SUCCEDE ORA',
         'Le istruzioni con la scadenza del pick arriveranno con una mail dedicata.',
+        'Per partecipare al torneo, rispondi con "PARTECIPO".',
         '',
         '👥 Iscritti alla piattaforma: 18'
       ].join('\n')
@@ -705,7 +706,10 @@ describe('renderEmailV2 (email v3) — vincoli strutturali', () => {
       tournament_won: '🏆 HAI VINTO IL TORNEO!',
       tournament_shared_win: '🏆 VITTORIA CONDIVISA!',
       clarification: 'NON HO CAPITO LA TUA RICHIESTA',
-      tournament_closed: '🏆 TORNEO CONCLUSO!'
+      tournament_closed: '🏆 TORNEO CONCLUSO!',
+      tournament_join_confirmed: 'PARTECIPAZIONE CONFERMATA: SEI IN GARA!',
+      tournament_already_joined: 'SEI GIÀ IN GARA',
+      tournament_join_rejected: 'PARTECIPAZIONE NON CONFERMATA: partecipazione non confermata'
     };
     for (const type of EMAIL_TYPES) {
       const ctx: EmailContext = {
@@ -722,9 +726,13 @@ describe('renderEmailV2 (email v3) — vincoli strutturali', () => {
       // La riga chiave precede la narrativa (mai dopo di essa).
       expect(keyIndex, `tipo ${type}: riga chiave presente`).toBeGreaterThanOrEqual(0);
       expect(narrativeIndex, `tipo ${type}`).toBeGreaterThan(keyIndex);
-      // La parte FISSA è in MAIUSCOLO; per `pick_rejected` il `reason` è un
-      // dato dinamico verbatim (minuscolo): si verifica il solo prefisso.
-      const fixedPart = type === 'pick_rejected' ? keyLines[type].split(':')[0] ?? keyLines[type] : keyLines[type];
+      // La parte FISSA è in MAIUSCOLO; per `pick_rejected` e
+      // `tournament_join_rejected` il `reason` è un dato dinamico verbatim
+      // (minuscolo): si verifica il solo prefisso.
+      const fixedPart =
+        type === 'pick_rejected' || type === 'tournament_join_rejected'
+          ? keyLines[type].split(':')[0] ?? keyLines[type]
+          : keyLines[type];
       expect(fixedPart, `tipo ${type}: parte fissa MAIUSCOLA`).toBe(fixedPart.toUpperCase());
     }
   });
@@ -1088,5 +1096,55 @@ describe('renderEmailV2 — testi jolly (feature JOLLY, D8/D9)', () => {
     };
     const body = renderEmailV2(ctx, '', ROME, modeFor(false, 1));
     expect(body).toContain('Mario Rossi — Roma · pareggio — ✅ ancora in gara · 🎯 Jolly');
+  });
+});
+
+describe('renderEmailV2 — partecipazione opt-in (ADR-019, D14/D9)', () => {
+  it('tournament_join_confirmed con round aperto → messaggio chiave + deadline in coda', () => {
+    const ctx: EmailContext = {
+      type: 'tournament_join_confirmed',
+      playerName: 'Mario',
+      round: 1,
+      championshipRound: 1,
+      deadline: DEADLINE,
+      deadlineRemaining: '2 ore'
+    };
+    const body = renderEmailV2(ctx, "Sei in gara! Invia il tuo pick quando il round è aperto.", ROME);
+    expect(body).toBe(
+      [
+        'Round del torneo 1 · Turno di Campionato 1',
+        'Ciao Mario!',
+        'PARTECIPAZIONE CONFERMATA: SEI IN GARA!',
+        "Sei in gara! Invia il tuo pick quando il round è aperto.",
+        '',
+        '⏰ DEADLINE PICK',
+        DEADLINE_LINE
+      ].join('\n')
+    );
+  });
+
+  it('tournament_already_joined → messaggio chiave "SEI GIÀ IN GARA"', () => {
+    const body = renderEmailV2(
+      { type: 'tournament_already_joined', playerName: 'Mario' },
+      'Sei già in gara: non serve una nuova partecipazione.',
+      ROME
+    );
+    expect(body).toContain('SEI GIÀ IN GARA');
+  });
+
+  it('tournament_join_rejected traduce i tre motivi (no_tournament/tournament_started/not_in_tournament)', () => {
+    const cases: Array<[string, string]> = [
+      ['no_tournament', 'PARTECIPAZIONE NON CONFERMATA: nessun torneo aperto in questo momento'],
+      ['tournament_started', 'PARTECIPAZIONE NON CONFERMATA: il torneo è iniziato: la partecipazione è chiusa'],
+      ['not_in_tournament', 'PARTECIPAZIONE NON CONFERMATA: per partecipare al torneo invia PARTECIPO']
+    ];
+    for (const [reason, expected] of cases) {
+      const body = renderEmailV2(
+        { type: 'tournament_join_rejected', playerName: 'Mario', reason },
+        '',
+        ROME
+      );
+      expect(body).toContain(expected);
+    }
   });
 });

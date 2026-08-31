@@ -7,17 +7,19 @@
  * stagione) e RNF1 (determinismo: due run con stessa seed, stesso clock e DB
  * piattaforma PULITO → `tournament:export` identici). È un ORCHESTRATORE:
  * invoca esclusivamente i moduli del Game Engine esistenti
- * (`startTournament` con la seam, `openRound`, `registerPick`/`autoJoinFromPick`,
- * `closeRound`, `scoreRound`, `getAvailableTeams`, `checkWinner`) — nessuna
- * logica di gioco duplicata (AGENTS.md §1.3, ADR-004, briefing §1-B).
+ * (`startTournament` con la seam, `autoJoinProfilesAtStart`, `openRound`,
+ * `registerPick`, `closeRound`, `scoreRound`, `getAvailableTeams`,
+ * `checkWinner`) — nessuna logica di gioco duplicata (AGENTS.md §1.3,
+ * ADR-004, briefing §1-B).
  *
- * Modello a due livelli (ADR-009, piano Task 10): il seed crea gli **account
- * PIATTAFORMA** sintetici (`sim-XX@survivor.test`) via `PlatformRegistry`
- * (connessione DEDICATA su `PLATFORM_DB_PATH`, mai il valore di produzione);
- * i **profili** nascono via **auto-join al primo pick** del round di avvio
- * (TT1) in `simulateOneRound`, NON più dal seed. Il determinismo di
- * `register_id` (RNF1) richiede un DB piattaforma PULITO tra due run: la
- * simulazione lo verifica e rifiuta con errore esplicito.
+ * Modello a due livelli (ADR-009, piano Task 10; ADR-019): il seed crea gli
+ * **account PIATTAFORMA** sintetici (`sim-XX@survivor.test`) via
+ * `PlatformRegistry` (connessione DEDICATA su `PLATFORM_DB_PATH`, mai il
+ * valore di produzione); i **profili** nascono via **auto-join a
+ * `tournament:start`** (account `active` con `tournament_auto_join = ON`),
+ * NON più dall'auto-join al primo pick (RF-P5 rimosso da ADR-019). Il
+ * determinismo di `register_id` (RNF1) richiede un DB piattaforma PULITO tra
+ * due run: la simulazione lo verifica e rifiuta con errore esplicito.
  *
  * Determinismo (R2/R4/RNF1): il clock di ogni fase è DERIVATO dai dati —
  * `open` a deadline − 1min, `receivedAt` dei pick = deadline − 1min, `close`
@@ -33,7 +35,7 @@
 import type Database from 'better-sqlite3';
 
 import type { GameContext } from './context.js';
-import { autoJoinFromPick } from './registration.js';
+import { autoJoinProfilesAtStart } from './registration.js';
 import { registerPick } from './pick-processor.js';
 import { getAvailableTeams } from './rules.js';
 import { closeRound, openRound, scoreRound } from './round-manager.js';
@@ -155,9 +157,10 @@ function assertPlatformClean(ctx: GameContext, command: string): void {
 /**
  * Registra gli ACCOUNT sintetici sulla PIATTAFORMA (`sim-XX@survivor.test`)
  * via PlatformRegistry (ADR-009): NESSUN profilo torneo — i profili nascono
- * per auto-join al primo pick del round di avvio (RF-P5). Restituisce le
- * email in ordine deterministico. `now` è il clock derivato (kickoff TT1 −
- * anticipo − 2min, R2) così `created_at` piattaforma è deterministico (RF-P8).
+ * per auto-join a `tournament:start` (ADR-019, account con
+ * `tournament_auto_join = ON`). Restituisce le email in ordine deterministico.
+ * `now` è il clock derivato (kickoff TT1 − anticipo − 2min, R2) così
+ * `created_at` piattaforma è deterministico (RF-P8).
  */
 function registerSimAccounts(ctx: GameContext, count: number, now: Date): string[] {
   const platform = ctx.platform;
@@ -180,20 +183,18 @@ function registerSimAccounts(ctx: GameContext, count: number, now: Date): string
  * deadline − 1min (entro l'accettazione, RF-31), close a deadline + 1min,
  * score a tcClose + 1min.
  *
- * Pick fase (ADR-009): nel round di AVVIO (TT1, round = start_round) i
- * profili non esistono ancora — ogni account sim senza profilo fa AUTO-JOIN
- * (profilo + pick atomici, RF-P5); nei round successivi iterano i profili
- * attivi come prima. Un rifiuto inatteso è un errore (mai silenzioso,
- * briefing §1-B).
+ * Pick fase (ADR-019): i profili esistono GIÀ dall'auto-join a
+ * `tournament:start` (invocato da `simulateSeason`/`simulateRound`), quindi
+ * OGNI round (TT1 incluso) itera i profili attivi e registra il pick — nessun
+ * ramo speciale di auto-join al primo pick (RF-P5 rimosso). Un rifiuto
+ * inatteso è un errore (mai silenzioso, briefing §1-B).
  */
 async function simulateOneRound(
   ctx: GameContext,
   round: number,
-  rng: () => number,
-  simEmails: string[]
+  rng: () => number
 ): Promise<SimulatedRoundReport> {
   const { db, dataProvider, config } = ctx;
-  const startRound = getStartRound(db);
 
   // ADR-016 (win_only): in modalità win_only i pick simulati usano SOLO
   // 'win' (il giocatore sceglie la squadra vincente). Il resto della logica
@@ -227,76 +228,40 @@ async function simulateOneRound(
   ctx.now = new Date(deadlineDate.getTime() - MINUTE_MS);
   let picks = 0;
 
-  if (round === startRound) {
-    // TT1: auto-join per ogni account sim (profilo + pick atomici, RF-P5).
-    const matches = await dataProvider.getMatchesForRound(round);
-    const roundTeams = [...new Set(matches.flatMap((m) => [m.homeTeam, m.awayTeam]))].sort();
-    if (roundTeams.length === 0) {
-      throw new Error(`Simulazione impossibile: nessuna squadra in calendario per il round ${round}`);
-    }
-    for (const email of simEmails) {
-      const hasProfile = db
-        .prepare(
-          `SELECT 1 FROM profile p JOIN player pl ON pl.id = p.player_id WHERE pl.email = ?`
-        )
-        .get(email);
-      if (hasProfile !== undefined) continue;
-      const team = roundTeams[Math.floor(rng() * roundTeams.length)]!;
-      const outcome = outcomes[Math.floor(rng() * outcomes.length)]!;
-      // Feature JOLLY (D10): il profilo nasce per auto-join con
-      // jollies_remaining = JOLLIES_PER_PLAYER (>= 1 se jollyActive), quindi
-      // l'extra draw è valido; la sequenza classica è preservata quando off.
-      const jolly = jollyActive && rng() < JOLLY_PROBABILITY;
-      const joined = await autoJoinFromPick(
-        ctx,
-        { channel: 'email', identifier: email },
-        jolly ? { team, outcome, jolly: true } : { team, outcome },
-        round,
-        ctx.now
+  // ADR-019: NESSUN ramo speciale TT1 — i profili sono nati per auto-join a
+  // `tournament:start`. In OGNI round si itera sui profili attivi (ORDER BY id,
+  // determinismo) e si registra il pick con la cascata attuale.
+  const active = db
+    .prepare('SELECT id, jollies_remaining FROM profile WHERE eliminated = 0 ORDER BY id')
+    .all() as Array<{ id: number; jollies_remaining: number }>;
+  for (const profile of active) {
+    const available = await getAvailableTeams(db, dataProvider, profile.id, round);
+    if (available.length === 0) {
+      throw new Error(
+        `Simulazione impossibile: nessuna squadra disponibile per il profilo ${profile.id} al round ${round}`
       );
-      if (!joined.ok) {
-        throw new Error(
-          `Auto-join simulato rifiutato (round ${round}, ${email}, ${team}/${outcome}${jolly ? ' jolly' : ''}): ${joined.reason}${
-            joined.reason === 'pick_rejected' ? ` (${joined.pickReason ?? '?'})` : ''
-          }`
-        );
-      }
-      picks += 1;
     }
-  } else {
-    // Dal TT2: cascata attuale sui profili attivi.
-    const active = db
-      .prepare('SELECT id, jollies_remaining FROM profile WHERE eliminated = 0 ORDER BY id')
-      .all() as Array<{ id: number; jollies_remaining: number }>;
-    for (const profile of active) {
-      const available = await getAvailableTeams(db, dataProvider, profile.id, round);
-      if (available.length === 0) {
-        throw new Error(
-          `Simulazione impossibile: nessuna squadra disponibile per il profilo ${profile.id} al round ${round}`
-        );
-      }
-      // Indici sempre in range: rng() ∈ [0, 1) → floor(rng() * n) ∈ [0, n-1].
-      const team = available[Math.floor(rng() * available.length)]!;
-      const outcome = outcomes[Math.floor(rng() * outcomes.length)]!;
-      // Feature JOLLY (D10): un solo extra rng() per pick, SOLO se il profilo
-      // ha jollies_remaining > 0 (il motore rifiuterebbe no_jollies_left).
-      const jolly =
-        jollyActive && profile.jollies_remaining > 0 && rng() < JOLLY_PROBABILITY;
-      const res = await registerPick(ctx, {
-        profileId: profile.id,
-        round,
-        team,
-        outcome,
-        jolly,
-        receivedAt: ctx.now
-      });
-      if (!res.ok) {
-        throw new Error(
-          `Pick simulato rifiutato (round ${round}, profilo ${profile.id}, ${team}/${outcome}${jolly ? ' jolly' : ''}): ${res.reason}`
-        );
-      }
-      picks += 1;
+    // Indici sempre in range: rng() ∈ [0, 1) → floor(rng() * n) ∈ [0, n-1].
+    const team = available[Math.floor(rng() * available.length)]!;
+    const outcome = outcomes[Math.floor(rng() * outcomes.length)]!;
+    // Feature JOLLY (D10): un solo extra rng() per pick, SOLO se il profilo
+    // ha jollies_remaining > 0 (il motore rifiuterebbe no_jollies_left).
+    const jolly =
+      jollyActive && profile.jollies_remaining > 0 && rng() < JOLLY_PROBABILITY;
+    const res = await registerPick(ctx, {
+      profileId: profile.id,
+      round,
+      team,
+      outcome,
+      jolly,
+      receivedAt: ctx.now
+    });
+    if (!res.ok) {
+      throw new Error(
+        `Pick simulato rifiutato (round ${round}, profilo ${profile.id}, ${team}/${outcome}${jolly ? ' jolly' : ''}): ${res.reason}`
+      );
     }
+    picks += 1;
   }
 
   // Fase 3 — close a deadline + 1min (consolida: elimina i mancanti).
@@ -328,11 +293,12 @@ async function simulateOneRound(
 
 /**
  * Simulazione full-season (`simulate:full`, LLD §7.12): guardie R3 + DB
- * piattaforma pulito → `startTournament` con la SEAM `allowPastDeadline`
- * (solo qui; RF-21 su dati storici richiederebbe la deadline TT1 futura) →
- * registrazione degli ACCOUNT piattaforma sim (clock derivato, R2/RF-P8) →
- * per ogni round della finestra `simulateOneRound` (auto-join al TT1) →
- * report con esito del Winner Engine.
+ * piattaforma pulito → registrazione degli ACCOUNT piattaforma sim (clock
+ * derivato, R2/RF-P8) PRIMA di `startTournament` → `startTournament` con la
+ * SEAM `allowPastDeadline` (solo qui; RF-21 su dati storici richiederebbe la
+ * deadline TT1 futura) e con l'auto-join bulk (ADR-019) → per ogni round della
+ * finestra `simulateOneRound` (pick sui profili attivi) → report con esito del
+ * Winner Engine.
  */
 export async function simulateSeason(
   ctx: GameContext,
@@ -354,22 +320,24 @@ export async function simulateSeason(
   // successivi), vanificando CS3 ("contabilizzazione su tutta la stagione").
   ctx.autoClose = false;
 
-  // Seam di simulazione: salta RF-21 (deadline del TT 1 non futura). Mai
-  // usata dai flussi reali (tournament:start CLI la lascia attiva).
-  const started = await startTournament(ctx, { startRound, allowPastDeadline: true });
-
-  // Registrazione account a clock derivato dai dati per il determinismo di
-  // created_at (RF-P8) — kickoff TT1 − anticipo − 2min.
+  // ADR-019 (T7): registra gli account sim PRIMA di `startTournament` — così
+  // l'auto-join bulk (dentro `startTournament`) li vede e crea i profili.
+  // Clock derivato dai dati per il determinismo di created_at (RF-P8) —
+  // kickoff TT1 − anticipo − 2min.
   const kickoffTT1 = await dataProvider.getFirstMatchDateTime(startRound);
   const deadlineTT1 = computeDeadline(kickoffTT1, config.DEADLINE_ADVANCE_MIN);
   ctx.now = new Date(deadlineTT1.getTime() - 2 * MINUTE_MS);
   const rng = mulberry32(seed);
-  const simEmails = registerSimAccounts(ctx, players, ctx.now);
+  registerSimAccounts(ctx, players, ctx.now);
+
+  // Seam di simulazione: salta RF-21 (deadline del TT 1 non futura). Mai
+  // usata dai flussi reali (tournament:start CLI la lascia attiva).
+  const started = await startTournament(ctx, { startRound, allowPastDeadline: true });
 
   const totalRounds = await dataProvider.getTotalRounds();
   const rounds: SimulatedRoundReport[] = [];
   for (let r = startRound; r <= totalRounds; r++) {
-    rounds.push(await simulateOneRound(ctx, r, rng, simEmails));
+    rounds.push(await simulateOneRound(ctx, r, rng));
   }
 
   return {
@@ -386,9 +354,8 @@ export async function simulateSeason(
 /**
  * Simulazione di un round singolo (`simulate:round`): stessa logica del full
  * su UN round, senza `startTournament` — la riga `tournament_state` viene
- * creata/allineata con `start_round = round` (l'auto-join richiede che il
- * round simulato SIA il TT1, RF-P5). Le guardie R3 e DB piattaforma pulito
- * valgono identiche.
+ * creata/allineata con `start_round = round` (TT1). Le guardie R3 e DB
+ * piattaforma pulito valgono identiche.
  */
 export async function simulateRound(
   ctx: GameContext,
@@ -406,7 +373,7 @@ export async function simulateRound(
   // simulateSeason) — il vincitore è riportato da `checkWinner` a fine run.
   ctx.autoClose = false;
 
-  // Allinea start_round al round simulato (RF-P5: auto-join = TT1); crea la
+  // Allinea start_round al round simulato (ADR-019: auto-join = TT1); crea la
   // riga tournament_state se assente (pattern storico openRegistration, R3/D).
   // ADR-016: scrive anche `win_only` (coerente con l'export, che dopo T2 include
   // la colonna). Feature JOLLY: scrive anche `jollies_per_player` (stessa
@@ -424,10 +391,15 @@ export async function simulateRound(
   const deadline = computeDeadline(kickoff, config.DEADLINE_ADVANCE_MIN);
   ctx.now = new Date(deadline.getTime() - 2 * MINUTE_MS);
   const rng = mulberry32(seed);
-  const simEmails = registerSimAccounts(ctx, players, ctx.now);
+  registerSimAccounts(ctx, players, ctx.now);
+
+  // ADR-019 (T7): `simulateRound` NON passa da `startTournament` (crea la
+  // riga `tournament_state` a mano) → invoca ESPLICITAMENTE l'auto-join a
+  // start, DOPO la registrazione degli account.
+  autoJoinProfilesAtStart(ctx);
 
   const totalRounds = await dataProvider.getTotalRounds();
-  const rounds = [await simulateOneRound(ctx, round, rng, simEmails)];
+  const rounds = [await simulateOneRound(ctx, round, rng)];
   return {
     startRound: getStartRound(db),
     totalRounds,

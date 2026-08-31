@@ -44,6 +44,7 @@ import type Database from 'better-sqlite3';
 import { subjectFor } from '../llm/generator.js';
 import type { GameContext } from './context.js';
 import { halfBoundary } from './rules.js';
+import { autoJoinProfilesAtStart } from './registration.js';
 import { getStartRound, ttFor, turnFor } from './turn.js';
 import { checkWinner } from './winner.js';
 
@@ -76,6 +77,11 @@ export interface StartTournamentResult {
    * (0 se canale/generatore/registry assenti nel contesto).
    */
   notified: number;
+  /**
+   * ADR-019: numero di profili creati dall'auto-join bulk a `tournament:start`
+   * (account `active` con `tournament_auto_join = ON`).
+   */
+  autoJoined: number;
 }
 
 /** Riga `round_state` letta dal DB. */
@@ -360,26 +366,37 @@ export async function startTournament(
   });
   init();
 
-  // Broadcast `tournament_open` (RF-P6, ADR-009): DOPO le scritture atomiche, a
-  // TUTTI gli iscritti ATTIVI della piattaforma (sostituisce l'invito a una
-  // lista di contatti). ADR-011 (convenzione 8, correzione PO): la mail è
-  // SOLO un annuncio — niente invito al pick né date (il commissioner/
-  // scheduler decide quando aprire il round 1): "il round 1 parte a breve".
-  // Il contesto porta solo il conteggio aggregato degli iscritti alla
-  // piattaforma (MAI elenchi nominativi). No-op senza channel/generator/
-  // registry nel contesto (es. simulazione, R1).
+  // ADR-019 (D6/D11): auto-join bulk DOPO il reset su torneo chiuso e PRIMA
+  // del broadcast — gli account `active` con `tournament_auto_join = ON`
+  // nascono qui come profili (snapshot unico a `tournament:start`). Nessuna
+  // transazione cross-DB: sola lettura della piattaforma, scrittura sul DB
+  // torneo. No-op senza registry nel contesto (es. simulazione pre-registrazione).
+  const autoJoined = autoJoinProfilesAtStart(ctx);
+
+  // Broadcast `tournament_open` (RF-P6, ADR-009): DOPO le scritture atomiche e
+  // l'auto-join, ai soli iscritti ATTIVI della piattaforma CON
+  // `receive_tournament_start_notification = ON` (D9, ADR-019 — sostituisce
+  // l'invito a una lista di contatti). ADR-011 (convenzione 8, correzione PO):
+  // la mail è SOLO un annuncio — niente invito al pick né date (il
+  // commissioner/scheduler decide quando aprire il round 1): "il round 1 parte
+  // a breve". Il contesto porta solo il conteggio aggregato degli iscritti
+  // alla piattaforma (MAI elenchi nominativi): `platformCount` resta il numero
+  // di account ATTIVI (non dei destinatari), per preservare la semantica di
+  // conteggio aggregato. No-op senza channel/generator/registry nel contesto
+  // (es. simulazione, R1).
   let notified = 0;
   if (ctx.channel !== undefined && ctx.generator !== undefined && ctx.platform !== undefined) {
-    const activeEmails = ctx.platform.activeEmails();
-    for (const email of activeEmails) {
+    const activeAccounts = ctx.platform.activeAccounts();
+    const recipients = activeAccounts.filter((a) => a.receiveTournamentStartNotification);
+    for (const account of recipients) {
       const body = await ctx.generator.generate({
         type: 'tournament_open',
-        platformCount: activeEmails.length
+        platformCount: activeAccounts.length
       });
       await ctx.channel.sendMessage(
-        email,
+        account.email,
         body,
-        subjectFor({ type: 'tournament_open', platformCount: activeEmails.length })
+        subjectFor({ type: 'tournament_open', platformCount: activeAccounts.length })
       );
       notified += 1;
     }
@@ -393,7 +410,8 @@ export async function startTournament(
     tt1Deadline: tt1Deadline.toISOString(),
     initializedRounds: totalRounds - startRound + 1,
     lastRoundWarning,
-    notified
+    notified,
+    autoJoined: autoJoined.length
   };
 }
 

@@ -33,8 +33,8 @@ import type { PickExtraction, PickParseOptions } from './parser.js';
 import { OpenAIClient } from './openai-client.js';
 import { UNSUBSCRIBE_CONFIRM_WORDS } from './templates.js';
 
-/** Intenti riconosciuti dal classificatore (ADR-009, LLD §6.2). */
-export type MessageIntent = 'subscribe' | 'unsubscribe' | 'pick' | 'other';
+/** Intenti riconosciuti dal classificatore (ADR-009, LLD §6.2; ADR-019 `join`). */
+export type MessageIntent = 'subscribe' | 'unsubscribe' | 'join' | 'pick' | 'other';
 
 /**
  * Esito della classificazione: intento + pick (valorizzato solo per `pick`)
@@ -56,7 +56,7 @@ export interface LLMIntentClassifier {
 
 /** Schema zod dell'output LLM: intento enum + pick nullable + name (D3, ADR-011). */
 const classificationSchema = z.object({
-  intent: z.enum(['subscribe', 'unsubscribe', 'pick', 'other']).nullable(),
+  intent: z.enum(['subscribe', 'unsubscribe', 'join', 'pick', 'other']).nullable(),
   pick: z
     .object({
       team: z.string().nullable(),
@@ -120,16 +120,20 @@ export function buildClassifySystemPrompt(opts: PickParseOptions): string {
   // Formato JSON dichiarato: il campo "jolly" è annunciato SOLO quando i
   // jolly sono attivi (jollyEnabled) — altrimenti l'output non lo nomina.
   const jsonFormat = opts.jollyEnabled === true
-    ? '{"intent": "subscribe"|"unsubscribe"|"pick"|"other", "pick": {"team": "<nome canonico o null>", "outcome": "win"|"draw"|"lose"|null, "jolly": true|false|null} | null, "name": "<nome del giocatore o null>"}'
-    : '{"intent": "subscribe"|"unsubscribe"|"pick"|"other", "pick": {"team": "<nome canonico o null>", "outcome": "win"|"draw"|"lose"|null} | null, "name": "<nome del giocatore o null>"}';
+    ? '{"intent": "subscribe"|"unsubscribe"|"join"|"pick"|"other", "pick": {"team": "<nome canonico o null>", "outcome": "win"|"draw"|"lose"|null, "jolly": true|false|null} | null, "name": "<nome del giocatore o null>"}'
+    : '{"intent": "subscribe"|"unsubscribe"|"join"|"pick"|"other", "pick": {"team": "<nome canonico o null>", "outcome": "win"|"draw"|"lose"|null} | null, "name": "<nome del giocatore o null>"}';
   return [
     `Sei il classificatore di Survivor League, ${league}`,
     'Il giocatore scrive un\'email in italiano. Classifica l\'intento del messaggio:',
     '- "subscribe": il giocatore vuole iscriversi (o re-iscriversi) alla piattaforma',
-    '  (es. "voglio iscrivermi", "mi iscrivo", "partecipo");',
+    '  (es. "voglio iscrivermi", "mi iscrivo");',
     '- "unsubscribe": il giocatore vuole disiscriversi dalla piattaforma',
     '  (es. "voglio disiscrivermi", "non voglio più giocare", "rimuovetemi",',
     `  "${UNSUBSCRIBE_CONFIRM_WORDS.join('", "')}" — risposte alla richiesta di conferma del sistema);`,
+    '- "join": il giocatore, GIÀ iscritto alla piattaforma, dichiara di voler',
+    '  partecipare al torneo in corso (es. "partecipo", "voglio giocare",',
+    '  "voglio entrare nel torneo"). NON è una iscrizione alla piattaforma:',
+    '  è la partecipazione al singolo torneo;',
     '- "pick": il messaggio contiene un pronostico riconoscibile (squadra + esito),',
     '  anche insieme a un saluto o altro testo;',
     '- "other": qualunque altra cosa (chiarimenti, domande, saluti, testo non riconducibile).',

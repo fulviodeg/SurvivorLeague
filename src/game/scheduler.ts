@@ -22,7 +22,8 @@
  * NON esistono più azioni sulla finestra di iscrizione (ADR-009):
  * `register_close_auto`/`register_close_safety` e i relativi rami sono
  * RIMOSSI — l'iscrizione piattaforma è sempre disponibile e la
- * partecipazione è gated dalla deadline del TT1 (auto-join, RF-P5).
+ * partecipazione è opt-in: auto-join a `tournament:start` o dichiarazione
+ * nella finestra del TT1 (ADR-019).
  *
  * Design (R5–R7): nessuno stato persistito (l'audit sta nel log pino della
  * CLI, non nei moduli); `computeActions` è pura (sola lettura, decisione);

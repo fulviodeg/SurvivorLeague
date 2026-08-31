@@ -140,37 +140,29 @@ describe('flusso open → pick → close → score (RF-16)', () => {
     // registry o senza account le notifiche non partono (filtro fail-closed).
     platform.register('a@test.it', null, T_OPEN);
     platform.register('b@test.it', null, T_OPEN);
-    // c@test.it: account `active` SENZA profilo — all'apertura del TT 1 riceve
-    // comunque pick_instructions (amendment RF-P6, 2026-08-21).
+    // c@test.it: account `active` SENZA profilo — ADR-019: NON riceve la mail
+    // pick (la nascita dei profili non è più legata al pick; l'eccezione TT1
+    // RF-P6 è RIMOSSA).
     platform.register('c@test.it', null, T_OPEN);
 
-    // OPEN: deadline fissa 15:30; i 2 profili attivi + il registrato senza
-    // profilo vengono notificati.
+    // OPEN: deadline fissa 15:30; SOLO i 2 profili attivi vengono notificati.
     const opened = await openRound(ctxAt(T_OPEN), 1);
     expect(opened).toMatchObject({
       round: 1,
       tt: 1,
       tc: 1,
       status: 'open',
-      notified: 2,
-      registeredNotified: 1
+      notified: 2
     });
     expect(opened.deadline).toBe('2026-09-12T15:30:00.000Z');
     const invites = generator.contexts.filter((c) => c.type === 'pick_instructions');
-    expect(invites).toHaveLength(3);
+    expect(invites).toHaveLength(2);
     // Coppia UMANA iniettata deterministicamente (ADR-011) + sole squadre disponibili.
     expect(invites[0]).toMatchObject({ round: 1, championshipRound: 1 });
     // (getTeams() è ordinata alfabeticamente: AC Milan, AS Roma, Inter, Juventus)
     expect(invites[0]?.availableTeams).toEqual([AC, MA, IM, JU]);
-    // Il contesto del senza-profilo (ultimo invio): stesse squadre in giornata;
-    // ADR-011: nome dall'account piattaforma → email se assente.
-    expect(invites[2]).toMatchObject({
-      round: 1,
-      championshipRound: 1,
-      availableTeams: [AC, MA, IM, JU],
-      playerName: 'c@test.it'
-    });
-    expect(channel.sent).toHaveLength(3);
+    // ADR-019: l'account senza profilo c NON riceve la mail pick.
+    expect(channel.sent).toHaveLength(2);
 
     // PICK: A registra IM win entro la deadline.
     const reg = await registerPick(

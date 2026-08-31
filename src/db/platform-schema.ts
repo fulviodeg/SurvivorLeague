@@ -34,15 +34,22 @@ CREATE TABLE IF NOT EXISTS platform_account (
   status          TEXT NOT NULL DEFAULT 'active'
                   CHECK (status IN ('active', 'pending_unsubscribe', 'unsubscribed')),
   created_at      TEXT NOT NULL,      -- SEMPRE dal clock iniettato (RF-P8, RNF1): mai default datetime('now')
-  unsubscribed_at TEXT               -- istante della soft-delete (clock iniettato), NULL finché non disiscritto
+  unsubscribed_at TEXT,               -- istante della soft-delete (clock iniettato), NULL finché non disiscritto
+  -- Partecipazione opt-in (ADR-019, piano opt-in): due preferenze PER-ACCOUNT
+  -- canale-agnostiche, default ON (=1) alla registrazione. Gestite SOLO via
+  -- CLI (platform:register / platform:preferences); snapshot a tournament:start.
+  receive_tournament_start_notification INTEGER NOT NULL DEFAULT 1, -- 1 = riceve la mail tournament_open (D9)
+  tournament_auto_join                  INTEGER NOT NULL DEFAULT 1  -- 1 = auto-joinato a tournament:start (D2/D6)
 );
 `;
 
 /**
  * Migrazioni additive idempotenti (stesso pattern di src/db/schema.ts):
- * `name` (ADR-011) è aggiunta con ALTER TABLE guardato da PRAGMA table_info,
- * così i DB piattaforma pre-esistenti guadagnano la colonna senza perdere
- * dati e rieseguire la migrazione resta un no-op.
+ * `name` (ADR-011) e i due flag di partecipazione opt-in (ADR-019) sono
+ * aggiunti con ALTER TABLE guardato da PRAGMA table_info, così i DB
+ * piattaforma pre-esistenti guadagnano le colonne senza perdere dati e
+ * rieseguire la migrazione resta un no-op. Default 1 per i due flag: gli
+ * account pre-esistenti diventano auto-join ON + notifiche ON (D2).
  */
 export function applyPlatformAdditiveMigrations(db: Database.Database): void {
   const columns = (db.prepare('PRAGMA table_info(platform_account)').all() as Array<{
@@ -50,6 +57,14 @@ export function applyPlatformAdditiveMigrations(db: Database.Database): void {
   }>).map((c) => c.name);
   if (!columns.includes('name')) {
     db.exec('ALTER TABLE platform_account ADD COLUMN name TEXT');
+  }
+  if (!columns.includes('receive_tournament_start_notification')) {
+    db.exec(
+      'ALTER TABLE platform_account ADD COLUMN receive_tournament_start_notification INTEGER NOT NULL DEFAULT 1'
+    );
+  }
+  if (!columns.includes('tournament_auto_join')) {
+    db.exec('ALTER TABLE platform_account ADD COLUMN tournament_auto_join INTEGER NOT NULL DEFAULT 1');
   }
 }
 

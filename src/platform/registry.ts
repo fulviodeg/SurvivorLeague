@@ -49,6 +49,19 @@ export interface PlatformAccount {
   createdAt: string;
   /** Istante della soft-delete (ISO-8601), null finché non disiscritto. */
   unsubscribedAt: string | null;
+  /**
+   * Preferenza di partecipazione opt-in (ADR-019, D9): true = l'account riceve
+   * la mail `tournament_open` all'avvio del torneo. Gestita SOLO via CLI
+   * (`platform:register`/`platform:preferences`); default true alla
+   * registrazione. CANALE-AGNOSTICA (vive nel DB piattaforma).
+   */
+  receiveTournamentStartNotification: boolean;
+  /**
+   * Preferenza di partecipazione opt-in (ADR-019, D2/D6): true = l'account
+   * viene auto-joinato a `tournament:start` (snapshot). Gestita SOLO via CLI;
+   * default true alla registrazione. CANALE-AGNOSTICA.
+   */
+  tournamentAutoJoin: boolean;
 }
 
 /** Interfaccia astratta dell'archivio account (LLD §6.6, ADR-009). */
@@ -72,6 +85,23 @@ export interface PlatformRegistry {
   find(email: string): PlatformAccount | null;
   /** Email degli account SOLO `active` (destinatari delle notifiche, RF-P6). */
   activeEmails(): string[];
+  /**
+   * Account SOLO `active` CON i due flag di partecipazione (ADR-019):
+   * sorgente dell'auto-join a `tournament:start` (tournamentAutoJoin) e del
+   * filtro destinatari di `tournament_open` (receiveTournamentStartNotification).
+   * Ordinati per register_id (determinismo).
+   */
+  activeAccounts(): PlatformAccount[];
+  /**
+   * Scrive le preferenze di partecipazione (ADR-019) per l'account, SENZA
+   * timestamp (nessuna data: sono flag di stato, non eventi, RF-P8). Un campo
+   * omesso in `prefs` resta invariato; account sconosciuto → null. SOLA
+   * scrittura dei flag: MAI lo status (la riattivazione resta registration-pure).
+   */
+  setPreferences(
+    email: string,
+    prefs: { receiveTournamentStartNotification?: boolean; tournamentAutoJoin?: boolean }
+  ): PlatformAccount | null;
   /** Tutti gli account, ordinati per register_id (vista CLI platform:list). */
   list(): PlatformAccount[];
 }
@@ -84,6 +114,8 @@ interface AccountRow {
   status: PlatformAccountStatus;
   created_at: string;
   unsubscribed_at: string | null;
+  receive_tournament_start_notification: number;
+  tournament_auto_join: number;
 }
 
 /** Converte una riga DB nell'oggetto di dominio (camelCase, LLD §6.6). */
@@ -94,9 +126,16 @@ function toAccount(row: AccountRow): PlatformAccount {
     name: row.name,
     status: row.status,
     createdAt: row.created_at,
-    unsubscribedAt: row.unsubscribed_at
+    unsubscribedAt: row.unsubscribed_at,
+    // Flag opt-in (ADR-019): colonne INTEGER (0/1) → boolean di dominio.
+    receiveTournamentStartNotification: row.receive_tournament_start_notification === 1,
+    tournamentAutoJoin: row.tournament_auto_join === 1
   };
 }
+
+/** Colonne SELECT comuni per la lettura completa di un account (find/list/activeAccounts). */
+const ACCOUNT_COLUMNS =
+  'register_id, email, name, status, created_at, unsubscribed_at, receive_tournament_start_notification, tournament_auto_join';
 
 /**
  * Implementazione SQLite del PlatformRegistry su una connessione DEDICATA al
@@ -114,7 +153,7 @@ export class DbPlatformRegistry implements PlatformRegistry {
   /** Legge l'account per email (normalizzata dal chiamante, K). */
   find(email: string): PlatformAccount | null {
     const row = this.db
-      .prepare('SELECT register_id, email, name, status, created_at, unsubscribed_at FROM platform_account WHERE email = ?')
+      .prepare(`SELECT ${ACCOUNT_COLUMNS} FROM platform_account WHERE email = ?`)
       .get(email) as AccountRow | undefined;
     return row === undefined ? null : toAccount(row);
   }
@@ -125,13 +164,17 @@ export class DbPlatformRegistry implements PlatformRegistry {
    * esiste in qualunque stato (RF-P1/P3). Già `active` → invariato.
    * `created_at` e `name` scritti dal clock iniettato SOLO alla prima
    * creazione (la data e il nome originali non cambiano alle riattivazioni).
+   * I DUE FLAG di partecipazione opt-in (ADR-019, D2) sono scritti a 1 SOLO
+   * alla PRIMA creazione (esplicito, deterministico): le riattivazioni NON
+   * toccano i flag (restano registration-pure, la preferenza si cambia con
+   * `setPreferences`).
    */
   register(email: string, name: string | null, now: Date): PlatformAccount {
     const existing = this.find(email);
     if (existing === null) {
       this.db
         .prepare(
-          'INSERT INTO platform_account (email, name, status, created_at) VALUES (?, ?, ?, ?)'
+          'INSERT INTO platform_account (email, name, status, created_at, receive_tournament_start_notification, tournament_auto_join) VALUES (?, ?, ?, ?, 1, 1)'
         )
         .run(email, name ?? null, 'active', now.toISOString());
       const created = this.find(email);
@@ -228,10 +271,55 @@ export class DbPlatformRegistry implements PlatformRegistry {
     return rows.map((r) => r.email);
   }
 
+  /**
+   * Account SOLO `active` CON i flag di partecipazione (ADR-019), ordinati per
+   * register_id. Sorgente dell'auto-join a `tournament:start` (filtra su
+   * `tournamentAutoJoin`) e del filtro destinatari di `tournament_open`
+   * (filtra su `receiveTournamentStartNotification`), entrambi nel Game Engine.
+   */
+  activeAccounts(): PlatformAccount[] {
+    const rows = this.db
+      .prepare(
+        `SELECT ${ACCOUNT_COLUMNS} FROM platform_account WHERE status = 'active' ORDER BY register_id`
+      )
+      .all() as unknown as AccountRow[];
+    return rows.map(toAccount);
+  }
+
+  /**
+   * Scrive le preferenze di partecipazione (ADR-019) senza timestamp: flag di
+   * stato, non eventi (RF-P8 — nessun `now`, nessun `datetime('now')`). I
+   * campi omessi in `prefs` restano invariati; con `prefs` vuoto è una sola
+   * lettura (nessun UPDATE). Account sconosciuto → null. Non tocca MAI lo
+   * status: la riattivazione è un percorso separato (registration-pure).
+   */
+  setPreferences(
+    email: string,
+    prefs: { receiveTournamentStartNotification?: boolean; tournamentAutoJoin?: boolean }
+  ): PlatformAccount | null {
+    if (this.find(email) === null) return null;
+    const sets: string[] = [];
+    const params: number[] = [];
+    if (prefs.receiveTournamentStartNotification !== undefined) {
+      sets.push('receive_tournament_start_notification = ?');
+      params.push(prefs.receiveTournamentStartNotification ? 1 : 0);
+    }
+    if (prefs.tournamentAutoJoin !== undefined) {
+      sets.push('tournament_auto_join = ?');
+      params.push(prefs.tournamentAutoJoin ? 1 : 0);
+    }
+    if (sets.length > 0) {
+      this.db
+        .prepare(`UPDATE platform_account SET ${sets.join(', ')} WHERE email = ?`)
+        .run(...params, email);
+    }
+    return this.find(email);
+  }
+
   /** Tutti gli account in ordine di register_id (vista CLI `platform:list`). */
   list(): PlatformAccount[] {
     const rows = this.db
-      .prepare('SELECT register_id, email, name, status, created_at, unsubscribed_at FROM platform_account ORDER BY register_id')
+      .prepare(`SELECT ${ACCOUNT_COLUMNS} FROM platform_account ORDER BY register_id`)
       .all() as unknown as AccountRow[];
     return rows.map(toAccount);
   }

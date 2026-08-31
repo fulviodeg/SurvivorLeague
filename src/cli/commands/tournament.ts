@@ -5,6 +5,10 @@
  *   - `tournament:start [--start-round <n>]` — avvia la stagione (US6, RF-21):
  *     verifica calendario + aggancio, inizializza round_state pending e
  *     tournament_state; rifiuto atomico senza stato parziale; CL12 warning;
+ *     auto-join bulk degli account con flag ON (ADR-019);
+ *   - `tournament:join --email <email> [--reason]` — dichiarazione esplicita
+ *     di partecipazione (ADR-019): crea il profilo nella finestra TT 1;
+ *     `--reason` = override late (fuori finestra, D10);
  *   - `tournament:status` — stato aggregato: round corrente (TT/TC), profili
  *     attivi/eliminati, iscritti piattaforma, vincitore, anomalie (RF-30);
  *   - `tournament:history <email>` — storico pick del profilo con coppie TT/TC;
@@ -32,6 +36,8 @@ import {
   tournamentLeaderboard,
   tournamentStatus
 } from '../../game/tournament.js';
+import { declareParticipation } from '../../game/registration.js';
+import { normalizeEmail } from '../../channel/email-adapter/message-router.js';
 import { attachEmailToContext, attachPlatformToContext } from '../email-wiring.js';
 import { makeNow } from '../../clock.js';
 import { jsonWithTestMode, printTestModeBanner } from '../output.js';
@@ -97,8 +103,92 @@ export const tournamentStartCommand: CommandModule<object, StartArgs> = {
           `Stagione avviata: TT1 = TC ${result.startRound}, ${result.initializedRounds} round inizializzati (confine girone ${result.halfBoundary})`
         );
         console.log(`  Deadline TT1: ${result.tt1Deadline} (kickoff ${result.tt1Kickoff})`);
+        console.log(
+          `  Auto-join a start: ${result.autoJoined} profili creati (account con flag ON), notifiche apertura: ${result.notified}`
+        );
         if (result.lastRoundWarning) {
           console.log('  WARNING (CL12): aggancio all\'ultimo TC — i casi di fine torneo collassano (RF-26)');
+        }
+      }
+    } finally {
+      db.close();
+      platformDb.close();
+    }
+  }
+};
+
+interface JoinArgs extends JsonArg {
+  email: string;
+  reason?: string;
+}
+
+/**
+ * Contesto di `tournament:join` (ADR-019): DB torneo + DB PIATTAFORMA, SENZA
+ * wiring email (nessun channel/generator — il join via CLI non invia email,
+ * D12). Il join è un'azione amministrativa: il giocatore apprende via
+ * `tournament_open`/`pick_instructions`.
+ */
+function makeJoinContext(): {
+  ctx: GameContext;
+  db: ReturnType<typeof createConnection>;
+  platformDb: ReturnType<typeof createConnection>;
+} {
+  const config = getConfig();
+  const db = createConnection(config.DB_PATH);
+  migrate(db);
+  const dataProvider = new DbSeasonDataProvider(db);
+  const base: GameContext = { db, dataProvider, config, now: makeNow(config) };
+  const { ctx, platformDb } = attachPlatformToContext(base, config);
+  return { ctx, db, platformDb };
+}
+
+export const tournamentJoinCommand: CommandModule<object, JoinArgs> = {
+  command: 'tournament:join',
+  describe:
+    'Dichiarazione esplicita di partecipazione (ADR-019): crea il profilo nella finestra TT 1; --reason = override late (fuori finestra)',
+  builder: (yargs: Argv<object>) =>
+    yargs
+      .option('json', {
+        type: 'boolean' as const,
+        default: false,
+        describe: 'Output JSON strutturato invece di testo (LLD §7.13)'
+      })
+      .option('email', {
+        type: 'string' as const,
+        demandOption: true,
+        describe: 'Email dell\'account (normalizzata, K)'
+      })
+      .option('reason', {
+        type: 'string' as const,
+        describe: 'Motivo auditato dell\'override late (obbligatorio fuori finestra, D10)'
+      }),
+  handler: (argv) => {
+    const { ctx, db, platformDb } = makeJoinContext();
+    try {
+      const email = normalizeEmail(argv.email);
+      const result = declareParticipation(ctx, { channel: 'email', identifier: email }, {
+        reason: argv.reason
+      });
+      if (argv.json) {
+        console.log(jsonWithTestMode(ctx.config, { email, result, reason: argv.reason }));
+      } else {
+        printTestModeBanner(ctx.config);
+        if (result.ok) {
+          console.log(
+            `Partecipazione confermata: profilo ${result.profileId} per ${email}`
+          );
+        } else if (result.reason === 'already_joined') {
+          console.log(`${email} è già in gara (partecipazione esistente)`);
+        } else if (result.reason === 'no_tournament') {
+          console.log('Nessun torneo aperto: avvia la stagione con tournament:start');
+        } else if (result.reason === 'not_active') {
+          console.log(`${email} non è un account attivo della piattaforma (usa platform:register)`);
+        } else if (result.reason === 'late_requires_reason') {
+          console.log(
+            'Il torneo è già iniziato: la partecipazione è chiusa — per un ingresso tardivo usa --reason (override, D10)'
+          );
+        } else {
+          console.log('Il torneo è già iniziato: la partecipazione è chiusa');
         }
       }
     } finally {

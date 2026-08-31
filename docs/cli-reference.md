@@ -29,7 +29,7 @@
 - [2. Setup commands](#2-setup-commands)
   - [`db:migrate`](#dbmigrate) · [`platform:migrate`](#platformmigrate)
 - [3. Platform commands](#3-platform-commands)
-  - [`platform:register`](#platformregister) · [`platform:unregister`](#platformunregister) · [`platform:list`](#platformlist)
+  - [`platform:register`](#platformregister) · [`platform:unregister`](#platformunregister) · [`platform:list`](#platformlist) · [`platform:preferences`](#platformpreferences)
 - [4. Season data commands](#4-season-data-commands)
   - [`data:import`](#dataimport) · [`data:refresh`](#datarefresh) · [`data:calendar`](#datacalendar) · [`data:results`](#dataresults) · [`data:seed-synthetic`](#dataseed-synthetic)
 - [5. Game engine — rules](#5-game-engine--rules)
@@ -43,7 +43,7 @@
 - [9. Round lifecycle](#9-round-lifecycle)
   - [`round:open`](#roundopen) · [`round:close`](#roundclose) · [`round:score`](#roundscore) · [`round:status`](#roundstatus) · [`round:deadline`](#rounddeadline)
 - [10. Tournament commands](#10-tournament-commands)
-  - [`tournament:start`](#tournamentstart) · [`tournament:status`](#tournamentstatus) · [`tournament:history`](#tournamenthistory) · [`tournament:leaderboard`](#tournamentleaderboard) · [`tournament:export`](#tournamentexport)
+  - [`tournament:start`](#tournamentstart) · [`tournament:join`](#tournamentjoin) · [`tournament:status`](#tournamentstatus) · [`tournament:history`](#tournamenthistory) · [`tournament:leaderboard`](#tournamentleaderboard) · [`tournament:export`](#tournamentexport)
 - [11. Email channel](#11-email-channel)
   - [`channel:email:fetch`](#channelemailfetch) · [`channel:email:process`](#channelemailprocess) · [`channel:email:send`](#channelemailsend)
 - [12. Scheduler](#12-scheduler)
@@ -153,15 +153,19 @@ platform) are always distinct files and never share transactions.
 ### `platform:register`
 
 ```
-platform:register --email <email> [--name <nome>] [--reason <motivo>] [--json]
+platform:register --email <email> [--name <nome>] [--auto-join] [--receive-notifications] [--reason <motivo>] [--json]
 ```
 
 **Purpose.** The **only** command that creates a platform account. Creates (or
 reactivates) the account for the given email with a stable internal
 `registerID` (re-used on every re-registration). It does **not** create a
-tournament profile: participation in the tournament is born exclusively from
-the first valid pick in the TT 1 (auto-join). If the account already exists
-and is `active`, it is returned as-is.
+tournament profile: participation is **opt-in** (ADR-019) — profiles are born
+from the auto-join at `tournament:start` (accounts with `tournament_auto_join
+= ON`) or from an explicit declaration (`PARTECIPO` / `tournament:join`). The
+two participation flags are applied via `setPreferences` **only at first
+creation** (re-registration/reactivation preserves the existing preferences;
+use `platform:preferences` to change them). If the account already exists and
+is `active`, it is returned as-is (flags unchanged).
 
 **Parameters.**
 
@@ -169,8 +173,10 @@ and is `active`, it is returned as-is.
 |---|---|---|
 | `--email` | string, **required** | Email of the account. Unique; normalized exactly like the incoming-email router (trimmed, lowercased, display name removed), so the same identity always maps to the same account. |
 | `--name` | string | Player name, saved at first creation. If absent, the system uses the email address in place of the name. |
+| `--auto-join` | boolean (default `true`) | ADR-019 (D2): `true` = the account is auto-joined at the next `tournament:start` (snapshot); `false` = it must declare explicitly (`PARTECIPO` / `tournament:join`). **Applied only at first creation.** |
+| `--receive-notifications` | boolean (default `true`) | ADR-019 (D9): `true` = receives the `tournament_open` announcement; `false` = no opening email. **Applied only at first creation.** |
 | `--reason` | string | Audited reason of the operation (traceability). Recommended for any manual account change. |
-| `--json` | boolean (default `false`) | JSON output with the account object (`registerId`, `email`, `status`, dates) instead of the text `Account <email> (registerID <id>) — status <status>`. |
+| `--json` | boolean (default `false`) | JSON output with the account object (`registerId`, `email`, `status`, `receiveTournamentStartNotification`, `tournamentAutoJoin`, dates) instead of the text `Account <email> (registerID <id>) — status <status> — auto-join <on|off>, notifiche apertura <on|off>`. |
 
 ---
 
@@ -204,13 +210,44 @@ platform:list [--json]
 
 **Purpose.** Lists all platform accounts ordered by `registerID`: internal
 `registerID`, email, status (`active` / `pending_unsubscribe` /
-`unsubscribed`) and the relevant dates. Read-only.
+`unsubscribed`), the two participation flags (`auto-join` / `notifiche
+apertura`, ADR-019) and the relevant dates. Read-only.
 
 **Parameters.**
 
 | Option | Type | Description |
 |---|---|---|
 | `--json` | boolean (default `false`) | JSON output `{"testMode":…, "accounts": […]}` instead of the text list (or `Nessun account piattaforma registrato` when empty). |
+
+---
+
+### `platform:preferences`
+
+```
+platform:preferences --email <email> [--auto-join on|off] [--receive-notifications on|off] [--json]
+```
+
+**Purpose.** Reads or updates the per-account opt-in participation flags
+(ADR-019): `tournament_auto_join` (auto-join at the next `tournament:start`)
+and `receive_tournament_start_notification` (receives the `tournament_open`
+announcement). Without any flag it is a pure read; with one or both flags it
+updates exactly those fields (omitted fields stay unchanged) — the account
+status is never touched. A flag change affects **only subsequent tournaments**
+(snapshot at `tournament:start`). Flags are managed **exclusively via CLI**: no
+email can toggle them.
+
+**Parameters.**
+
+| Option | Type | Description |
+|---|---|---|
+| `--email` | string, **required** | Email of the account (normalized as in `platform:register`). |
+| `--auto-join` | `on` \| `off` | ADR-019 (D2): the auto-join preference. Omitted → unchanged. |
+| `--receive-notifications` | `on` \| `off` | ADR-019 (D9): the `tournament_open` notification preference. Omitted → unchanged. |
+| `--json` | boolean (default `false`) | JSON output with the updated account object. |
+
+**Notes.** If no account exists for the email, prints
+`Nessun account per <email> (mai iscritto)`. Text output:
+`<email> (registerID <id>) — auto-join <on|off>, notifiche apertura <on|off>`.
 
 ---
 
@@ -606,10 +643,10 @@ round:open --round <n> [--json]
 **fixed deadline** (kickoff of the first match of the round minus the
 configured advance, computed once from the calendar and never changed
 afterwards), and sends the pick instruction emails. Recipients: the active
-participants (with their **available teams**, the deadline and the response
-format); at the opening of the **TT 1**, also the active platform subscribers
-who have no profile yet (they will become participants with their first valid
-pick). Refused if the round is already open or is in a terminal state
+participants only, each with their **available teams**, the deadline and the
+response format (ADR-019: no more TT-1 exception for subscribers without a
+profile — participation is opt-in, the announcement is `tournament_open`).
+Refused if the round is already open or is in a terminal state
 (closed/scored); refused if the tournament is closed. **Refused if the
 deadline is not in the future** (`now >= deadline` at open time): opening a
 round whose pick window has already expired would make every incoming pick
@@ -623,7 +660,7 @@ always with future kickoffs, so the automatic flow is not affected.
 | Option | Type | Description |
 |---|---|---|
 | `--round` | number, **required** | Championship round (TC) to open. |
-| `--json` | boolean (default `false`) | JSON output with `tc`, `tt`, `deadline`, `notified`, `registeredNotified`. Text output: `Round <tc> (TT <tt>) aperto — deadline <ISO>, profili notificati: <n>, registrati senza profilo notificati: <m>`. |
+| `--json` | boolean (default `false`) | JSON output with `tc`, `tt`, `deadline`, `notified`. Text output: `Round <tc> (TT <tt>) aperto — deadline <ISO>, profili notificati: <n>`. |
 
 ---
 
@@ -729,10 +766,14 @@ tournament:start [--start-round <n>] [--json]
 
 **Purpose.** Starts the season. Validates the calendar and the attachment
 point; if valid, initializes the tournament state and the round rows (status
-`pending`) for the whole window `[start_round … last round]`, and sends the
-**tournament-opening announcement** (`tournament_open`) to all active platform
-subscribers — an announcement only: it says the first round will start soon
-and to be ready, without dates (the round-1 opening is a separate event). On
+`pending`) for the whole window `[start_round … last round]`, then runs the
+**bulk auto-join** (ADR-019: every active account with `tournament_auto_join =
+ON` gets a profile, idempotent) and sends the **tournament-opening
+announcement** (`tournament_open`) to the active subscribers with
+`receive_tournament_start_notification = ON` — an announcement only: it says
+the first round will start soon, to be ready, and teaches the participation
+formula (`rispondi con "PARTECIPO"`), without dates (the round-1 opening is a
+separate event). On
 any validation failure the start is **refused atomically**: nothing is left
 half-initialized. If a tournament is currently running, the start is refused;
 if the previous tournament was closed, the start is re-admitted and atomically
@@ -744,7 +785,38 @@ the manual, §System Lifecycle).
 | Option | Type | Description |
 |---|---|---|
 | `--start-round` | number (default `1`) | Championship round (TC) to which the tournament attaches: that TC becomes the **TT 1** (`TT = TC − start_round + 1`). Championship rounds before it are simply not played ("fuori finestra torneo"). Must be within `1..total rounds` and its TT-1 deadline must be in the future, otherwise the start is refused with a message naming the deadline. Attaching to the **last** TC is allowed with an informative warning (the end-of-tournament cases collapse to the single round). |
-| `--json` | boolean (default `false`) | JSON output with `startRound`, `initializedRounds`, `halfBoundary`, `tt1Deadline`, `tt1Kickoff`, `lastRoundWarning`. Text output: `Stagione avviata: TT1 = TC <n>, <m> round inizializzati (confine girone <b>)` followed by `Deadline TT1: <ISO> (kickoff <ISO>)`. |
+| `--json` | boolean (default `false`) | JSON output with `startRound`, `initializedRounds`, `halfBoundary`, `tt1Deadline`, `tt1Kickoff`, `lastRoundWarning`, `notified`, `autoJoined`. Text output: `Stagione avviata: TT1 = TC <n>, <m> round inizializzati (confine girone <b>)` followed by `Deadline TT1: <ISO> (kickoff <ISO>)` and `Auto-join a start: <k> profili creati (account con flag ON), notifiche apertura: <p>`. |
+
+---
+
+### `tournament:join`
+
+```
+tournament:join --email <email> [--reason <motivo>] [--json]
+```
+
+**Purpose.** Explicit declaration of tournament participation (ADR-019, the
+`join` path — distinct from registration). Creates the profile for the given
+active account within the TT-1 window (round 1 `pending` or `open`, symmetric
+to the auto-join). The command is administrative: it **sends no email** (the
+player learns via `tournament_open` / `pick_instructions`). After the TT-1
+window has closed, the declaration is refused unless `--reason` is provided
+(late override, ADR-008 §6: profile created with the team pool intact).
+
+**Parameters.**
+
+| Option | Type | Description |
+|---|---|---|
+| `--email` | string, **required** | Email of the account (normalized as in `platform:register`). |
+| `--reason` | string | Audited reason of the late override. **Mandatory** outside the TT-1 window. |
+| `--json` | boolean (default `false`) | JSON output `{"testMode":…, "email": …, "result": {ok, reason?|profileId}, "reason": …}`. |
+
+**Notes.** Text output: `Partecipazione confermata: profilo <id> per <email>`;
+`<email> è già in gara (partecipazione esistente)`; `Nessun torneo aperto:
+avvia la stagione con tournament:start`; `<email> non è un account attivo
+della piattaforma (usa platform:register)`; `Il torneo è già iniziato: la
+partecipazione è chiusa — per un ingresso tardivo usa --reason (override, D10)`;
+`Il torneo è già iniziato: la partecipazione è chiusa`.
 
 ---
 
@@ -861,10 +933,15 @@ channel:email:process [--json]
 
 **Purpose.** The end-to-end processing of the inbox — the heart of the email
 channel. Reads the unread emails, classifies each one's intent (registration /
-unsubscription / pick / other) via the LLM, executes the corresponding
-operation through the game engine (auto-join on the first valid pick in
-TT 1 included), sends the appropriate reply, and marks the message as read
-(`\Seen`) **only on success**. Per-message diagnostics are printed at the end.
+unsubscription / **join** / pick / other) via the LLM or the deterministic
+parser, executes the corresponding operation through the game engine —
+including the **join** declaration (`PARTECIPO` → `declareParticipation`,
+ADR-019) — sends the appropriate reply, and marks the message as read
+(`\Seen`) **only on success**. A pick from an active subscriber **without a
+profile** no longer auto-joins: in the TT 1 it receives
+`tournament_join_rejected` (reason `not_in_tournament`, guiding to `PARTECIPO`),
+from the TT 2 onwards a plain rejection (tournament already started).
+Per-message diagnostics are printed at the end.
 This is the command the cron must run alongside `scheduler:tick` (the
 scheduler never reads the mailbox).
 
@@ -875,9 +952,12 @@ scheduler never reads the mailbox).
 | `--json` | boolean (default `false`) | JSON output with `processed`, `seen`, `stopped` and the per-message action list. Text output: one line per message `[letto]|[non letto] <from>: <action> (<detail>)`, then the summary `Processati <n> messaggi, <m> marcati letti` — with the note `— batch FERMATO su errore LLM (retry al prossimo tick)` when an LLM transport error stopped the batch (remaining messages are retried at the next tick). |
 
 **Notes.** Unsubscribed or never-registered senders produce no reply (silent
-log) — anti-spam behavior. The platform registration flow ("voglio iscrivermi")
-and the two-step unsubscription are driven entirely by this command in email
-mode (details in the manual, §Introduction).
+log) — anti-spam behavior. The platform registration flow ("voglio iscrivermi"),
+the two-step unsubscription and the **join** flow (`PARTECIPO`) are driven
+entirely by this command in email mode (details in the manual, §Introduction).
+Per-message actions include `join_confirmed`, `join_rejected` (with `detail`
+`no_tournament`/`tournament_started`/`not_in_tournament`) and
+`already_joined`.
 
 ---
 

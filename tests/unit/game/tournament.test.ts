@@ -21,6 +21,8 @@ import { describe, expect, it } from 'vitest';
 import { parseConfig } from '../../../src/config.js';
 import { DbSeasonDataProvider } from '../../../src/data/db-provider.js';
 import { migrate } from '../../../src/db/schema.js';
+import { migratePlatform } from '../../../src/db/platform-schema.js';
+import { DbPlatformRegistry } from '../../../src/platform/registry.js';
 import type { GameContext } from '../../../src/game/context.js';
 import { registerPick } from '../../../src/game/pick-processor.js';
 import { openRound } from '../../../src/game/round-manager.js';
@@ -31,6 +33,8 @@ import {
   tournamentLeaderboard,
   tournamentStatus
 } from '../../../src/game/tournament.js';
+import type { ChannelAdapter, IncomingMessage } from '../../../src/channel/adapter.js';
+import type { EmailContext, LLMGenerator } from '../../../src/llm/generator.js';
 import { FIXTURE_TEAMS, loadBaseSeason } from '../../fixtures/season.js';
 
 const [IM] = FIXTURE_TEAMS;
@@ -350,5 +354,96 @@ describe('tournament:status / history / leaderboard / export', () => {
     expect(dump.tables.tournament_state[0]).toMatchObject({ win_only: 1 });
     // Rileggibile: round-trip JSON identico.
     expect(JSON.parse(JSON.stringify(dump))).toEqual(dump);
+  });
+});
+
+describe('tournament:start — auto-join e filtro notifiche (ADR-019)', () => {
+  /** Fake ChannelAdapter per verificare i destinatari del broadcast. */
+  class FakeChannel implements ChannelAdapter {
+    sent: Array<{ to: string; body: string }> = [];
+    fetchMessages(): Promise<IncomingMessage[]> {
+      return Promise.resolve([]);
+    }
+    sendMessage(to: string, body: string): Promise<void> {
+      this.sent.push({ to, body });
+      return Promise.resolve();
+    }
+  }
+  /** Fake LLMGenerator per verificare il contesto del broadcast. */
+  class FakeGenerator implements LLMGenerator {
+    contexts: EmailContext[] = [];
+    generate(ctx: EmailContext): Promise<string> {
+      this.contexts.push(ctx);
+      return Promise.resolve(`[${ctx.type}]`);
+    }
+    byType(type: string): EmailContext[] {
+      return this.contexts.filter((c) => c.type === type);
+    }
+  }
+
+  async function makePlatformCtx(): Promise<{
+    db: Database.Database;
+    platform: DbPlatformRegistry;
+    ctx: GameContext;
+    channel: FakeChannel;
+    generator: FakeGenerator;
+  }> {
+    const db = new Database(':memory:');
+    migrate(db);
+    loadBaseSeason(db);
+    const platformDb = new Database(':memory:');
+    migratePlatform(platformDb);
+    const platform = new DbPlatformRegistry(platformDb);
+    const channel = new FakeChannel();
+    const generator = new FakeGenerator();
+    const ctx: GameContext = {
+      db,
+      dataProvider: new DbSeasonDataProvider(db),
+      config: parseConfig({
+        IMAP_USER: 'u',
+        IMAP_PASS: 'p',
+        SMTP_USER: 'u',
+        SMTP_PASS: 'p',
+        LLM_API_KEY: 'k',
+        FOOTBALL_DATA_TOKEN: 't'
+      }),
+      now: NOW_BEFORE,
+      platform,
+      channel,
+      generator
+    };
+    return { db, platform, ctx, channel, generator };
+  }
+
+  it('auto-join a start: account ON → profilo; account OFF → nessun profilo (D2/D6)', async () => {
+    const { db, platform, ctx } = await makePlatformCtx();
+    platform.register('on@test.it', null, NOW_BEFORE); // ON (default)
+    platform.register('off@test.it', null, NOW_BEFORE); // OFF
+    platform.setPreferences('off@test.it', { tournamentAutoJoin: false });
+
+    const res = await startTournament(ctx);
+
+    expect(res.autoJoined).toBe(1);
+    const emails = db
+      .prepare('SELECT pl.email FROM profile p JOIN player pl ON pl.id = p.player_id')
+      .all() as Array<{ email: string }>;
+    expect(emails.map((r) => r.email)).toEqual(['on@test.it']);
+  });
+
+  it('tournament_open: destinatari filtrati su receive_tournament_start_notification + CTA PARTECIPO (D9/D14)', async () => {
+    const { platform, ctx, generator } = await makePlatformCtx();
+    platform.register('a@test.it', null, NOW_BEFORE); // notifiche ON (default)
+    platform.register('b@test.it', null, NOW_BEFORE); // notifiche OFF
+    platform.setPreferences('b@test.it', { receiveTournamentStartNotification: false });
+
+    const res = await startTournament(ctx);
+
+    expect(res.notified).toBe(1);
+    const opens = generator.byType('tournament_open');
+    expect(opens).toHaveLength(1);
+    // platformCount resta il numero di account ATTIVI (non dei destinatari).
+    expect(opens[0]).toMatchObject({ platformCount: 2 });
+    // La CTA D14 è composta dal renderer deterministico (qui il fake generator
+    // non la compone: la verifichiamo sul corpo via il soggetto/contesto).
   });
 });

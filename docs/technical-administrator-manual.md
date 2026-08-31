@@ -111,8 +111,8 @@ round — the **Turno del Torneo (TT)**.
   profile stays in; a **draw or a loss → the pick is wrong → elimination**. In
   `win_only`, a bare team name is enough ("Napoli"); an explicit "Napoli
   pareggia"/"Napoli perde" is not recognized (the system asks for
-  clarification). All other rules (one team per girone, deadline, auto-join,
-  winners) are unchanged. The mode is **fixed in the database at
+  clarification). All other rules (one team per girone, deadline, opt-in
+  participation, winners) are unchanged. The mode is **fixed in the database at
   `tournament:start`**: set `WIN_ONLY` **before** `tournament:start` and do not
   change it mid-tournament — a change while the tournament is open aborts the
   process with a fatal error (see §6.8).
@@ -181,25 +181,37 @@ round — the **Turno del Torneo (TT)**.
   always `TT = TC − start_round + 1`, and the double numbering appears in
   emails, CLI output and logs.
 
-**Registration model (two levels).**
+**Registration and participation are two distinct concepts (registration ≠ join).**
 
-1. **Platform account.** A player registers to the platform by email at any
+1. **Platform account (registration).** A player registers to the platform by email at any
    time (before, during, after a tournament): the message intent
-   (registration / unsubscription / pick) is understood automatically (LLM or
+   (registration / unsubscription / **join** / pick) is understood automatically (LLM or
    deterministic, per `AI_EMAIL_PARSER`). The fundamental instruction players
    receive is the unique formula: `ISCRIZIONE [NOME]` (e.g. `ISCRIZIONE Mario`)
-   to register, `DISISCRIZIONE` to unsubscribe, `<TEAM> <ESITO>` for a pick —
+   to register, `DISISCRIZIONE` to unsubscribe, **`PARTECIPO` to join the
+   tournament**, `<TEAM> <ESITO>` for a pick —
    in the subject or the body. The
-   account keeps a stable internal `registerID` and a status
-   (`active` / `pending_unsubscribe` / `unsubscribed`). Accounts live in a
+   account keeps a stable internal `registerID`, a status
+   (`active` / `pending_unsubscribe` / `unsubscribed`) and **two opt-in
+   participation flags** (ADR-019, managed **only via CLI**):
+   `tournament_auto_join` (auto-join at the next `tournament:start`) and
+   `receive_tournament_start_notification` (receives the `tournament_open`
+   announcement); both default to **ON**. Accounts live in a
    **separate database** from the tournament.
-2. **Tournament profile.** Participation in the tournament is born
-   automatically from the **first valid Pick in the TT 1** (auto-join):
-   profile and Pick are created together, with a single confirmation
-   (`pick_confirmed`). A subscriber who never sends a valid Pick in the TT 1
-   is **not a participant** — not eliminated, and receives no round emails.
-   After the TT-1 deadline, a subscriber without a profile can no longer
-   enter the running tournament.
+2. **Tournament profile (join).** Participation in the tournament is **opt-in**:
+   the profile is born (a) by **auto-join at `tournament:start`** for every
+   active account with `tournament_auto_join = ON` (a one-time snapshot: an
+   account that becomes `active` *after* the start must declare), or (b) by an
+   **explicit declaration** — email `PARTECIPO` or CLI `tournament:join` —
+   within the TT-1 window (round 1 `pending` or `open`). The confirmation is
+   `tournament_join_confirmed`; a second declaration on an account already in
+   the game answers `tournament_already_joined`. **A pick never creates a
+   profile** (the old auto-join on the first pick is removed): a subscriber
+   without a profile who sends a pick in the TT 1 is guided to declare
+   (`PARTECIPO`); after the TT-1 window has closed, participation is locked and
+   the only late entry is the audited override `tournament:join --reason`.
+   A subscriber who never declares (and has auto-join off) is **not a
+   participant** — not eliminated, and receives no round emails.
 
 **Unsubscription is a two-step process.** A first "voglio disiscrivermi"
 message sets the account to `pending_unsubscribe` and asks for confirmation;
@@ -244,9 +256,10 @@ tournament email** — the only exception being the registration/unsubscription
 confirmation flow itself.
 
 | Event | Recipients |
-|---|---|
-| Tournament opening (`tournament_open`) | **All active subscribers** of the platform. Announcement only: the round 1 will start soon, be ready — no dates (the round opening is a separate event). |
-| Round opening (`pick_instructions`) | **Active participants** (profiles in the game), each with their available teams, the deadline and the response format. At the opening of the **TT 1**, also the **active subscribers without a profile**. With jolly active (`JOLLIES_PER_PLAYER ≥ 1`), each participant also receives the jolly instructions ("🎯 Jolly: scrivi «SQUADRA Jolly»…") and the "Jolly rimasti: N" line. |
+|---|---|---|
+| Tournament opening (`tournament_open`) | **Active subscribers with `receive_tournament_start_notification = ON`** (ADR-019). Announcement only: the round 1 will start soon, be ready — no dates (the round opening is a separate event). Teaches participation: *rispondi con "PARTECIPO"*. |
+| Round opening (`pick_instructions`) | **Active participants** (profiles in the game), each with their available teams, the deadline and the response format. With jolly active (`JOLLIES_PER_PLAYER ≥ 1`), each participant also receives the jolly instructions ("🎯 Jolly: scrivi «SQUADRA Jolly»…") and the "Jolly rimasti: N" line. (No TT-1 exception for subscribers without a profile — ADR-019.) |
+| Join declaration (`tournament_join_confirmed` / `tournament_already_joined` / `tournament_join_rejected`) | The active account that declared `PARTECIPO` (or the commissioner ran `tournament:join`): confirmed (with the deadline box if a round is open), already in the game, or rejected with the reason (`no_tournament` / `tournament_started` / `not_in_tournament`). |
 | Pick confirmation (`pick_confirmed`) / rejection (`pick_rejected`) | The sender, with the reason of a rejection. With jolly active: `pick_confirmed` shows "PICK REGISTRATO CON JOLLY → {SQUADRA}" when a jolly was declared, plus "Jolly rimasti: N"; `pick_rejected` translates the jolly reasons in Italian ("non hai più jolly disponibili", "il jolly non è ammesso in questa modalità"). |
 | Round closing — elimination for missing Pick (`pick_missing_elimination`) | Each eliminated profile, at `round:close`. |
 | Round closing — auto-pick assigned (`pick_auto_assigned`) | Each profile that received an **auto-assigned pick** at `round:close` (`AUTOPICK_ON_MISSING=true` with a real deadline): confirmation *after the fact*, no deadline section. |
@@ -550,21 +563,40 @@ default 8), `--rounds` (default 7), `--spacing-min` (default 90), `--first-kicko
 `--force`; refused mid-tournament), `--json`. Guards against overwriting and
 mixed calendars (see CLI reference §4).
 
-**`platform:register --email <email> [--name <nome>] [--reason <motivo>]`** —
+**`platform:register --email <email> [--name <nome>] [--auto-join] [--receive-notifications] [--reason <motivo>]`** —
 the only account-creation command. Parameters: `--email` (required,
 normalized), `--name` (saved at first creation; email used otherwise),
-`--reason` (audited), `--json`. Does **not** create tournament profiles.
+`--auto-join` (boolean, default `true`: auto-join at the next
+`tournament:start`, ADR-019), `--receive-notifications` (boolean, default
+`true`: receives `tournament_open`), `--reason` (audited), `--json`. Does
+**not** create tournament profiles. The two flags are applied **only at first
+creation**: re-registering/reactivating an existing account preserves its
+current preferences (use `platform:preferences` to change them).
+
+**`platform:preferences --email <email> [--auto-join on|off] [--receive-notifications on|off]`** —
+reads or updates the opt-in participation flags of an account (ADR-019,
+managed only via CLI; a change affects the subsequent tournaments). Parameters:
+`--email` (required), `--auto-join` (`on`/`off`, omitted → unchanged),
+`--receive-notifications` (`on`/`off`, omitted → unchanged), `--json`.
 
 **`platform:unregister --email <email> [--reason <motivo>]`** — direct
 soft-delete of an account (status → `unsubscribed`); tournament profile
 untouched. Parameters: `--email` (required), `--reason`, `--json`.
 
-**`platform:list`** — lists accounts (registerID, email, status, dates).
-Parameters: `--json`.
+**`platform:list`** — lists accounts (registerID, email, status, the two
+participation flags, dates). Parameters: `--json`.
 
-**`tournament:start [--start-round <n>]`** — starts the season (announcement
-email to active subscribers; atomic refusal on invalid attachment). Parameters:
-`--start-round` (default 1: the TC that becomes the TT 1), `--json`.
+**`tournament:start [--start-round <n>]`** — starts the season (bulk auto-join
+of the accounts with `tournament_auto_join = ON`, then the `tournament_open`
+announcement to the subscribers with notifications ON; atomic refusal on
+invalid attachment). Parameters: `--start-round` (default 1: the TC that
+becomes the TT 1), `--json`.
+
+**`tournament:join --email <email> [--reason <motivo>]`** — explicit
+declaration of participation (ADR-019, the `join` path): creates the profile
+within the TT-1 window; `--reason` is the audited late override (mandatory
+after the TT-1 window; profile created with the pool intact). Sends no email.
+Parameters: `--email` (required), `--reason`, `--json`.
 
 **`tournament:status`** — aggregate read-only status (season, subscribers,
 participants, current round, winner, anomalies). Parameters: `--json`.
@@ -580,8 +612,8 @@ archive; the same format as the automatic export at closure). Parameters:
 `--json`.
 
 **`round:open --round <n>`** — opens a round: registers the fixed deadline and
-sends the pick emails (TT 1 also to active subscribers without a profile).
-Parameters: `--round` (required), `--json`. Refused if already open, terminal,
+sends the pick emails to the participants (profiles) only. Parameters:
+`--round` (required), `--json`. Refused if already open, terminal,
 or tournament closed. **Refused if the deadline is not in the future**
 (`now >= deadline`): opening a round whose pick window already expired would
 make every incoming pick unacceptable, so the command fails with a clear
@@ -624,11 +656,12 @@ unsubscription, picks, replies, mark-as-read on success. Parameters:
 
 ### 5.3 Complete command reference
 
-The complete catalog of all 40 commands (including the diagnostic tools
+The complete catalog of all 42 commands (including the diagnostic tools
 `rules:burned-teams` / `rules:available-teams` / `rules:check-half` /
 `rules:teams`, `pick:validate` / `pick:register` / `pick:list`,
 `elimination:check` / `elimination:list`, `llm:parse` / `llm:classify` /
-`llm:generate`, `channel:email:send`, `simulate:full` / `simulate:round`) is in
+`llm:generate`, `channel:email:send`, `simulate:full` / `simulate:round`,
+plus `platform:preferences` and `tournament:join` — ADR-019) is in
 `docs/cli-reference.md`, with man-page detail for every parameter.
 
 ---
@@ -663,12 +696,19 @@ Before the tournament, the platform is open for registrations at any time:
 - players register by email with the formula `ISCRIZIONE [NOME]` (e.g.
   `ISCRIZIONE Mario`) and the system answers `platform_registered` — processed by
   `channel:email:process` (cron) or on demand;
-- the commissioner can create accounts directly with `platform:register`;
-- `platform:list` shows the current accounts and their status.
+- the commissioner can create accounts directly with `platform:register`
+  (optionally setting the two participation flags: `--auto-join` /
+  `--receive-notifications`) and adjust them afterwards with
+  `platform:preferences` (e.g. set `--auto-join off` for a player who must
+  declare explicitly, or `--receive-notifications off` for a subscriber who
+  does not want the opening announcement);
+- `platform:list` shows the current accounts, their status and their flags.
 
 There is **no registration window to open or close**: subscription to the
-platform is always available, and participation in the tournament will be
-gated only by the TT-1 deadline (auto-join).
+platform is always available, and participation in the tournament is
+**opt-in** (ADR-019): accounts with `tournament_auto_join = ON` are
+auto-joined at `tournament:start`; the others declare with `PARTECIPO` /
+`tournament:join` within the TT-1 window.
 
 ### 6.3 Tournament start
 
@@ -682,11 +722,16 @@ attachment to TC 1; any TC of the season can be chosen). The system:
    end-of-tournament cases collapse to that single round);
 2. **initializes** the tournament state and the round rows (status
    `pending`) for the whole window `[start_round … last round]`;
-3. **sends the opening announcement** (`tournament_open`) to all active
-   subscribers — an announcement only, without dates.
+3. **auto-joins** every active account with `tournament_auto_join = ON`
+   (ADR-019, one-time snapshot; the result reports `autoJoined`);
+4. **sends the opening announcement** (`tournament_open`) to the active
+   subscribers with `receive_tournament_start_notification = ON` — an
+   announcement only, without dates, teaching the participation formula
+   (`rispondi con "PARTECIPO"`).
 
 Output: `Stagione avviata: TT1 = TC <n>, <m> round inizializzati (confine girone <b>)`
-followed by the TT-1 deadline line.
+followed by the TT-1 deadline line and `Auto-join a start: <k> profili creati
+(account con flag ON), notifiche apertura: <p>`.
 
 The TT 1 is then **opened** — by the next `scheduler:tick` in cron mode, or by
 `round:open --round <n>` in commissioner mode — which sends the pick
@@ -698,17 +743,20 @@ For each championship round in the tournament window, the cycle is:
 
 1. **Open** (`round:open` / scheduler). The deadline is computed from the
    calendar and registered **once** (it never changes afterwards). Pick
-   instruction emails go to the active participants — each with its available
-   teams (burned teams excluded), the deadline and the response format — and,
-   at the TT 1, also to the active subscribers without a profile.
+   instruction emails go to the active participants only — each with its
+   available teams (burned teams excluded), the deadline and the response
+   format (ADR-019: no more TT-1 exception for subscribers without a profile).
 2. **Collect** (`channel:email:process`). Players reply in natural language.
    The system interprets each message, validates the Pick (platform account
    active; team playing in the round; team not burned in the girone; valid
    outcome; within the acceptance instant; no previous valid Pick) and
-   replies with a confirmation or a rejection with reason. In the TT 1, a
-   subscriber without a profile is joined automatically on their first valid
-   Pick (profile + Pick together). Picks from unknown/unsubscribed senders
-   are silently logged.
+   replies with a confirmation or a rejection with reason. A subscriber
+   without a profile is **never joined by a pick** (ADR-019): in the TT 1 the
+   system answers `tournament_join_rejected` (`not_in_tournament`, guiding to
+   `PARTECIPO`), from the TT 2 onwards a plain rejection (tournament already
+   started). Participants enter by auto-join at `tournament:start` or by
+   declaring `PARTECIPO`/`tournament:join`. Picks from unknown/unsubscribed
+   senders are silently logged.
 3. **Close** (`round:close` / scheduler at the deadline). The pick window
    closes; every active profile without a valid Pick is eliminated
    (`missing_pick`) and notified — **unless `AUTOPICK_ON_MISSING=true` with a
@@ -1079,7 +1127,8 @@ The domain terms used throughout the system's output, kept in Italian:
 | **UPP — Ultima partita programmata** | The last scheduled match of the TC (defines the TC close). |
 | **Rinviata (match)** | Postponed match. |
 | **Commissioner** | The tournament administrator, the only user of the CLI. |
-| **Auto-join** | Automatic tournament entry on the first valid Pick in the TT 1 (profile + Pick together). |
+| **Auto-join** | Automatic tournament entry at `tournament:start` for the accounts with `tournament_auto_join = ON` (ADR-019). Distinct from the declaration (`PARTECIPO` / `tournament:join`). |
+| **PARTECIPO (join)** | The unique email formula declaring tournament participation (ADR-019). It is NOT a platform registration: the account must already exist. |
 | **Soft-delete / disiscrizione a due passi** | Two-step unsubscription: pending confirmation first, actual unsubscription only after the explicit confirmation. |
-| **Iscritto vs partecipante** | A platform subscriber vs a tournament participant (a subscriber with a profile). |
+| **Iscritto vs partecipante** | A platform subscriber (account) vs a tournament participant (a subscriber with a profile). Participation is opt-in: auto-join at start or declaration. |
 | **Stagione avviata** | "Season started" — the state entered by `tournament:start`. |

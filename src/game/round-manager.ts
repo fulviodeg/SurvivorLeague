@@ -10,9 +10,10 @@
  *   - `round:open`   — crea `round_state` (status `open`, opened_at = clock) con
  *     deadline FISSA = kickoff − DEADLINE_ADVANCE_MIN (RF-14); invia l'email
  *     pick ai profili attivi con le sole squadre disponibili (decisione 12).
- *     All'apertura del SOLO TT 1 notifica anche gli account piattaforma
- *     `active` senza profilo (amendment RF-P6, 2026-08-21). Errore se il
- *     round è già aperto o in stato non riapribile. GUARDIA (fix UAT
+ *     ADR-019: SOLO ai partecipanti (profili) — l'eccezione TT1 per gli
+ *     account `active` senza profilo è RIMOSSA (la nascita dei profili non è
+ *     più legata al pick). Errore se il round è già aperto o in stato non
+ *     riapribile. GUARDIA (fix UAT
  *     2026-08-22): rifiuta l'apertura se la deadline calcolata è GIÀ scaduta
  *     (`now >= deadline`) — vedi il corpo della funzione.
  *   - `round:close`  — CONSOLIDA: elimina i profili attivi senza pick
@@ -191,12 +192,6 @@ export interface RoundOpenResult {
   deadline: string;
   /** Profili attivi notificati con l'email pick. */
   notified: number;
-  /**
-   * Registrati alla piattaforma SENZA profilo notificati all'apertura del
-   * TT 1 (amendment RF-P6, 2026-08-21): 0 per i round successivi o senza
-   * registry nel contesto.
-   */
-  registeredNotified: number;
 }
 
 /** Esito di `round:close`. */
@@ -423,14 +418,11 @@ export async function openRound(ctx: GameContext, round: number): Promise<RoundO
   const emailMatches = toEmailMatches(matches);
 
   // Email pick ai profili attivi: solo squadre disponibili del profilo
-  // (decisione 12). Le email dei profili attivi finiscono in un Set
-  // normalizzato lowercase: serve da dedup per il blocco RF-P6 che segue
-  // (un iscritto con profilo non deve ricevere una seconda email).
+  // (decisione 12). ADR-019: SOLO i partecipanti (profili) ricevono la mail
+  // pick — nessuna eccezione TT1 per gli account senza profilo (vedi sotto).
   const active = getActiveProfiles(db);
-  const notifiedEmails = new Set<string>();
   let notified = 0;
   for (const profile of active) {
-    notifiedEmails.add(profile.email.toLowerCase());
     const availableTeams = await getAvailableTeams(db, dataProvider, profile.id, round);
     const sent = await notify(ctx, profile.email, {
       type: 'pick_instructions',
@@ -451,47 +443,15 @@ export async function openRound(ctx: GameContext, round: number): Promise<RoundO
     if (sent) notified += 1;
   }
 
-  // Amendment RF-P6 (decisione 2026-08-21): all'apertura del SOLO TT 1
-  // l'email pick_instructions va anche agli account piattaforma `active`
-  // che NON hanno ancora un profilo (i profili nascono con l'auto-join al
-  // primo pick, RF-P5): senza questo blocco un iscritto senza profilo non
-  // verrebbe MAI informato dell'apertura del round 1 (UAT del 21/08). Dal
-  // round 2 in poi il blocco è saltato (tt !== 1): i partecipanti sono
-  // già profili e il loop qui sopra li copre. Le squadre in giornata sono
-  // calcolate UNA volta per l'intero blocco (stessa fonte di
-  // getAvailableTeams, ma senza profilo non esistono bruciate) e ordinate
-  // come getTeams() per output deterministico. ADR-011 (RF-P1): il nome
-  // arriva dall'account piattaforma (`account.name ?? email` — un
-  // registrato senza nome usa l'email). Il filtro sullo stato `active`
-  // resta dentro `notify` (isAccountActive, fail-closed); senza registry
-  // iniettato (ctx.platform undefined, es. simulazione o chiamante senza
-  // registry) il blocco è saltato: nessun crash, coerenza col test "senza
-  // registry → nessuna email". Senza channel/generator `notify` è no-op e
-  // il conteggio resta 0.
-  let registeredNotified = 0;
-  if (tt === 1 && ctx.platform !== undefined) {
-    const inRound = new Set(matches.flatMap((m) => [m.homeTeam, m.awayTeam]));
-    const inRoundTeams = (await dataProvider.getTeams()).filter((team) => inRound.has(team));
-    for (const email of ctx.platform.activeEmails()) {
-      // Dedup: l'account ha già ricevuto la mail del loop profili.
-      if (notifiedEmails.has(email.toLowerCase())) continue;
-      const account = ctx.platform.find(email);
-      const sent = await notify(ctx, email, {
-        type: 'pick_instructions',
-        playerName: account?.name ?? email,
-        round: tt,
-        championshipRound: tc,
-        roundStart: kickoff,
-        deadline,
-        deadlineRemaining: formatRemaining(now, deadline),
-        availableTeams: inRoundTeams,
-        matches: emailMatches
-      });
-      if (sent) registeredNotified += 1;
-    }
-  }
+  // Amendment RF-P6 (decisione 2026-08-21) RIMOSSO (ADR-019): all'apertura del
+  // TT 1 l'email `pick_instructions` va SOLO ai partecipanti (profili) — gli
+  // account `active` senza profilo NON ricevono più la mail di pick, perché
+  // la nascita dei profili non avviene più per auto-join al primo pick (RF-P5):
+  // chi vuole partecipare dichiara (PARTECIPO/tournament:join) e l'auto-join
+  // a `tournament:start` copre gli account con flag ON. L'annuncio di
+  // partecipazione è `tournament_open` (D9), non `pick_instructions`.
 
-  return { round, tt, tc, status: 'open', deadline: deadline.toISOString(), notified, registeredNotified };
+  return { round, tt, tc, status: 'open', deadline: deadline.toISOString(), notified };
 }
 
 /**

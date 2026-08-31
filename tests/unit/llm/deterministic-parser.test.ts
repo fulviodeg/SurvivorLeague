@@ -84,9 +84,39 @@ describe('DeterministicIntentClassifier — subscribe (ISCRIZIONE [NOME])', () =
   });
 
   it('formule libere NON riconosciute → other', async () => {
-    for (const body of ['voglio iscrivermi', 'mi iscrivo', 'partecipo', 'vorrei giocare']) {
+    for (const body of ['voglio iscrivermi', 'mi iscrivo', 'vorrei giocare']) {
       expect(await classify(body), body).toMatchObject({ intent: 'other', name: null });
     }
+  });
+});
+
+describe('DeterministicIntentClassifier — join (PARTECIPO, ADR-019)', () => {
+  it('formula nel corpo → join (partecipazione, NON subscribe)', async () => {
+    expect(await classify('PARTECIPO')).toMatchObject({ intent: 'join', pick: null, name: null });
+  });
+
+  it('formula nel subject (corpo vuoto)', async () => {
+    expect(await classify('', { subject: 'partecipo' })).toMatchObject({
+      intent: 'join',
+      pick: null,
+      name: null
+    });
+  });
+
+  it('"partecipo" NON è più subscribe (ADR-019, registration ≠ join)', async () => {
+    expect(await classify('partecipo')).toMatchObject({ intent: 'join', name: null });
+  });
+
+  it('case-insensibile e con contesto ("io PARTECIPO al torneo")', async () => {
+    expect(await classify('io PARTECIPO al torneo')).toMatchObject({
+      intent: 'join',
+      pick: null,
+      name: null
+    });
+  });
+
+  it('"partecipazione" NON contiene la formula esatta "partecipo"', async () => {
+    expect(await classify('voglio la partecipazione')).toMatchObject({ intent: 'other' });
   });
 });
 
