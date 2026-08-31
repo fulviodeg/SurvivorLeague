@@ -302,7 +302,7 @@ async function notify(ctx: GameContext, to: string, emailCtx: EmailContext): Pro
   if (ctx.channel === undefined || ctx.generator === undefined) return false;
   if (!isAccountActive(ctx, to)) return false;
   const body = await ctx.generator.generate(emailCtx);
-  await ctx.channel.sendMessage(to, body, subjectFor(emailCtx));
+  await ctx.channel.sendMessage(to, body, subjectFor(emailCtx, ctx.config.testMode));
   return true;
 }
 

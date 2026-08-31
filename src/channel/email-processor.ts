@@ -205,7 +205,7 @@ async function sendReply(
     throw new Error('channel:email:process richiede channel e generator nel contesto');
   }
   const body = await ctx.generator.generate(emailCtx);
-  await ctx.channel.sendMessage(to, body, subjectFor(emailCtx));
+  await ctx.channel.sendMessage(to, body, subjectFor(emailCtx, ctx.config.testMode));
 }
 
 /**

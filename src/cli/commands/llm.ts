@@ -349,7 +349,7 @@ export const llmGenerateCommand: CommandModule<object, GenerateArgs> = {
         )
       : new DeterministicGenerator(config.TIMEZONE, modeFor(config.WIN_ONLY, config.JOLLIES_PER_PLAYER));
     const body = await generator.generate(emailCtx);
-    const subject = subjectFor(emailCtx);
+    const subject = subjectFor(emailCtx, config.testMode);
     if (argv.json) {
       console.log(jsonWithTestMode(config, { subject, body }));
     } else {

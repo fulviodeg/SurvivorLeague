@@ -471,7 +471,7 @@ describe('channel:email:process — pick (RF-P4; senza profilo → join, ADR-019
     const stored = db.prepare('SELECT team, outcome, status FROM pick').get();
     expect(stored).toMatchObject({ team: JU, outcome: 'win', status: 'pending' });
     expect(generator.contexts[0]).toMatchObject({ type: 'pick_confirmed', round: 1, championshipRound: 1, deadline: new Date('2026-09-12T15:30:00.000Z') });
-    expect(channel.sent[0]?.subject).toBe('⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 1 di Campionato - Pick Registrato');
+    expect(channel.sent[0]?.subject).toBe('⚽🏆SURVIVOR LEAGUE🏆⚽ - Pick Registrato');
     expect(result.messages[0]).toMatchObject({ action: 'pick_registered', seen: true });
     expect(seen).toEqual(['1']);
   });
@@ -701,7 +701,7 @@ describe('channel:email:process — other, unknown, gate round (ADR-009)', () =>
     // (soggetto "Non Ho Capito", CTA con formula iscrizione col nome) con
     // turno di campionato e box deadline del round aperto.
     expect(channel.sent[0]?.subject).toBe(
-      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 1 di Campionato - Non Ho Capito'
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Non Ho Capito'
     );
     expect(generator.contexts[0]).toMatchObject({
       type: 'clarification',

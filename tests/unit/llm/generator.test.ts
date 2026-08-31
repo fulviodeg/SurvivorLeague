@@ -5,11 +5,12 @@
  * HTTP mockato (fetch iniettato, LLD §8). Coprono: un contract test per OGNI
  * tipo di email (17, inclusa `clarification` e `tournament_closed`): corpo = renderer deterministico
  * (header con coppia umana, box, CTA) + narrativa LLM; soggetto `subjectFor`
- * in forma "⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - etichetta"
- * (RF-25/D1, mai sigle TT/TC, il subject porta il SOLO turno di campionato);
+ * in forma "{brand} - etichetta" (RF-25/D1, mai sigle TT/TC, il soggetto porta
+ * la SOLA etichetta — il turno è nel corpo; testMode=true → brand con
+ * prefisso "🚧⚠️TEST MODE⚠️🚧 - ");
  * template senza numeri di turno letterali (D4/ADR-004: mai nel prompt);
- * soggetto neutro per le mail di esito (convenzione 4); TC assente → soggetto
- * senza prefisso di turno; priorità di `ctx.subject`; date it-IT nel fuso
+ * soggetto neutro per le mail di esito (convenzione 4); soggetto senza turno
+ * anche con TC noto; priorità di `ctx.subject`; date it-IT nel fuso
  * iniettato (D9/ADR-011); LLMError propagata (D3).
  */
 import { describe, expect, it, vi } from 'vitest';
@@ -93,10 +94,11 @@ describe('LLM Generator v2 — contract test per ogni tipo (ADR-011)', () => {
       expect(body).toContain('Ciao Aldo!');
       expect(body).not.toContain('TT 2');
       expect(body).not.toContain('TC 7');
-      // D1: soggetto in forma umana (mai TT2TC7).
-      expect(subject).toMatch(/^⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 7 di Campionato - .+$/);
+      // D1: soggetto = brand + sola etichetta (mai numeri di turno, mai TT2TC7).
+      expect(subject).toMatch(/^⚽🏆SURVIVOR LEAGUE🏆⚽ - .+$/);
       expect(subject).not.toContain('TT2TC7');
       expect(subject).not.toContain('Round 2');
+      expect(subject).not.toContain('Turno 7');
 
       // Il prompt (system/user) NON contiene numeri di turno (D4/ADR-004).
       const prompt = requests[0]?.system ?? '';
@@ -118,28 +120,29 @@ describe('LLM Generator v2 — contract test per ogni tipo (ADR-011)', () => {
     }
   });
 
-  it('soggetti NEUTRI per le mail di esito round (convenzione 4)', () => {
+  it('soggetti NEUTRI per le mail di esito round (convenzione 4), senza turno', () => {
     const pair = { round: 2, championshipRound: 7 };
     expect(subjectFor({ type: 'round_closed_survived', ...pair })).toBe(
-      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 7 di Campionato - Riepilogo Round'
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Riepilogo Round'
     );
     expect(subjectFor({ type: 'round_result_correct', ...pair })).toBe(
-      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 7 di Campionato - Esito Round'
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Esito Round'
     );
     expect(subjectFor({ type: 'round_result_wrong', ...pair })).toBe(
-      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 7 di Campionato - Esito Round'
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Esito Round'
     );
     expect(subjectFor({ type: 'pick_missing_elimination', ...pair })).toBe(
-      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 7 di Campionato - Esito Round'
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Esito Round'
     );
   });
 
-  it('senza TC il soggetto non ha prefisso di turno (D1)', () => {
-    expect(subjectFor({ type: 'pick_instructions' })).toBe(
+  it('il soggetto porta la SOLA etichetta: nessun turno di campionato (il turno è nel corpo)', () => {
+    const pair = { round: 3, championshipRound: 5 };
+    expect(subjectFor({ type: 'pick_instructions', ...pair })).toBe(
       '⚽🏆SURVIVOR LEAGUE🏆⚽ - Round Aperto'
     );
     expect(subjectFor({ type: 'clarification' })).toBe('⚽🏆SURVIVOR LEAGUE🏆⚽ - Non Ho Capito');
-    // ADR-015 email v4: la mail di chiusura torneo NON porta il turno.
+    // ADR-015 email v4: la mail di chiusura torneo non porta il turno.
     expect(subjectFor({ type: 'tournament_closed' })).toBe(
       '⚽🏆SURVIVOR LEAGUE🏆⚽ - Chiusura Torneo'
     );
@@ -157,13 +160,27 @@ describe('LLM Generator v2 — contract test per ogni tipo (ADR-011)', () => {
     );
   });
 
-  it('tournament_won/tournament_shared_win includono il turno quando TC noto (D1)', () => {
+  it('tournament_won/tournament_shared_win → sola etichetta anche con TC noto', () => {
     const pair = { round: 3, championshipRound: 5 };
     expect(subjectFor({ type: 'tournament_won', ...pair })).toBe(
-      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 5 di Campionato - Hai Vinto'
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Hai Vinto'
     );
     expect(subjectFor({ type: 'tournament_shared_win', ...pair })).toBe(
-      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 5 di Campionato - Vittoria Condivisa'
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Vittoria Condivisa'
+    );
+  });
+
+  it('testMode=true → brand preceduto da "🚧⚠️TEST MODE⚠️🚧 - "', () => {
+    const pair = { round: 3, championshipRound: 5 };
+    expect(subjectFor({ type: 'pick_instructions', ...pair }, true)).toBe(
+      '🚧⚠️TEST MODE⚠️🚧 - ⚽🏆SURVIVOR LEAGUE🏆⚽ - Round Aperto'
+    );
+    expect(subjectFor({ type: 'pick_rejected', ...pair }, true)).toBe(
+      '🚧⚠️TEST MODE⚠️🚧 - ⚽🏆SURVIVOR LEAGUE🏆⚽ - Pick Rifiutato'
+    );
+    // In produzione (default) il brand resta senza prefisso TEST MODE.
+    expect(subjectFor({ type: 'pick_instructions', ...pair })).toBe(
+      '⚽🏆SURVIVOR LEAGUE🏆⚽ - Round Aperto'
     );
   });
 

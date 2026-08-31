@@ -14,11 +14,12 @@
  *  Questo file definisce:
  *   - i TIPI condivisi (`EmailType`, `EmailContext`, `LLMGenerator`), usati
  *     dal Game Engine e mockati nei suoi test;
- *   - l'helper puro `subjectFor(ctx)` (D1): soggetto deterministico in forma
- *     "⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - etichetta" (TC
- *     assente → senza prefisso di turno; il subject porta il SOLO turno di
- *     campionato, la coppia TT/TC resta nel corpo). MAI dall'LLM, MAI sigle
- *     TT/TC (RF-25, convenzione 1/4 approvata: soggetti neutri per gli esiti);
+ *   - l'helper puro `subjectFor(ctx, testMode)` (D1): soggetto deterministico
+ *     in forma "{brand} - {etichetta}"; in TEST MODE il brand è preceduto da
+ *     "🚧⚠️TEST MODE⚠️🚧 - ". Il subject porta la SOLA etichetta del tipo: il
+ *     turno di campionato NON appare (il numero è già nel corpo, coppia
+ *     TT/TC del renderer). MAI dall'LLM, MAI sigle TT/TC (RF-25, convenzione
+ *     1/4 approvata: soggetti neutri per gli esiti);
  *   - la guardia anti-degenerazione `deterministicNarrative` (+ costante
  *     `MAX_NARRATIVE_CHARS`): l'output LLM è validato (lunghezza, non vuoto)
  *     e, se degenerato/vuoto, sostituito dalla narrativa deterministica per
@@ -260,21 +261,21 @@ const SUBJECT_LABELS: Record<EmailType, string> = {
 };
 
 /**
- * Compone il soggetto dell'email in modo DETERMINISTICO (D1, RF-25) in forma
- * "⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - {etichetta}"; TC
- * assente → "⚽🏆SURVIVOR LEAGUE🏆⚽ - {etichetta}". Il subject porta il SOLO
- * turno di campionato (TC): la coppia "Round N · Turno di campionato M" resta
- * nel corpo (renderer). Mai dall'LLM, mai numeri inventati. `ctx.subject`
- * esplicito ha priorità.
+ * Compone il soggetto dell'email in modo DETERMINISTICO (D1) in forma
+ * "{brand} - {etichetta}": brand = "⚽🏆SURVIVOR LEAGUE🏆⚽" in produzione;
+ * con `testMode=true` il brand è preceduto da "🚧⚠️TEST MODE⚠️🚧 - " (mai
+ * confondere una mail di test con una reale). Il soggetto porta la SOLA
+ * etichetta del tipo: il turno di campionato NON appare (il numero è già nel
+ * corpo, header "Round del torneo N · Turno di Campionato M"). Mai dall'LLM,
+ * mai numeri inventati. `ctx.subject` esplicito ha priorità.
  */
-export function subjectFor(ctx: EmailContext): string {
+export function subjectFor(ctx: EmailContext, testMode = false): string {
   if (ctx.subject !== undefined && ctx.subject.trim() !== '') return ctx.subject;
   const label = SUBJECT_LABELS[ctx.type];
-  const turno =
-    ctx.championshipRound !== undefined
-      ? `Turno ${ctx.championshipRound} di Campionato - `
-      : '';
-  return `⚽🏆SURVIVOR LEAGUE🏆⚽ - ${turno}${label}`;
+  const brand = testMode
+    ? '🚧⚠️TEST MODE⚠️🚧 - ⚽🏆SURVIVOR LEAGUE🏆⚽'
+    : '⚽🏆SURVIVOR LEAGUE🏆⚽';
+  return `${brand} - ${label}`;
 }
 
 /**

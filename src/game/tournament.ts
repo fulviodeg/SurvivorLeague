@@ -396,7 +396,7 @@ export async function startTournament(
       await ctx.channel.sendMessage(
         account.email,
         body,
-        subjectFor({ type: 'tournament_open', platformCount: activeAccounts.length })
+        subjectFor({ type: 'tournament_open', platformCount: activeAccounts.length }, ctx.config.testMode)
       );
       notified += 1;
     }
