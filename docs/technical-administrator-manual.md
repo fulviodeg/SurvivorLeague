@@ -1135,7 +1135,7 @@ The domain terms used throughout the system's output, kept in Italian:
 | **`win_only` (modalità)** | The default game mode (`WIN_ONLY=true`) where a Pick is just the team that will win: the system stores `outcome = win`, so a win keeps the profile in and a draw/loss eliminates it. |
 | **TC — Turno di Campionato** | The championship matchday (the real round number of the season). |
 | **TT — Turno del Torneo** | The tournament round; `TT = TC − start_round + 1`. |
-| **TTnTCm** | The compact double numbering of a turn (e.g. `TT2TC7`), used in the CLI and logs. In emails the body carries the extended form "Round del torneo N · Turno di Campionato M" and the subject only the championship round "Turno {TC} di Campionato". |
+| **TTnTCm** | The compact double numbering of a turn (e.g. `TT2TC7`), used in the CLI and logs. In emails the body carries the extended form "Round del torneo N · Turno di Campionato M"; the subject carries no turn at all, only the type label (in TEST MODE the brand is prefixed with `🚧⚠️TEST MODE⚠️🚧 - `). |
 | **Girone / andata / ritorno** | Half-season (first leg / second leg); the team pool resets at the boundary `floor(N/2)+1`. |
 | **Bruciata (team)** | A team already used by a profile in the current girone — no longer pickable. |
 | **Finestra di Pick** | The pick window: from the round opening to the deadline. |

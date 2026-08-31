@@ -326,6 +326,8 @@
 
 **Conseguenze.** L'output email è deterministico e riproducibile di default (zero dipendenza dall'LLM per l'invio, R1 mitigato); il subject porta il solo TC; il corpo è plain-text a righe senza riquadri; il separatore di brand unifica invio e taglio della citazione. `AI_EMAIL_GENERATOR` è un parametro di configurazione letto a ogni invocazione (nessun daemon da riavviare). I test del renderer asseriscono gli output esatti dei 16 template; `DeterministicGenerator`/`FallbackGenerator` sono coperti da test unitari dedicati.
 
+**Emendamento 2026-08-31 (richiesta PO, working tree `vaulted-night`).** La decisione 1 è rivista sul formato del soggetto: `subjectFor(ctx, testMode = false)` diventa `{brand} - {etichetta}` — rimosso `Turno {TC} di Campionato` in ENTRAMBE le modalità (il numero di turno è già nel corpo, header "Round del torneo N · Turno di Campionato M") e, con `TEST_MODE=true`, il brand è preceduto da `🚧⚠️TEST MODE⚠️🚧 - ` (mai confondere una mail di test con una reale). `ctx.subject` esplicito continua ad avere priorità; nessuna modifica a corpo, etichette o convenzione 4.
+
 ---
 
 ## ADR-014: Email v3 Parte B — Parser deterministico dell'input con interruttore

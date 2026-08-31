@@ -759,7 +759,7 @@ interface LLMGenerator {
 
 > **Coppia umana (ADR-011, emendata ADR-015):** `round`/`championshipRound` sono i numeri di torneo/campionato iniettati dal Game Engine (ADR-008). **Nessun numero di turno entra nel prompt** (ADR-004, D4): la coppia è scritta dal renderer in forma umana "Round del torneo N · Turno di Campionato M" (label dedicate `roundHeaderLabel`/`championshipHeaderLabel`; il box bruciate resta "(Round N)"); le forme compatte TT2TC7 restano SOLO per log/CLI (src/game/turn.ts, invariato).
 >
-> **Soggetto (D1, emendato ADR-013/ADR-015):** composto DETERMINISTICAMENTE dal chiamante con l'helper `subjectFor(ctx)` — forma `⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - {etichetta}` (TC assente → `⚽🏆SURVIVOR LEAGUE🏆⚽ - {etichetta}`); il soggetto porta il SOLO turno di campionato, la coppia "Round del torneo N · Turno di Campionato M" resta nel corpo. Etichette iper-condensate e NEUTRE per gli esiti ("Esito Round", convenzione 4); `tournament_closed` non porta il turno ("Chiusura Torneo"); mai dall'LLM, mai numeri inventati. `ctx.subject` permette a un chiamante di fornire un oggetto esplicito (priorità).
+> **Soggetto (D1, emendato ADR-013/ADR-015 e 2026-08-31):** composto DETERMINISTICAMENTE dal chiamante con l'helper `subjectFor(ctx, testMode)` — forma `{brand} - {etichetta}`: il brand è `⚽🏆SURVIVOR LEAGUE🏆⚽` in produzione e `🚧⚠️TEST MODE⚠️🚧 - ⚽🏆SURVIVOR LEAGUE🏆⚽` con `TEST_MODE=true` (mai confondere una mail di test con una reale). Il soggetto porta la SOLA etichetta del tipo (nessun turno: la coppia "Round del torneo N · Turno di Campionato M" sta nel corpo). Etichette iper-condensate e NEUTRE per gli esiti ("Esito Round", convenzione 4); mai dall'LLM, mai numeri inventati. `ctx.subject` permette a un chiamante di fornire un oggetto esplicito (priorità).
 >
 > **Formato date nei testi (D9/ADR-011):** le date sono istanti UTC; i testi email le mostrano con `formatItDate(date, timeZone)` nel FUSO DI SISTEMA (`TIMEZONE`, default Europe/Rome, validato al boot) — fuso esplicito = determinismo (RNF1). Il fuso conta SOLO nella comunicazione verso l'esterno (email e log): le decisioni di gioco restano su UTC.
 >
@@ -983,11 +983,12 @@ npm run cli -- llm:classify --input <json> [--mode <llm|deterministic>]
                                                # <TEAM> <ESITO>); output JSON {intent: subscribe|unsubscribe|join|pick|other, pick, name}
                                                # --mode forza llm o deterministic (default = AI_EMAIL_PARSER)
 npm run cli -- llm:generate --type <email-type> [--player-name <name>] [--tt <n>] [--tc <n>] [--team <name>] [--outcome <outcome>] [--reason <text>] [--deadline <datetime>] [--available-teams <comma,sep>] [--mode <llm|deterministic>]
-                                               # Genera email da contesto strutturato. Output: SOGGETTO
-                                               # (subjectFor: "⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno {TC} di Campionato - {etichetta}",
-                                               # ADR-013) + corpo renderizzato (header/sezioni/CTA deterministici
-                                               # attorno alla narrativa, date nel TIMEZONE di sistema). --mode
-                                               # forza llm o deterministic (default = AI_EMAIL_GENERATOR)
+                                                # Genera email da contesto strutturato. Output: SOGGETTO
+                                                # (subjectFor: "{brand} - {etichetta}"; brand = "⚽🏆SURVIVOR LEAGUE🏆⚽"
+                                                # o, in TEST MODE, "🚧⚠️TEST MODE⚠️🚧 - ⚽🏆SURVIVOR LEAGUE🏆⚽";
+                                                # ADR-013) + corpo renderizzato (header/sezioni/CTA deterministici
+                                                # attorno alla narrativa, date nel TIMEZONE di sistema). --mode
+                                                # forza llm o deterministic (default = AI_EMAIL_GENERATOR)
 ```
 
 ### 7.9 Channel Adapter
