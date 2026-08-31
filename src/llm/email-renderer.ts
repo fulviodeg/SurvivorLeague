@@ -36,15 +36,16 @@
  *     stato con noi!", mai riferimenti a canali inesistenti).
  *
  * Ordine dei blocchi (email v3 + v4; deadline in CODA per richiesta PO):
- * header → saluto → esito → messaggio chiave → narrativa →
- * partite/risultati → elenco giocatori (solo `round_closed_survived`/
- * `tournament_closed`) → squadre già usate → stato → storico torneo (solo
- * `tournament_closed`) → co-vincitori (solo `tournament_shared_win`) → CTA →
- * iscritti piattaforma → chiusura eliminato → deadline (ultima, solo mail con
- * pick). Blocchi con dati assenti OMESSI; narrativa vuota → blocco omesso
- * (mai testo inventato).
+ * header → saluto → esito → messaggio chiave → righe motivo (solo
+ * `pick_rejected`, in italiano) → narrativa → partite/risultati → elenco
+ * giocatori (solo `round_closed_survived`/`tournament_closed`) → squadre già
+ * usate (`pick_instructions` e `pick_rejected`) → stato → storico torneo
+ * (solo `tournament_closed`) → co-vincitori (solo `tournament_shared_win`) →
+ * CTA → iscritti piattaforma → chiusura eliminato → deadline (ultima, solo
+ * mail con pick). Blocchi con dati assenti OMESSI; narrativa vuota → blocco
+ * omesso (mai testo inventato).
  */
-import { formatItDate } from './templates.js';
+import { formatItDate, pickRejectReasonLines } from './templates.js';
 import { championshipHeaderLabel, roundHeaderLabel, roundLabel } from '../game/turn.js';
 import type { GameMode } from '../game/mode.js';
 import type { EmailContext, EmailPlayerResult, EmailType } from './generator.js';
@@ -173,7 +174,11 @@ function keyMessage(ctx: EmailContext, mode: GameMode): string | null {
     case 'pick_confirmed':
       return pickConfirmedKey(ctx, mode);
     case 'pick_rejected':
-      return `PICK NON REGISTRATO: ${ctx.reason ?? ''}`;
+      // Chiave fissa con emoji di attenzione: il MOTIVO non è più nella
+      // chiave — la spiegazione specifica in italiano (mappa
+      // `PICK_REJECT_REASON_LINES`, mai codici) è una riga separata nel blocco
+      // messaggio, composta da `rejectReasonLines` sotto.
+      return '⚠️ PICK NON REGISTRATO';
     case 'pick_auto_assigned':
       // Feature AUTOPICK (D8): conferma a posteriori, squadra in MAIUSCOLO
       // (come pick_confirmed). Nessuna sezione deadline/countdown (post-deadline).
@@ -240,9 +245,26 @@ function deadlineSection(ctx: EmailContext, timeZone: string): string | null {
   return `⏰ DEADLINE PICK\n${line}`;
 }
 
+/**
+ * Righe motivo per `pick_rejected` (sotto il messaggio chiave): codici della
+ * cascata → testo italiano con emoji dalla mappa `PICK_REJECT_REASON_LINES`
+ * (mai codici né inglese al giocatore); testo libero (già italiano, composto
+ * dal processor) → verbatim. Motivo assente → nessuna riga.
+ */
+function rejectReasonLines(ctx: EmailContext): string[] {
+  if (ctx.reason === undefined || ctx.reason === '') return [];
+  const mapped = pickRejectReasonLines(ctx.reason, ctx.team);
+  if (mapped === null) return [ctx.reason];
+  return mapped;
+}
+
 /** Sezione squadre già usate (email v3): squadra + round di utilizzo "(Round N)". */
 function burnedSection(ctx: EmailContext): string | null {
-  if (ctx.type !== 'pick_instructions' || ctx.burnedTeams === undefined || ctx.burnedTeams.length === 0) {
+  if (
+    (ctx.type !== 'pick_instructions' && ctx.type !== 'pick_rejected') ||
+    ctx.burnedTeams === undefined ||
+    ctx.burnedTeams.length === 0
+  ) {
     return null;
   }
   return `🔒 SQUADRE GIÀ USATE\n${ctx.burnedTeams
@@ -472,6 +494,9 @@ export function renderEmailV2(ctx: EmailContext, narrative: string, timeZone: st
   const message: string[] = [];
   const key = keyMessage(ctx, mode);
   if (key !== null) message.push(key);
+  // Riga/e motivo del rifiuto pick (solo `pick_rejected`): subito sotto il
+  // messaggio chiave, prima della narrativa (mai codici al giocatore).
+  if (ctx.type === 'pick_rejected') message.push(...rejectReasonLines(ctx));
   const trimmedNarrative = narrative.trim();
   if (trimmedNarrative !== '') message.push(trimmedNarrative);
   if (message.length > 0) {

@@ -10,15 +10,21 @@
  *   1. registrazione/attivo  → profile_not_registered | profile_eliminated
  *   2. squadra canonica      → unknown_team (check esatto post-parse, CL5)
  *   3. squadra nel TC        → team_not_in_round (CL4)
- *   4. non bruciata nel girone → team_already_used (RF-10/CS5)
- *   5. esito valido          → invalid_outcome (win|draw|lose)
- *   6. non già pick          → pick_already_exists (CL6, RF-08)
+ *   4. non già pick          → pick_already_exists (CL6, RF-08) — invariante
+ *      PRIMARIO: se il round è già coperto da un pick, qualunque nuovo invio
+ *      è un duplicato a prescindere dalla squadra
+ *   5. non bruciata nel girone → team_already_used (RF-10/CS5) — solo per
+ *      squadre bruciate in round PRECEDENTI (senza pick nel round corrente)
+ *   6. esito valido          → invalid_outcome (win|draw|lose)
  *   6bis. jolly (feature JOLLY, D5) → jolly_not_allowed (jolly in modalità
  *                                classica, difensivo) | no_jollies_left
  *                                (contatore per-profilo esaurito) — DOPO
  *                                pick_already_exists e PRIMA dei check temporali
- *   7. accettazione temporale → round_not_open (CL3) | after_acceptance (CS4)
- *                            | after_kickoff (guard anti-frode RF-31, CL17/CL18)
+ *   7. accettazione temporale → round_not_open (CL3)
+ *                            | pick_before_round_open (receivedAt < opened_at:
+ *                              email residua pre-apertura, UAT 2026-08-31)
+ *                            | after_acceptance (CS4) | after_kickoff
+ *                              (guard anti-frode RF-31, CL17/CL18)
  *
  * Guard anti-frode RF-31 (briefing §1-B/§3.3): il Processor riceve ENTRAMBE le
  * sorgenti temporali — `round_state.deadline` (fissa, RF-14) e il kickoff
@@ -28,8 +34,9 @@
  * guard prevale su RF-14 (CL18). Non esiste un singolo "deadline" derivato.
  *
  * Override US10 (briefing §1-G/§3.4): `opts.reason` bypassa SOLO i check
- * temporali (after_acceptance/after_kickoff); squadra bruciata, squadra non in
- * giornata, esito errato e pick già esistente restano SEMPRE attivi.
+ * temporali (pick_before_round_open/after_acceptance/after_kickoff); squadra
+ * bruciata, squadra non in giornata, esito errato e pick già esistente
+ * restano SEMPRE attivi.
  *
  * Atomicità al write (CS2/CL6/RNF2): il vincolo UNIQUE(profile_id, round)
  * dell'DB è il livello di scrittura — su violazione (invii concorrenti) il
@@ -72,7 +79,8 @@ export interface PickInput {
 export interface PickRegisterOptions {
   /**
    * Motivo auditato dell'override del commissioner (obbligatorio fuori
-   * accettazione); bypassa SOLO after_acceptance/after_kickoff.
+   * accettazione); bypassa SOLO i check temporali
+   * (pick_before_round_open/after_acceptance/after_kickoff).
    */
   reason?: string;
 }
@@ -122,27 +130,35 @@ export async function validatePick(
   const inRound = matches.some((m) => m.homeTeam === input.team || m.awayTeam === input.team);
   if (!inRound) return { valid: false, reason: 'team_not_in_round' };
 
-  // 4. Non bruciata nel girone di `round` (RF-10/CS5; i frozen contano, LLD §1.1).
+  // 4. Non esiste già un pick per profilo+round (RF-08). Invariante PRIMARIO
+  // (riordino UAT 2026-08-31): se il round è già coperto da un pick, qualunque
+  // nuovo invio è un DUPLICATO a prescindere dalla squadra — prima del check
+  // delle bruciate, così un re-invio dello stesso pick non produce il motivo
+  // fuorviante `team_already_used` (isBurned include il round corrente). Il
+  // vincolo è anche al write (CS2/CL6): qui il controllo è per la
+  // cascata/messaggio.
+  const existing = db
+    .prepare('SELECT id FROM pick WHERE profile_id = ? AND round = ?')
+    .get(input.profileId, input.round);
+  if (existing !== undefined) {
+    return { valid: false, reason: 'pick_already_exists' };
+  }
+
+  // 5. Non bruciata nel girone di `round` (RF-10/CS5; i frozen contano, LLD
+  // §1.1). Dopo il riordino scatta SOLO per squadre bruciate in round
+  // PRECEDENTI (senza pick nel round corrente): il duplicato è già coperto
+  // dal passo 4.
   if (isBurned(db, input.profileId, input.team, input.round, totalRounds)) {
     return { valid: false, reason: 'team_already_used' };
   }
 
-  // 5. Esito valido (fuori win|draw|lose → rifiuto). ADR-016: in win_only
+  // 6. Esito valido (fuori win|draw|lose → rifiuto). ADR-016: in win_only
   // l'unico esito valido è 'win' (il pick è "squadra vincente"); draw/lose
   // sono rifiutati con invalid_outcome (difesa in profondità — in win_only il
   // parser emette già solo 'win', decisione 5 del piano).
   const validOutcomes = config.WIN_ONLY ? (['win'] as const) : VALID_OUTCOMES;
   if (!(validOutcomes as readonly string[]).includes(input.outcome)) {
     return { valid: false, reason: 'invalid_outcome' };
-  }
-
-  // 6. Non esiste già un pick per profilo+round (RF-08). Il vincolo è anche al
-  // write (CS2/CL6): qui il controllo è solo per la cascata/messaggio.
-  const existing = db
-    .prepare('SELECT id FROM pick WHERE profile_id = ? AND round = ?')
-    .get(input.profileId, input.round);
-  if (existing !== undefined) {
-    return { valid: false, reason: 'pick_already_exists' };
   }
 
   // 6bis. Feature JOLLY (D5): DOPO pick_already_exists e PRIMA dei check
@@ -163,8 +179,12 @@ export async function validatePick(
 
 /**
  * Accettazione temporale (passo 7 della cascata): round_state aperto, poi
- * receivedAt <= min(deadline registrata ?? +∞, kickoff effettivo ?? +∞).
- * Rifiuti: round_not_open (CL3), after_acceptance (CS4), after_kickoff (RF-31).
+ * receivedAt >= opened_at (guardia anti-residui: un'email RICEVUTA prima
+ * dell'apertura del round è un residuo di un run precedente, mai un pick
+ * legittimo — UAT 2026-08-31), poi receivedAt <= min(deadline registrata ??
+ * +∞, kickoff effettivo ?? +∞). Rifiuti: round_not_open (CL3),
+ * pick_before_round_open (residuo pre-apertura), after_acceptance (CS4),
+ * after_kickoff (RF-31).
  */
 export async function checkAcceptance(
   ctx: GameContext,
@@ -173,10 +193,21 @@ export async function checkAcceptance(
   const { db, dataProvider } = ctx;
 
   const roundState = db
-    .prepare('SELECT status, deadline FROM round_state WHERE round = ?')
-    .get(input.round) as { status: string; deadline: string | null } | undefined;
+    .prepare('SELECT status, deadline, opened_at FROM round_state WHERE round = ?')
+    .get(input.round) as { status: string; deadline: string | null; opened_at: string | null } | undefined;
   if (roundState === undefined || roundState.status !== 'open') {
     return { valid: false, reason: 'round_not_open' };
+  }
+
+  // Guardia anti-residui (UAT 2026-08-31): un pick RICEVUTO prima
+  // dell'apertura del round (opened_at, scritto da round:open col clock
+  // iniettato) è un'email stantia di un run precedente rimasta non letta in
+  // casella — oggi verrebbe registrata come pick fantasma sul round corrente.
+  // I pick legittimi arrivano SEMPRE dopo opened_at (le istruzioni di pick
+  // partono con round:open, quindi un giocatore non può rispondere prima).
+  const openedAt = roundState.opened_at === null ? null : new Date(roundState.opened_at);
+  if (openedAt !== null && input.receivedAt.getTime() < openedAt.getTime()) {
+    return { valid: false, reason: 'pick_before_round_open' };
   }
 
   // Guard anti-frode RF-31: kickoff EFFETTIVO dai dati correnti (può anticipare
@@ -299,11 +330,16 @@ export async function registerPick(
 
 /**
  * L'override US10 con motivo bypassa SOLO i check temporali
- * (after_acceptance/after_kickoff); tutto il resto della cascata resta attivo.
+ * (pick_before_round_open/after_acceptance/after_kickoff); tutto il resto
+ * della cascata resta attivo.
  */
 function overrideAllows(reason: PickRejectReason | undefined, overrideReason?: string): boolean {
   if (overrideReason === undefined) return false;
-  return reason === 'after_acceptance' || reason === 'after_kickoff';
+  return (
+    reason === 'pick_before_round_open' ||
+    reason === 'after_acceptance' ||
+    reason === 'after_kickoff'
+  );
 }
 
 /** Rileva una violazione UNIQUE(profile_id, round) come motivo, mai crash. */

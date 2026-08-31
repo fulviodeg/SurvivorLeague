@@ -255,7 +255,7 @@ describe('channel:email:process — subscribe (RF-P1/P3, ADR-009)', () => {
 
     expect(generator.contexts[0]).toMatchObject({
       type: 'platform_already_registered',
-      reason: 'sei già iscritto alla piattaforma (email_already_registered)'
+      reason: 'sei già iscritto alla piattaforma'
     });
     expect(platform.list()).toHaveLength(1);
     expect(platform.find('a@test.it')?.status).toBe('active');
@@ -474,6 +474,37 @@ describe('channel:email:process — pick (RF-P4; senza profilo → join, ADR-019
     expect(channel.sent[0]?.subject).toBe('⚽🏆SURVIVOR LEAGUE🏆⚽ - Turno 1 di Campionato - Pick Registrato');
     expect(result.messages[0]).toMatchObject({ action: 'pick_registered', seen: true });
     expect(seen).toEqual(['1']);
+  });
+
+  it('pick con squadra già bruciata nel girone → pick_rejected team_already_used con lista bruciate (CS5)', async () => {
+    const { db, ctx, platform, generator, deps } = makeHarness();
+    // Due profili in gara: con UN solo profilo la chiusura del round 1
+    // chiuderebbe subito il torneo (caso 1 del Winner Engine).
+    const accountA = platform.register('a@test.it', null, T_OPEN);
+    db.prepare('INSERT INTO player (email, name, register_id) VALUES (?, ?, ?)').run('a@test.it', 'Aldo', accountA.registerId);
+    const pidA = db.prepare('INSERT INTO profile (player_id, register_id) VALUES ((SELECT id FROM player WHERE email = ?), ?)').run('a@test.it', accountA.registerId).lastInsertRowid as number;
+    const accountB = platform.register('b@test.it', null, T_OPEN);
+    db.prepare('INSERT INTO player (email, name, register_id) VALUES (?, ?, ?)').run('b@test.it', 'Bice', accountB.registerId);
+    const pidB = db.prepare('INSERT INTO profile (player_id, register_id) VALUES ((SELECT id FROM player WHERE email = ?), ?)').run('b@test.it', accountB.registerId).lastInsertRowid as number;
+    // IM bruciata per A nel girone di andata (pick al round 1); B ha un pick
+    // diverso. Entrambi sopravvivono alla chiusura del round 1.
+    db.prepare("INSERT INTO pick (profile_id, round, team, outcome, status) VALUES (?, 1, ?, 'win', 'pending')").run(pidA, IM);
+    db.prepare("INSERT INTO pick (profile_id, round, team, outcome, status) VALUES (?, 1, ?, 'win', 'pending')").run(pidB, JU);
+    // Passa al TT2: chiude il round 1 e apre il round 2.
+    await closeRound(ctx, 1);
+    await openRound(ctx, 2);
+    useClassifier(ctx, new Map([[`riprovo con la ${IM}`, pick(IM, 'win')]]));
+
+    await processEmailBatch(ctx, [incoming('a@test.it', `riprovo con la ${IM}`, T_PICK, '1')], deps());
+
+    // L'ultimo contesto generato è il rifiuto (openRound ha già notificato
+    // pick_instructions ai profili attivi).
+    expect(generator.contexts.at(-1)).toMatchObject({
+      type: 'pick_rejected',
+      reason: 'team_already_used',
+      team: IM,
+      burnedTeams: [{ team: IM, round: 1 }]
+    });
   });
 
   it('pick da active senza profilo nel TT1 → guida alla dichiarazione (join_rejected not_in_tournament, NESSUNA auto-join)', async () => {
@@ -772,8 +803,37 @@ describe('channel:email:process — other, unknown, gate round (ADR-009)', () =>
 
     expect(generator.contexts[0]).toMatchObject({
       type: 'pick_rejected',
-      reason: 'nessun turno è aperto in questo momento (round_not_open)'
+      reason: 'nessun turno è aperto in questo momento'
     });
+  });
+
+  it('email RESIDUA di un run precedente (receivedAt prima di opened_at) → pick_rejected, nessun pick registrato (UAT 2026-08-31)', async () => {
+    const { db, ctx, platform, generator, deps } = makeHarness();
+    const account = platform.register('a@test.it', null, T_OPEN);
+    db.prepare('INSERT INTO player (email, name, register_id) VALUES (?, ?, ?)').run('a@test.it', 'Aldo', account.registerId);
+    db.prepare('INSERT INTO profile (player_id, register_id) VALUES ((SELECT id FROM player WHERE email = ?), ?)').run('a@test.it', account.registerId);
+    useClassifier(ctx, new Map([[`vado di ${JU}`, pick(JU, 'win')]]));
+
+    // L'email è stata ricevuta PRIMA dell'apertura del round (14:41 vs
+    // opened_at 10:00 — il round è stato aperto nel NUOVO run): oggi verrebbe
+    // registrata come pick fantasma sul round corrente.
+    const residualAt = new Date('2026-09-12T09:30:00.000Z');
+    const result = await processEmailBatch(
+      ctx,
+      [incoming('a@test.it', `vado di ${JU}`, residualAt, '1')],
+      deps()
+    );
+
+    // `detail` = codice grezzo della cascata (contratto stabile); la mail è
+    // pick_rejected (le righe italiane sono del renderer, coperte dai test di
+    // unit) e NESSUN pick è stato registrato.
+    expect(result.messages[0]).toMatchObject({
+      action: 'pick_rejected',
+      detail: 'pick_before_round_open',
+      seen: true
+    });
+    expect(generator.contexts[0]).toMatchObject({ type: 'pick_rejected' });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM pick').get()).toEqual({ n: 0 });
   });
 
   it('subscribe SENZA round aperto → accettata (indipendente dai round, ADR-009)', async () => {
@@ -899,7 +959,7 @@ describe('channel:email:process — jolly (feature JOLLY, D4/D11)', () => {
     });
   });
 
-  it('jolly dichiarato con contatore a 0 → rifiuto "non hai più jolly disponibili"', async () => {
+  it('jolly dichiarato con contatore a 0 → rifiuto no_jollies_left (traduzione italiana nel renderer)', async () => {
     const { db, ctx, platform, generator, deps } = makeHarness({ winOnly: true });
     registerProfile(db, platform, 'a@test.it');
     db.prepare('UPDATE profile SET jollies_remaining = 0').run();
@@ -909,7 +969,7 @@ describe('channel:email:process — jolly (feature JOLLY, D4/D11)', () => {
 
     expect(generator.contexts[0]).toMatchObject({
       type: 'pick_rejected',
-      reason: 'non hai più jolly disponibili'
+      reason: 'no_jollies_left'
     });
     // Nessun pick registrato.
     expect(db.prepare('SELECT COUNT(*) AS n FROM pick').get()).toEqual({ n: 0 });

@@ -9,8 +9,10 @@
  * condividono senza duplicare la stringa.
  *
  * Ordine della cascata (LLD §3.1, briefing §1-F): registrazione/attivo →
- * squadra canonica → squadra nel TC → non bruciata → esito valido → non già
- * pick → accettazione temporale (round aperto, deadline, guard anti-frode RF-31).
+ * squadra canonica → squadra nel TC → non già pick (RF-08, invariante
+ * primario: un pick per profilo per round) → non bruciata → esito valido →
+ * accettazione temporale (round aperto, pick pre-apertura, deadline, guard
+ * anti-frode RF-31).
  */
 /** Motivi di rifiuto di un pick, in ordine di applicazione nella cascata. */
 export const PICK_REJECT_REASONS = [
@@ -18,12 +20,15 @@ export const PICK_REJECT_REASONS = [
   'profile_eliminated', // profilo eliminato: non può inviare pick (LLD §3.1)
   'unknown_team', // squadra NON nella lista canonica (check esatto post-parse, CL5)
   'team_not_in_round', // squadra canonica ma che NON gioca nel TC (CL4)
+  'pick_already_exists', // già esiste un pick per profilo+round (CL6, RF-08) — PRIMA
+  // delle bruciate: qualunque nuovo invio a round già coperto è un duplicato
   'team_already_used', // squadra già bruciata nel girone (RF-10, CS5)
   'invalid_outcome', // esito fuori win|draw|lose
-  'pick_already_exists', // già esiste un pick per profilo+round (CL6, RF-08)
   'jolly_not_allowed', // jolly dichiarato in modalità classica (difensivo: il jolly è SOLO win_only, D5)
   'no_jollies_left', // jolly dichiarato ma contatore per-profilo esaurito (D5, D3)
   'round_not_open', // il round non è aperto o round_state assente (CL3)
+  'pick_before_round_open', // receivedAt < round_state.opened_at: email RESIDUA di un
+  // run precedente processata a round già aperto (incidente UAT 2026-08-31)
   'after_acceptance', // receivedAt > deadline registrata (CL3, CS4)
   'after_kickoff' // guard anti-frode: receivedAt > kickoff effettivo (RF-31, CL17/CL18)
 ] as const;

@@ -69,10 +69,15 @@ function insertProfile(db: Database.Database, email = 'p@test.it'): number {
 }
 
 /** Apre il round 1 (status open) con la deadline registrata (o NULL se assente). */
-function openRound1(db: Database.Database, deadline: string | null = R1_DEADLINE): void {
-  db.prepare('INSERT INTO round_state (round, status, deadline) VALUES (1, ?, ?)').run(
+function openRound1(
+  db: Database.Database,
+  deadline: string | null = R1_DEADLINE,
+  openedAt: string = '2026-09-12T09:00:00.000Z'
+): void {
+  db.prepare('INSERT INTO round_state (round, status, deadline, opened_at) VALUES (1, ?, ?, ?)').run(
     'open',
-    deadline
+    deadline,
+    openedAt
   );
 }
 
@@ -157,6 +162,24 @@ describe('cascata di validazione — gate di profilo e contenuto (LLD §3.1)', (
     });
   });
 
+  it('duplicato STESSA squadra nello stesso round → pick_already_exists, NON team_already_used (RF-08 precede RF-10)', async () => {
+    const { db, ctx } = makeCtx();
+    const pid = insertProfile(db);
+    db.prepare("INSERT INTO pick (profile_id, round, team, outcome) VALUES (?, 1, ?, 'win')").run(
+      pid,
+      IM
+    );
+    // Il pick del round 1 brucia IM (isBurned include il round corrente), ma
+    // l'invariante RF-08 è PRIMARIO: qualunque nuovo invio a round già coperto
+    // è un duplicato, a prescindere dalla squadra (incidente UAT 2026-08-31:
+    // il re-invio dello stesso pick veniva rifiutato col motivo fuorviante
+    // team_already_used).
+    expect(await validatePick(ctx, baseInput({ profileId: pid, team: IM }))).toEqual({
+      valid: false,
+      reason: 'pick_already_exists'
+    });
+  });
+
   it('squadra già bruciata nel girone → team_already_used (RF-10/CS5), anche in pick separati', async () => {
     const { db, ctx } = makeCtx();
     const pid = insertProfile(db);
@@ -179,6 +202,36 @@ describe('accettazione temporale — round aperto, deadline e guard RF-31', () =
     expect(await validatePick(ctx, baseInput({ profileId: pid }))).toEqual({
       valid: false,
       reason: 'round_not_open'
+    });
+  });
+
+  it('receivedAt prima di opened_at → pick_before_round_open (email residua del run precedente, UAT 2026-08-31)', async () => {
+    const { db, ctx } = makeCtx();
+    const pid = insertProfile(db);
+    openRound1(db); // opened_at = 09:00
+    // L'email è stata RICEVUTA prima dell'apertura del round (residua in
+    // casella) ma processata a round aperto: oggi diverrebbe un pick fantasma.
+    expect(
+      await validatePick(ctx, baseInput({ profileId: pid, receivedAt: new Date('2026-09-12T08:00:00.000Z') }))
+    ).toEqual({
+      valid: false,
+      reason: 'pick_before_round_open'
+    });
+  });
+
+  it('replay TEST_OFFSET_DAYS>0: opened_at e receivedAt shiftati dello stesso delta → ordine preservato (nessun falso pick_before_round_open)', async () => {
+    const { db, ctx } = makeCtx();
+    const pid = insertProfile(db);
+    // In produzione `round:open` scrive opened_at con `makeNow(config)` e le
+    // email ricevono `shiftReceivedAt`: lo STESSO delta (TEST_OFFSET_DAYS)
+    // applicato a entrambi i timestamp preserva la relazione d'ordine. Qui lo
+    // simuliamo esplicitamente con un delta di 2 giorni.
+    const deltaMs = 2 * 86_400_000;
+    const openedAt = new Date('2026-09-12T09:00:00.000Z').getTime() - deltaMs;
+    openRound1(db, R1_DEADLINE, new Date(openedAt).toISOString());
+    const receivedAt = new Date(new Date('2026-09-12T10:00:00.000Z').getTime() - deltaMs);
+    expect(await validatePick(ctx, baseInput({ profileId: pid, receivedAt }))).toEqual({
+      valid: true
     });
   });
 
@@ -273,13 +326,27 @@ describe('registerPick — atomicità e override (CS2/CL6/RF-31, US10)', () => {
     expect(res).toMatchObject({ ok: true });
   });
 
+  it('override --reason bypassa pick_before_round_open (check temporale, US10)', async () => {
+    const { db, ctx } = makeCtx();
+    const pid = insertProfile(db);
+    openRound1(db);
+    const res = await registerPick(
+      ctx,
+      baseInput({ profileId: pid, receivedAt: new Date('2026-09-12T08:00:00.000Z') }),
+      { reason: 'intervento commissioner' }
+    );
+    expect(res).toMatchObject({ ok: true });
+  });
+
   it('override --reason NON aggira una squadra bruciata (briefing §1-G)', async () => {
     const { db, ctx } = makeCtx();
     const pid = insertProfile(db);
     openRound1(db);
+    // IM bruciata nel round 1 (stesso girone di andata); il pick al round 2
+    // (senza pick nel round 2) scatta team_already_used — NON un duplicato:
+    // il riordino RF-08 → RF-10 non cambia questo esito.
     db.prepare("INSERT INTO pick (profile_id, round, team, outcome) VALUES (?, 1, ?, 'win')").run(pid, IM);
-    // IM già bruciata; anche con reason l'inserimento di IM è rifiutato.
-    const res = await registerPick(ctx, baseInput({ profileId: pid, team: IM }), {
+    const res = await registerPick(ctx, baseInput({ profileId: pid, team: IM, round: 2 }), {
       reason: 'rimedio'
     });
     expect(res).toEqual({ ok: false, reason: 'team_already_used' });

@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 
 import { renderEmailV2 } from '../../../src/llm/email-renderer.js';
 import { modeFor } from '../../../src/game/mode.js';
+import { PICK_REJECT_REASONS } from '../../../src/game/errors.js';
 import { EMAIL_TYPES, type EmailContext, type EmailType } from '../../../src/llm/generator.js';
 
 const ROME = 'Europe/Rome';
@@ -85,13 +86,13 @@ describe('renderEmailV2 (email v3/v4) — output esatto per i 17 template', () =
   it('platform_unsubscribed', () => {
     const body = renderEmailV2(
       { type: 'platform_unsubscribed' },
-      'Non riceverai più comunicazioni. Per tornare, rispondi con "ISCRIZIONE [il tuo nome]" (nel subject o nel corpo).',
+      "Non riceverai più comunicazioni. Per tornare, rispondi con \"ISCRIZIONE [il tuo nome]\" (nell'oggetto o nel corpo).",
       ROME
     );
     expect(body).toBe(
       [
         'DISISCRIZIONE COMPLETATA',
-        'Non riceverai più comunicazioni. Per tornare, rispondi con "ISCRIZIONE [il tuo nome]" (nel subject o nel corpo).'
+        "Non riceverai più comunicazioni. Per tornare, rispondi con \"ISCRIZIONE [il tuo nome]\" (nell'oggetto o nel corpo)."
       ].join('\n')
     );
   });
@@ -211,18 +212,111 @@ describe('renderEmailV2 (email v3/v4) — output esatto per i 17 template', () =
       deadlineRemaining: '2 ore',
       reason: 'squadra già usata'
     };
-    const body = renderEmailV2(ctx, 'Riprova rispondendo con squadra + esito (win, draw, lose).', ROME);
+    const body = renderEmailV2(ctx, 'Riprova rispondendo con squadra + esito (vittoria, pareggio o sconfitta).', ROME);
     expect(body).toBe(
       [
         HEADER,
         'Ciao Mario!',
-        'PICK NON REGISTRATO: squadra già usata',
-        'Riprova rispondendo con squadra + esito (win, draw, lose).',
+        '⚠️ PICK NON REGISTRATO',
+        'squadra già usata',
+        'Riprova rispondendo con squadra + esito (vittoria, pareggio o sconfitta).',
         '',
         '⏰ DEADLINE PICK',
         DEADLINE_LINE
       ].join('\n')
     );
+  });
+
+  it('pick_rejected team_already_used → motivo in italiano con squadra e lista bruciate', () => {
+    const ctx: EmailContext = {
+      type: 'pick_rejected',
+      playerName: 'Pippi',
+      round: 3,
+      championshipRound: 5,
+      deadline: DEADLINE,
+      deadlineRemaining: '2 ore',
+      team: 'SSC Bari',
+      reason: 'team_already_used',
+      burnedTeams: [
+        { team: 'SSC Bari', round: 1 },
+        { team: 'US Catanzaro', round: 2 }
+      ]
+    };
+    const body = renderEmailV2(ctx, '', ROME);
+    expect(body).toBe(
+      [
+        HEADER,
+        'Ciao Pippi!',
+        '⚠️ PICK NON REGISTRATO',
+        '🚫 SSC BARI: questa squadra è già stata scelta',
+        '🔁 Riprova con una squadra che gioca in questo turno e che non hai ancora usato.',
+        '',
+        '🔒 SQUADRE GIÀ USATE',
+        'SSC Bari (Round 1)',
+        'US Catanzaro (Round 2)',
+        '',
+        '⏰ DEADLINE PICK',
+        DEADLINE_LINE
+      ].join('\n')
+    );
+  });
+
+  it('pick_rejected pick_already_exists → causa in italiano con emoji di blocco', () => {
+    const ctx: EmailContext = {
+      type: 'pick_rejected',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      deadline: DEADLINE,
+      deadlineRemaining: '2 ore',
+      team: 'SSC Bari',
+      reason: 'pick_already_exists'
+    };
+    const body = renderEmailV2(ctx, '', ROME);
+    expect(body).toBe(
+      [
+        HEADER,
+        'Ciao Mario!',
+        '⚠️ PICK NON REGISTRATO',
+        '⛔‼️ è già stato registrato un pick: SSC BARI',
+        'La tua scelta è già in gioco: non serve inviarla di nuovo.',
+        '',
+        '⏰ DEADLINE PICK',
+        DEADLINE_LINE
+      ].join('\n')
+    );
+  });
+
+  it('pick_rejected pick_before_round_open → motivo in italiano (email residua pre-apertura, UAT 2026-08-31)', () => {
+    const ctx: EmailContext = {
+      type: 'pick_rejected',
+      playerName: 'Mario',
+      round: 3,
+      championshipRound: 5,
+      deadline: DEADLINE,
+      deadlineRemaining: '2 ore',
+      team: 'SSC Bari',
+      reason: 'pick_before_round_open'
+    };
+    const body = renderEmailV2(ctx, '', ROME);
+    expect(body).toBe(
+      [
+        HEADER,
+        'Ciao Mario!',
+        '⚠️ PICK NON REGISTRATO',
+        '⏳ SSC BARI: pick inviato prima dell\'apertura del round — non è stato registrato.',
+        '',
+        '⏰ DEADLINE PICK',
+        DEADLINE_LINE
+      ].join('\n')
+    );
+  });
+
+  it('pick_rejected → nessun codice motivo nel corpo per TUTTI i motivi della cascata', () => {
+    for (const reason of PICK_REJECT_REASONS) {
+      const body = renderEmailV2({ type: 'pick_rejected', team: 'Roma', reason }, '', ROME);
+      expect(body, `motivo ${reason}`).not.toContain(reason);
+    }
   });
 
   it('pick_missing_elimination', () => {
@@ -464,7 +558,7 @@ describe('renderEmailV2 (email v3/v4) — output esatto per i 17 template', () =
     };
     const body = renderEmailV2(
       ctx,
-      'Puoi:\n1. Iscriverti: scrivi "ISCRIZIONE [il tuo nome]" (es. "ISCRIZIONE Mario") nel subject o nel corpo.\n2. Disiscriverti: scrivi "DISISCRIZIONE".\n3. Inviare un pick: scrivi squadra + esito (win, draw, lose).',
+      "Puoi:\n1. Iscriverti: scrivi \"ISCRIZIONE [il tuo nome]\" (es. \"ISCRIZIONE Mario\") nell'oggetto o nel corpo.\n2. Disiscriverti: scrivi \"DISISCRIZIONE\".\n3. Partecipare al torneo: scrivi \"PARTECIPO\".\n4. Inviare un pick: scrivi squadra + esito (vittoria, pareggio o sconfitta).",
       ROME
     );
     expect(body).toBe(
@@ -473,9 +567,10 @@ describe('renderEmailV2 (email v3/v4) — output esatto per i 17 template', () =
         'Ciao Mario!',
         'NON HO CAPITO LA TUA RICHIESTA',
         'Puoi:',
-        '1. Iscriverti: scrivi "ISCRIZIONE [il tuo nome]" (es. "ISCRIZIONE Mario") nel subject o nel corpo.',
+        "1. Iscriverti: scrivi \"ISCRIZIONE [il tuo nome]\" (es. \"ISCRIZIONE Mario\") nell'oggetto o nel corpo.",
         '2. Disiscriverti: scrivi "DISISCRIZIONE".',
-        '3. Inviare un pick: scrivi squadra + esito (win, draw, lose).',
+        '3. Partecipare al torneo: scrivi "PARTECIPO".',
+        '4. Inviare un pick: scrivi squadra + esito (vittoria, pareggio o sconfitta).',
         '',
         '⏰ DEADLINE PICK',
         DEADLINE_LINE
@@ -696,7 +791,7 @@ describe('renderEmailV2 (email v3) — vincoli strutturali', () => {
       tournament_open: '🏆 TORNEO APERTO!',
       pick_instructions: 'ROUND APERTO: INVIA IL TUO PICK!',
       pick_confirmed: 'PICK REGISTRATO → ROMA → VITTORIA',
-      pick_rejected: 'PICK NON REGISTRATO: squadra già usata',
+      pick_rejected: '⚠️ PICK NON REGISTRATO',
       pick_missing_elimination: '❌ SEI STATO ELIMINATO!',
       pick_auto_assigned: 'PICK AUTO ASSEGNATO → ROMA',
       round_result_correct: '✅ SEI ANCORA IN GARA!',
@@ -726,11 +821,12 @@ describe('renderEmailV2 (email v3) — vincoli strutturali', () => {
       // La riga chiave precede la narrativa (mai dopo di essa).
       expect(keyIndex, `tipo ${type}: riga chiave presente`).toBeGreaterThanOrEqual(0);
       expect(narrativeIndex, `tipo ${type}`).toBeGreaterThan(keyIndex);
-      // La parte FISSA è in MAIUSCOLO; per `pick_rejected` e
-      // `tournament_join_rejected` il `reason` è un dato dinamico verbatim
-      // (minuscolo): si verifica il solo prefisso.
+      // La parte FISSA è in MAIUSCOLO; `tournament_join_rejected` ha un
+      // reason dinamico verbatim (minuscolo) → si verifica il solo prefisso.
+      // `pick_rejected` ha la CHIAVE FISSA (`⚠️ PICK NON REGISTRATO`): il
+      // motivo è una riga separata, non parte della chiave.
       const fixedPart =
-        type === 'pick_rejected' || type === 'tournament_join_rejected'
+        type === 'tournament_join_rejected'
           ? keyLines[type].split(':')[0] ?? keyLines[type]
           : keyLines[type];
       expect(fixedPart, `tipo ${type}: parte fissa MAIUSCOLA`).toBe(fixedPart.toUpperCase());

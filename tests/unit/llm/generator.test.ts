@@ -278,14 +278,10 @@ describe('LLM Generator — win_only (ADR-016)', () => {
     expect(requests[0]?.system ?? '').toContain('vittoria, pareggio o sconfitta');
   });
 
-  it('deterministicNarrative con winOnly → fallback all\'overlay win_only', () => {
+  it('deterministicNarrative pick_rejected → vuota in entrambe le modalità (le righe motivo sono del renderer)', () => {
     const ctx: EmailContext = { type: 'pick_rejected' };
-    expect(deterministicNarrative(ctx, '   ', modeFor(true, 0))).toBe(
-      'Riprova rispondendo con il nome della squadra che vincerà.'
-    );
-    expect(deterministicNarrative(ctx, '   ', modeFor(false, 0))).toBe(
-      'Riprova rispondendo con squadra + esito (win, draw, lose).'
-    );
+    expect(deterministicNarrative(ctx, '   ', modeFor(true, 0))).toBe('');
+    expect(deterministicNarrative(ctx, '   ', modeFor(false, 0))).toBe('');
   });
 });
 

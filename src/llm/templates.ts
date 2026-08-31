@@ -190,12 +190,15 @@ export const DETERMINISTIC_NARRATIVES: Record<EmailType, string> = {
   platform_registered: 'Quando si apre il round riceverai le istruzioni per il pick.',
   platform_unsubscribe_confirm: `Rispondi a questa email con "${UNSUBSCRIBE_CONFIRM_WORDS[0]}" per completare la disiscrizione.\n\nSe cambi idea, non fare nulla: resterai iscritto.`,
   platform_unsubscribed:
-    'Non riceverai più comunicazioni. Per tornare, rispondi con "ISCRIZIONE [il tuo nome]" (nel subject o nel corpo).',
+    "Non riceverai più comunicazioni. Per tornare, rispondi con \"ISCRIZIONE [il tuo nome]\" (nell'oggetto o nel corpo).",
   platform_already_registered: "All'apertura del round riceverai le istruzioni per il pick.",
   tournament_open: 'Il round 1 parte a breve: stai pronto. Per partecipare al torneo, rispondi con "PARTECIPO".',
   pick_instructions: "Scegli una squadra e l'esito (vittoria, pareggio, sconfitta).",
   pick_confirmed: '',
-  pick_rejected: 'Riprova rispondendo con squadra + esito (win, draw, lose).',
+  // Vuota: le righe motivo del renderer (mappa `PICK_REJECT_REASON_LINES`)
+  // portano la spiegazione specifica per ogni motivo; una narrativa generica
+  // "riprova" sarebbe contraddittoria per `pick_already_exists`.
+  pick_rejected: '',
   pick_missing_elimination: 'Non è arrivato alcun pick entro la deadline.',
   pick_auto_assigned:
     'Non hai inviato un pick entro la deadline: te ne abbiamo assegnato uno in automatico (la prima squadra disponibile in ordine alfabetico).',
@@ -206,7 +209,7 @@ export const DETERMINISTIC_NARRATIVES: Record<EmailType, string> = {
   tournament_won: "Sei rimasto l'ultimo in gara: la vittoria è tutta tua!",
   tournament_shared_win: 'Insieme ai tuoi compagni di vetta avete portato a casa il torneo.',
   clarification:
-    'Puoi:\n1. Iscriverti: scrivi "ISCRIZIONE [il tuo nome]" (es. "ISCRIZIONE Mario") nel subject o nel corpo.\n2. Disiscriverti: scrivi "DISISCRIZIONE".\n3. Partecipare al torneo: scrivi "PARTECIPO".\n4. Inviare un pick: scrivi squadra + esito (win, draw, lose).',
+    "Puoi:\n1. Iscriverti: scrivi \"ISCRIZIONE [il tuo nome]\" (es. \"ISCRIZIONE Mario\") nell'oggetto o nel corpo.\n2. Disiscriverti: scrivi \"DISISCRIZIONE\".\n3. Partecipare al torneo: scrivi \"PARTECIPO\".\n4. Inviare un pick: scrivi squadra + esito (vittoria, pareggio o sconfitta).",
   tournament_closed: '',
   tournament_join_confirmed: "Sei in gara! Invia il tuo pick quando il round è aperto.",
   tournament_already_joined: 'Sei già in gara: non serve una nuova partecipazione.',
@@ -215,18 +218,19 @@ export const DETERMINISTIC_NARRATIVES: Record<EmailType, string> = {
 
 /**
  * Overlay win_only della NARRATIVA DETERMINISTICA (ADR-016): in modalità
- * `win_only` il pick è "solo la squadra che vincerà" — i soli testi fissi che
- * citano "squadra + esito" sono `pick_instructions`, `pick_rejected` e
- * `clarification`, qui sovrascritti. Gli altri tipi restano generici
- * (`platform_registered`/`platform_already_registered`/`round_result_*` non
- * citano l'esito e NON cambiano). `narrativeFor(type, mode)` è l'accesso
- * unico: fallback alla narrativa base quando l'overlay non esiste per il tipo.
+ * `win_only` il pick è "solo la squadra che vincerà" — i testi fissi che
+ * citano "squadra + esito" sono `pick_instructions` e `clarification`, qui
+ * sovrascritti (`pick_rejected` è VUOTA in entrambe le modalità: le righe
+ * motivo del renderer portano la spiegazione). Gli altri tipi restano
+ * generici (`platform_registered`/`platform_already_registered`/
+ * `round_result_*` non citano l'esito e NON cambiano).
+ * `narrativeFor(type, mode)` è l'accesso unico: fallback alla narrativa base
+ * quando l'overlay non esiste per il tipo.
  */
 export const WIN_ONLY_NARRATIVE_OVERRIDES: Partial<Record<EmailType, string>> = {
   pick_instructions: 'Scegli la squadra che vincerà.',
-  pick_rejected: 'Riprova rispondendo con il nome della squadra che vincerà.',
   clarification:
-    'Puoi:\n1. Iscriverti: scrivi "ISCRIZIONE [il tuo nome]" (es. "ISCRIZIONE Mario") nel subject o nel corpo.\n2. Disiscriverti: scrivi "DISISCRIZIONE".\n3. Partecipare al torneo: scrivi "PARTECIPO".\n4. Inviare un pick: scrivi il nome della squadra che vincerà.'
+    "Puoi:\n1. Iscriverti: scrivi \"ISCRIZIONE [il tuo nome]\" (es. \"ISCRIZIONE Mario\") nell'oggetto o nel corpo.\n2. Disiscriverti: scrivi \"DISISCRIZIONE\".\n3. Partecipare al torneo: scrivi \"PARTECIPO\".\n4. Inviare un pick: scrivi il nome della squadra che vincerà."
 };
 
 /**
@@ -341,6 +345,78 @@ export function templateFor(type: EmailType, mode: GameMode): string {
 }
 
 /**
+ * Mappa dei MOTIVI DI RIFIUTO del Game Engine (src/game/errors.ts) → testo
+ * umano in italiano per il canale email. La traduzione di un codice in testo
+ * è PRESENTAZIONE e appartiene al canale (come `outcomeItalian` nel renderer):
+ * il Game Engine resta sul codice, che resta stabile per CLI/log/test. Mai
+ * codici né inglese nelle email dei giocatori: ogni riga è in italiano con
+ * emoji che segnalano il problema (divieti, punti esclamativi). Riga 1 =
+ * spiegazione del motivo (con la squadra del pick in MAIUSCOLO, coerente con
+ * i box del renderer); riga 2 opzionale = prossimo passo. La mappa copre
+ * TUTTI i motivi di `PICK_REJECT_REASONS` (inclusi i jolly, che il processor
+ * traduce già lato contesto: qui servono alla resa diretta del renderer e al
+ * test "nessun codice nel corpo").
+ */
+const PICK_REJECT_REASON_LINES: Record<string, (team: string) => string[]> = {
+  profile_not_registered: () => ['🤔 Non risulti iscritto al torneo.'],
+  profile_eliminated: () => [
+    '🛑 Sei già stato eliminato dal torneo: non puoi più inviare pick.'
+  ],
+  unknown_team: () => ['🤔 Squadra non riconosciuta: controlla il nome e riprova.'],
+  team_not_in_round: (team) => [
+    `❓ ${team !== '' ? `${team} non gioca in questo turno` : 'Questa squadra non gioca in questo turno'}: scegli una squadra in campo.`
+  ],
+  team_already_used: (team) => [
+    team !== ''
+      ? `🚫 ${team}: questa squadra è già stata scelta`
+      : '🚫 Questa squadra è già stata scelta',
+    '🔁 Riprova con una squadra che gioca in questo turno e che non hai ancora usato.'
+  ],
+  invalid_outcome: () => ['📋 Esito non valido per le regole del torneo.'],
+  pick_already_exists: (team) => [
+    team !== '' ? `⛔‼️ è già stato registrato un pick: ${team}` : '⛔‼️ è già stato registrato un pick.',
+    // Nessun emoji di successo qui: il pick è solo REGISTRATO, l'esito non è
+    // ancora deciso — una spunta confonderebbe con un pick già corretto.
+    'La tua scelta è già in gioco: non serve inviarla di nuovo.'
+  ],
+  jolly_not_allowed: () => ['🎯 Il jolly non è ammesso in questa modalità.'],
+  no_jollies_left: () => ['🎯 Non hai più jolly disponibili.'],
+  round_not_open: () => [
+    '⏳ Nessun round è aperto in questo momento: riprova quando il round si aprirà.'
+  ],
+  pick_before_round_open: (team) => [
+    team !== ''
+      ? `⏳ ${team}: pick inviato prima dell'apertura del round — non è stato registrato.`
+      : "⏳ Pick inviato prima dell'apertura del round — non è stato registrato."
+  ],
+  after_acceptance: () => ['⏰ Pick arrivato oltre la scadenza: non è stato possibile registrarlo.'],
+  after_kickoff: () => [
+    '⏰ Pick arrivato a partita già iniziata: non è stato possibile registrarlo.'
+  ]
+};
+
+/**
+ * Righe in italiano per un motivo di rifiuto pick: `null` se il motivo NON è
+ * un codice della cascata (testo libero già italiano → mostrato verbatim dal
+ * renderer). La squadra del pick è interpolata in MAIUSCOLO quando presente.
+ */
+export function pickRejectReasonLines(reason: string, team?: string): string[] | null {
+  const mapped = PICK_REJECT_REASON_LINES[reason];
+  if (mapped === undefined) return null;
+  const teamUpper = team !== undefined ? team.toUpperCase() : '';
+  return mapped(teamUpper);
+}
+
+/**
+ * Motivo in italiano come SINGOLA riga per il prompt LLM
+ * (`serializeEmailContext`): codici → testo mappato (righe unite con spazio);
+ * testo libero → verbatim. La narrativa LLM non può quindi contenere codici.
+ */
+export function pickRejectReasonPlain(reason: string, team?: string): string {
+  return (pickRejectReasonLines(reason, team) ?? [reason]).join(' ');
+}
+
+/**
  * Formatta una data in italiano nel FUSO richiesto (D9): le date di gioco
  * sono istanti UTC assoluti; il fuso (TIMEZONE di sistema, default
  * Europe/Rome) conta SOLO al momento della comunicazione verso l'esterno e
@@ -367,7 +443,9 @@ export function serializeEmailContext(ctx: EmailContext, timeZone: string): stri
   if (ctx.team !== undefined) lines.push(`- Squadra: ${ctx.team}`);
   if (ctx.outcome !== undefined) lines.push(`- Esito previsto: ${ctx.outcome}`);
   if (ctx.playerResult !== undefined) lines.push(`- Esito del pick: ${ctx.playerResult}`);
-  if (ctx.reason !== undefined) lines.push(`- Motivo: ${ctx.reason}`);
+  // Motivo in italiano (codici mappati, testo libero verbatim): la narrativa
+  // LLM non deve mai riportare codici del Game Engine.
+  if (ctx.reason !== undefined) lines.push(`- Motivo: ${pickRejectReasonPlain(ctx.reason, ctx.team)}`);
   if (ctx.availableTeams !== undefined && ctx.availableTeams.length > 0) {
     lines.push(`- Squadre disponibili: ${ctx.availableTeams.join(', ')}`);
   }

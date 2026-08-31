@@ -326,9 +326,11 @@ function toEmailMatches(matches: Match[]): EmailMatchContext[] {
  * anche il round di utilizzo: nessuna duplicazione della regola del girone).
  * `startRound` è letto UNA volta dal chiamante (fix review 2026-08-23: prima
  * ogni riga bruciata rilanciando `turnFor` rileggeva `tournament_state` —
- * N query identiche per profilo): il TT deriva con `ttFor` puro.
+ * N query identiche per profilo): il TT deriva con `ttFor` puro. Esposta
+ * anche al wiring email (`email-processor`) per la mail `pick_rejected` con
+ * motivo `team_already_used` (lista bruciate sotto il motivo).
  */
-function getBurnedEmailTeams(
+export function getBurnedEmailTeams(
   db: Database.Database,
   profileId: number,
   round: number,

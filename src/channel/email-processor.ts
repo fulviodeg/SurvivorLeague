@@ -63,6 +63,7 @@ import type { IncomingMessage } from './adapter.js';
 import type { GameContext } from '../game/context.js';
 import { declareParticipation } from '../game/registration.js';
 import { registerPick } from '../game/pick-processor.js';
+import { getBurnedEmailTeams } from '../game/round-manager.js';
 import { formatRemaining } from '../game/round-time.js';
 import { getStartRound, turnFor } from '../game/turn.js';
 import { assertModeConsistent } from '../game/mode.js';
@@ -135,28 +136,13 @@ export interface ProcessBatchResult {
  * Formula del pick nelle risposte di rifiuto/chiarimento (ADR-016): in
  * modalità `win_only` il giocatore sceglie SOLO la squadra che vincerà, quindi
  * il testo chiede "solo il nome della squadra che vincerà"; in modalità
- * classica resta "squadra + esito (win, draw, lose)".
+ * classica resta "squadra + esito (vittoria, pareggio o sconfitta)". Mai
+ * inglese né codici nelle email dei giocatori.
  */
 function pickFormula(winOnly: boolean): string {
-  return winOnly ? 'solo il nome della squadra che vincerà' : 'squadra + esito (win, draw, lose)';
-}
-
-/**
- * Motivi di rifiuto jolly in forma UMANA (feature JOLLY, D11): i motivi
- * `no_jollies_left` e `jolly_not_allowed` sono tradotti in italiano per le
- * risposte `pick_rejected` (la chiave del renderer è
- * "PICK NON REGISTRATO: <motivo>"). Gli altri motivi restano invariati (null
- * → il chiamante usa il motivo grezzo).
- */
-function jollyReasonText(reason: string): string | null {
-  if (reason === 'no_jollies_left') return 'non hai più jolly disponibili';
-  if (reason === 'jolly_not_allowed') return 'il jolly non è ammesso in questa modalità';
-  return null;
-}
-
-/** Motivo di rifiuto leggibile: testo umano jolly se presente, altrimenti il motivo grezzo. */
-function readableReason(reason: string): string {
-  return jollyReasonText(reason) ?? reason;
+  return winOnly
+    ? 'solo il nome della squadra che vincerà'
+    : 'squadra + esito (vittoria, pareggio o sconfitta)';
 }
 
 /**
@@ -223,13 +209,12 @@ async function sendReply(
 }
 
 /**
- * Testo del rifiuto "torneo iniziato" (ADR-019, dal TT2). Il TC può mancare
- * quando non esiste un round aperto: in tal caso il messaggio omette la coppia.
+ * Testo del rifiuto "torneo iniziato" (ADR-019, dal TT2), SENZA numeri di
+ * turno né sigle TT/TC (convenzione 1): la coppia umana è già nell'header
+ * della mail (roundEmailContext). Mai codici né inglese al giocatore.
  */
-function startedRejectionReason(tc: number | null | undefined): string {
-  return tc === null || tc === undefined
-    ? 'torneo iniziato: la partecipazione è chiusa (deadline del TT 1 superata)'
-    : `torneo iniziato al TT 1, TC ${tc}: la partecipazione è chiusa (deadline del TT 1 superata)`;
+function startedRejectionReason(): string {
+  return 'torneo iniziato: la partecipazione è chiusa (la scadenza del primo turno è superata)';
 }
 
 /**
@@ -326,7 +311,7 @@ async function processOne(
         ? {
             type: 'platform_already_registered',
             playerName: account.name ?? account.email,
-            reason: 'sei già iscritto alla piattaforma (email_already_registered)'
+            reason: 'sei già iscritto alla piattaforma'
           }
         : {
             type: 'platform_registered',
@@ -464,7 +449,7 @@ async function processOne(
     if (round === null) {
       await sendReply(ctx, identity.identifier, {
         type: 'pick_rejected',
-        reason: 'nessun turno è aperto in questo momento (round_not_open)'
+        reason: 'nessun turno è aperto in questo momento'
       });
       await deps.markSeen(message);
       return { from: message.from, kind, action: 'round_not_open', seen: true };
@@ -500,7 +485,7 @@ async function processOne(
         await sendReply(ctx, identity.identifier, {
           type: 'pick_rejected',
           ...roundCtx,
-          reason: startedRejectionReason(roundCtx.championshipRound)
+          reason: startedRejectionReason()
         });
         await deps.markSeen(message);
         return { from: message.from, kind, action: 'rejected_tt2', seen: true };
@@ -559,14 +544,31 @@ async function processOne(
       await deps.markSeen(message);
       return { from: message.from, kind, action: 'pick_registered', seen: true };
     }
-    await sendReply(ctx, identity.identifier, {
+    const rejectedCtx: EmailContext = {
       type: 'pick_rejected',
       ...roundCtx,
       team: clazz.pick.team,
       outcome: clazz.pick.outcome,
-      // Feature JOLLY (D11): i motivi jolly in italiano, gli altri invariati.
-      reason: readableReason(result.reason)
-    });
+      // Il motivo è SEMPRE il CODICE della cascata (contratto Game Engine,
+      // tutti i 13 motivi inclusi i jolly): la traduzione in italiano è del
+      // renderer (mappa `PICK_REJECT_REASON_LINES`, fonte unica — mai qui).
+      reason: result.reason
+    };
+    // Motivo `team_already_used`: la mail mostra sotto il motivo la lista
+    // delle squadre bruciate del profilo nel girone (stessa fonte unica di
+    // `rules.getBurnedTeams` via `getBurnedEmailTeams`, round di utilizzo
+    // incluso) — il giocatore vede QUALI squadre non può più scegliere.
+    if (result.reason === 'team_already_used') {
+      const totalRounds = await ctx.dataProvider.getTotalRounds();
+      rejectedCtx.burnedTeams = getBurnedEmailTeams(
+        ctx.db,
+        profile.id,
+        round,
+        totalRounds,
+        getStartRound(ctx.db)
+      );
+    }
+    await sendReply(ctx, identity.identifier, rejectedCtx);
     await deps.markSeen(message);
     return { from: message.from, kind, action: 'pick_rejected', detail: result.reason, seen: true };
   }
