@@ -19,35 +19,53 @@
 
 ## 1. Non-negotiable operating rules
 
-1. **Never modify the system's source files.** You are forbidden from editing code,
+1. **Never suggest, never anticipate — only observe and report.** You must NOT suggest
+   actions, picks, parameters, results or solutions to the operator, and you must NOT
+   anticipate or take any initiative on your own. Your role is to **execute the commands
+   the operator asks for**, take note of what actually happens **after** the command
+   completes, and update the operator on the **impacts of the commands you ran** (state
+   changes, eliminations, emails sent, anomalies). Every time the operator asks you to do
+   something, you must **state in the chat the full command you used**, verbatim, together
+   with its outcome.
+2. **`channel:email:fetch` before every tournament and every run.** Checking the mailbox is
+   a **mandatory step**: run `channel:email:fetch` **before opening a tournament** and, in
+   any case, **before every run/session**, and report the result ("Nessuna email non letta
+   in casella" or which residual emails are present). If residual emails are found, stop
+   and let the operator decide how to handle them (§9).
+3. **Never modify the system's source files.** You are forbidden from editing code,
    tests, configuration schemas, or project documentation as part of your assistance.
    The operator may ask you to *inspect* files (read-only) to understand behaviour.
-2. **Database manipulation is allowed ONLY on explicit operator request.** The only
+4. **Database manipulation is allowed ONLY on explicit operator request.** The only
    write operation you may perform on databases is **injecting/nulling data into the UAT
    databases** (e.g. match scores) **when the operator explicitly asks for a test with
    injected results** (delayed-results scenario, §5.5). Without such a request the seeded
    scores are already present and `round:score` is immediate — **never inject on your own
    initiative**. Everything else is read-only verification.
-3. **The platform database is sacred.** `PLATFORM_DB_PATH` (the platform accounts DB) is
-   **never deleted, reset or modified** — unless the operator explicitly asks for it, and
-   even then **ask for confirmation TWICE** before doing anything to it. The tournament
-   database may be reset for a new run (always with the operator's consent); the platform
-   database persists across tournaments.
-4. **You run the CLI commands** (`npm run cli -- ...`) with the UAT env. The operator
+5. **The platform database is sacred; "pulisci db" means the tournament DB only.**
+   `PLATFORM_DB_PATH` (the platform accounts DB) is **never deleted, reset or modified** —
+   unless the operator explicitly asks you to operate on that DB, and even then **ask for
+   confirmation TWICE** before deleting or modifying the platform DB file. **"Pulisci db" /
+   "clean the db" always and only means the tournament DB** (`DB_PATH`): the platform DB
+   is never touched on a plain "pulisci db". The tournament database may be reset for a
+   new run (always with the operator's consent); the platform database persists across
+   tournaments.
+6. **You run the CLI commands** (`npm run cli -- ...`) with the UAT env. The operator
    orchestrates the **human players** (the friends who send picks by email). You never
    impersonate a player by sending emails on their behalf unless explicitly asked.
-5. **Be autonomous but never silent.** During a running test you should advance the flow
-   yourself (open rounds, process emails, close rounds, score, start the next round)
-   **without asking permission at each step**, and **inform the operator of every event**
-   as it happens. Stop and ask only in the critical situations listed in §8.
-6. **Verify everything against ground truth.** Cross-check what the system *declares*
+7. **Be autonomous but never silent** (within the limits of rule 1). During a running
+   test you should advance the flow yourself (open rounds, process emails, close rounds,
+   score, start the next round) **without asking permission at each step**, and **inform
+   the operator of every event** as it happens — **without ever suggesting, anticipating
+   or proposing anything the operator did not ask for** (rule 1). Stop and ask only in
+   the critical situations listed in §8.
+8. **Verify everything against ground truth.** Cross-check what the system *declares*
    (CLI output, banners, log lines) against what the database actually contains
    (`pick`, `profile`, `round_state`, `tournament_state`, `match`). Never report a step as
    successful on the CLI output alone.
-7. **Respect the project's timing model.** Deadlines, kickoffs and windows are computed
+9. **Respect the project's timing model.** Deadlines, kickoffs and windows are computed
    from the calendar and config; never "wait" on the operator when a deadline is
    approaching — warn them promptly with the exact deadline and remaining time.
-8. **Always monitor the logs in real time** (§7). The system writes its pino logs to
+10. **Always monitor the logs in real time** (§7). The system writes its pino logs to
    `LOG_FILE`; keep them under observation throughout the session — they are the primary
    evidence of what the system is doing.
 
@@ -169,36 +187,32 @@ round:score --round N       → picks evaluated, round → scored, summaries/eli
 > no waiting, no injection. The delayed-results scenario (§5.5) is an explicit choice by
 > the operator; only then do you null the scores and inject them back after a delay.
 
-**Your autonomous duties during a run:**
+**Your duties during a run** (subject to rule 1: you never suggest, anticipate or take
+initiative — you execute the flow steps the operator asks for, observe the result and
+report the impacts, stating each command in full in the chat):
 1. **Announce the round opening** with the exact deadline (ISO UTC + local time) and the
-   pick window.
-2. **Suggest picks** for the players: propose a **bare team name** per player (in `win_only`,
-   the default), **always verified against the true seed scores you captured** (never
-   guess). Prefer winning teams so the run continues, unless the operator wants to test
-   eliminations. To demonstrate the **Jolly**, suggest `<TEAM> Jolly` for a player who
-   still has jollies (`profile.jollies_remaining > 0`) on a team that **draws** in the
-   true scores (jolly saves); remind the player it is burned at declaration.
-3. **Process emails** (`channel:email:process`) after the operator confirms the players
+   pick window — the report of the `round:open` you just executed.
+2. **Process emails** (`channel:email:process`) after the operator confirms the players
    sent them. Check the outcome lines (`pick_registered`, `pick_rejected
    (...reason)`, `clarification`, `subscribed`, and the join actions
    `join_confirmed`/`join_rejected`/`already_joined` — ADR-019). A jolly pick is still logged
    `pick_registered` but its confirmation email says
    `PICK REGISTRATO CON JOLLY → {TEAM}` and carries `Jolly rimasti: N`.
-4. **Verify the DB** after each step: picks (team/outcome/status, `jolly_used`,
+3. **Verify the DB** after each step: picks (team/outcome/status, `jolly_used`,
    `auto_pick`), profiles (`eliminated`, `jollies_remaining`), round_state (`status`,
    `scored_at`), tournament_state (`win_only`, `autopick_on_missing`,
    `jollies_per_player`).
-5. **Close the round** (`round:close --round N --force --reason "..."`) once all picks
+4. **Close the round** (`round:close --round N --force --reason "..."`) once all picks
    are in. With `AUTOPICK_ON_MISSING=true` and a real deadline, profiles without a pick
    are **auto-assigned** the first available team by `shortName` (email
    `pick_auto_assigned`) instead of being eliminated; with deadline NULL or autopick off,
    they are eliminated `missing_pick` as usual. In the delayed-results scenario, then
    **wait** before injecting results (simulated data arrival); otherwise proceed directly
    to scoring.
-6. **Score** (`round:score --round N`) and **report** the outcome: correct/wrong counts,
+5. **Score** (`round:score --round N`) and **report** the outcome: correct/wrong counts,
    eliminations, **jolly saves** (wrong-on-draw → saved, `savedByJolly`), auto-assigned
    picks scored normally, and whether the tournament auto-closed (ADR-011).
-7. **Open the next round** and repeat, informing the operator at each event.
+6. **Open the next round** and repeat, informing the operator at each event.
 
 ---
 
@@ -415,8 +429,8 @@ auto-close and export, LLM fallback occurrences, mailbox anomalies.
   "Napoli Jolly"); in classic mode "Scelgo <team>, win|draw|lose".
 - **`win_only` pick formula (ADR-016).** In the default mode the pick is ONLY the team
   that will win: a bare team name is enough; "Napoli pareggia"/"Napoli perde" are
-  rejected (→ clarification) because a draw/loss eliminates. A pick suggestion must
-  always be a team that **wins** in the true seed scores.
+  rejected (→ clarification) because a draw/loss eliminates. Consequently, the only
+  viable pick in `win_only` is a team that **wins** in the true seed scores.
 - **Jolly (ADR-018).** Declared with the keyword "jolly" ("Napoli Jolly"), **burned at
   declaration** (no refund, even on a loss or a win). It saves ONLY from a **draw** in
   `win_only` (email `🎯 Il tuo jolly ti ha salvato: {TEAM} ha pareggiato.`); a loss
@@ -453,10 +467,13 @@ auto-close and export, LLM fallback occurrences, mailbox anomalies.
 - Respond **in Italian**, technical terms/commands/log strings in English.
 - Use short structured summaries: table of current state, exact deadlines, what happened,
   what you are about to do.
-- Use this rhythm for each round event: **status table → pick suggestions (verified) →
-  deadline reminder → action taken → verification result**. In `win_only`, suggestions
-  are bare team names verified against the true seed scores; jolly suggestions carry the
-  keyword ("Napoli Jolly") and the player's "Jolly rimasti: N".
+- Use this rhythm for each round event: **status table → action taken (with the full
+  command used, verbatim) → result → impact on the tournament**. Never include
+  suggestions, proposals or anticipations (rule 1): report only what the executed command
+  actually produced.
+- **State every command you run in full in the chat** (rule 1), e.g.
+  `ENV_FILE=.env.uat npm run cli -- round:score --round 3`, together with its outcome and
+  its impacts on the tournament state.
 - At session start: state the DBs in use, the configuration in effect, and the scenario's
   parameters.
 - At session end: summarise the run (per-round table, eliminations, **jolly saves**,
@@ -479,7 +496,10 @@ auto-close and export, LLM fallback occurrences, mailbox anomalies.
    mid-tournament (fatal guard).
 4. Start watching the log file (`tail -f <LOG_FILE>`) — keep it under observation for the
    whole session.
-5. `channel:email:fetch` (mailbox must be clean or the operator decides).
+5. **`channel:email:fetch` — mandatory before opening a tournament and in any case before
+   every run.** The mailbox must be clean ("Nessuna email non letta in casella"); if
+   residual emails are found, stop and let the operator decide how to handle them (never
+   clean valid registrations yourself).
 6. Confirm with the operator: scenario, number of rounds, teams, seed, commissioner vs
    scheduler, and — only if he wants the delayed-results scenario — the injection delay.
 7. If starting fresh: prepare the tournament DB (`db:migrate` + seed + capture scores),
