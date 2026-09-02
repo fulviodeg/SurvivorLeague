@@ -119,9 +119,11 @@ export const channelEmailProcessCommand: CommandModule<object, JsonArg> = {
 
     // Lock anti-concorrenza (src/cli/email-process-lock.ts): il cron può
     // lanciare un secondo run mentre il primo è ancora in elaborazione (batch
-    // > 1 min con retry LLM); senza lock i due processi leggerebbero le stesse
-    // email non lette e produrrebbero risposte duplicate/contraddittorie.
-    const lockPath = lockPathFor(config.DB_PATH);
+    // > 1 min con retry LLM); senza lock due processi che leggono la STESSA
+    // casella IMAP produrrebbero risposte duplicate/contraddittorie. Il lock è
+    // SCOPATO ALLA CASELLA (IMAP_HOST + IMAP_USER), non al DB: due ambienti
+    // che condividono la stessa casella usano lo stesso lock.
+    const lockPath = lockPathFor(config.IMAP_HOST, config.IMAP_USER);
     const lock = acquireLock(lockPath);
     if (lock === null) {
       const holderPid = readHolderPid(lockPath);

@@ -6,8 +6,9 @@
  * temporanee (`fs.mkdtempSync`): MAI sulla `data/` reale del repo. Nessuna
  * rete, nessun DB: solo `node:fs` + `process.kill(pid, 0)`.
  *
- * Coprono: derivazione del path dal DB_PATH (incluso isolamento tra percorsi
- * diversi), acquisizione esclusiva (secondo acquire → null), rilascio,
+ * Coprono: derivazione del path dalla CASELLA IMAP (stessa casella → stesso
+ * lock, caselle diverse → lock diversi, path in os.tmpdir()),
+ * acquisizione esclusiva (secondo acquire → null), rilascio,
  * steal del lock stantio (PID morto / contenuto corrotto + mtime vecchio),
  * fallback mtime che NON scatta su contenuto corrotto ma mtime fresco,
  * touch dell'mtime e rilascio no-op su file assente.
@@ -32,13 +33,26 @@ function tmpDir(): string {
 }
 
 describe('lockPathFor', () => {
-  it('deriva <dir>/<basename>.lock da ./data/x.db', () => {
-    expect(lockPathFor('./data/x.db')).toBe(path.join('data', 'x.db.lock'));
+  it('stessa casella → stesso path (lock condiviso tra ambienti, mai per DB)', () => {
+    const a = lockPathFor('imap.gmail.com', 'a@example.com');
+    const b = lockPathFor('imap.gmail.com', 'a@example.com');
+    expect(a).toBe(b);
   });
 
-  it('percorsi DB diversi producono lock diversi (nessun riuso incrociato)', () => {
-    const a = lockPathFor('./data/x.db');
-    const b = lockPathFor('./data/y.db');
+  it('il path vive in os.tmpdir() (condiviso tra gli ambienti della macchina)', () => {
+    const p = lockPathFor('imap.gmail.com', 'a@example.com');
+    expect(p.startsWith(os.tmpdir() + path.sep)).toBe(true);
+  });
+
+  it('utenti diversi → lock diversi (caselle diverse non collidono)', () => {
+    const a = lockPathFor('imap.gmail.com', 'a@example.com');
+    const b = lockPathFor('imap.gmail.com', 'b@example.com');
+    expect(a).not.toBe(b);
+  });
+
+  it('host diversi → lock diversi', () => {
+    const a = lockPathFor('imap.gmail.com', 'a@example.com');
+    const b = lockPathFor('imap.other.com', 'a@example.com');
     expect(a).not.toBe(b);
   });
 });
