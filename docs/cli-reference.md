@@ -65,6 +65,26 @@ npm run cli -- <command> [options]
 
 Example: `npm run cli -- tournament:start --start-round 1`
 
+**On the VPS (deployed environments).** Two environments run on the VPS
+(`staging` and `prod`), each with its own `.env` and databases under
+`/opt/survivor/<env>`. The recommended form is the wrapper script `sl`
+(see `scripts/sl.sh`):
+
+```bash
+/opt/survivor/sl.sh <staging|prod> <command> [options]     # as user survivor
+sudo -u survivor /opt/survivor/sl.sh <staging|prod> <command> [options]   # as root
+```
+
+The direct form (same commands, no wrapper) is:
+
+```bash
+cd /opt/survivor/<env> && node dist/index.js <command> [options]
+```
+
+On the VPS there is **no `ENV_FILE`**: each environment reads its own `.env`
+from the working directory (the staging `.env` already has `TEST_MODE=true`,
+so `sl staging …` is equivalent to the local `ENV_FILE=.env.uat npm run cli -- …`).
+
 **Environment file selector.** Prefixing a command with `ENV_FILE=<path>` loads
 that env file instead of the default `.env`:
 
@@ -74,7 +94,9 @@ ENV_FILE=.env.uat npm run cli -- <command>
 
 This is the single activation point of TEST MODE (see the administrator's
 manual, §Operational Modes). If `ENV_FILE` points to a file that does not
-exist, startup fails with an error that names the path.
+exist, startup fails with an error that names the path. The selector is for
+local development only: on the VPS the environment is selected by the `sl`
+wrapper argument or by the working directory.
 
 **Common options.**
 

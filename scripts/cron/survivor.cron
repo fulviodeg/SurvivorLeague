@@ -1,0 +1,7 @@
+# prod
+#* * * * * cd /opt/survivor/prod && /usr/bin/node dist/index.js scheduler:tick >> /opt/survivor/prod/logs/cron.log 2>&1
+#* * * * * cd /opt/survivor/prod && /usr/bin/node dist/index.js channel:email:process >> /opt/survivor/prod/logs/cron-mail.log 2>&1
+
+# staging
+#* * * * * cd /opt/survivor/staging && /usr/bin/node dist/index.js scheduler:tick >> /opt/survivor/staging/logs/cron.log 2>&1
+#* * * * * cd /opt/survivor/staging && /usr/bin/node dist/index.js channel:email:process >> /opt/survivor/staging/logs/cron-mail.log 2>&1

@@ -392,13 +392,32 @@ and accounts the rounds by itself according to the calendar; players interact
 only by email. The commissioner supervises and intervenes only on anomalies.
 
 **Configuration.** `SCHEDULER_ENABLED=true` and **two** cron lines (typically
-every minute):
+every minute).
+
+Local development (manual crontab, paths of the development machine):
 
 ```cron
 # Round orchestration (open/close/account)
 */1 * * * * cd /home/fulvio/dev/SurvivorLeague && npm run cli -- scheduler:tick >> /var/log/survivor.log 2>&1
 # Inbound email processing (registrations, unsubscriptions and picks)
 */1 * * * * cd /home/fulvio/dev/SurvivorLeague && npm run cli -- channel:email:process >> /var/log/survivor-mail.log 2>&1
+```
+
+**On the VPS the crontab is NOT managed by hand**: it lives in the versioned
+template `scripts/cron/survivor.cron` in the repository (4 lines, 2 per
+environment — `staging` and `prod`) and is installed by `deploy.sh` at every
+deployment (D15). Any future change to the cron lines is made only in the
+template in the repo and arrives on the VPS with the next deploy — never with
+`crontab -e`. The current template (paths are the compiled form on the VPS):
+
+```cron
+# prod
+* * * * * cd /opt/survivor/prod && /usr/bin/node dist/index.js scheduler:tick >> /opt/survivor/prod/logs/cron.log 2>&1
+* * * * * cd /opt/survivor/prod && /usr/bin/node dist/index.js channel:email:process >> /opt/survivor/prod/logs/cron-mail.log 2>&1
+
+# staging
+* * * * * cd /opt/survivor/staging && /usr/bin/node dist/index.js scheduler:tick >> /opt/survivor/staging/logs/cron.log 2>&1
+* * * * * cd /opt/survivor/staging && /usr/bin/node dist/index.js channel:email:process >> /opt/survivor/staging/logs/cron-mail.log 2>&1
 ```
 
 **Two crons, not one.** `scheduler:tick` orchestrates the rounds but **never
@@ -430,11 +449,13 @@ available, read-only, in any mode.
 winner (during `round:close`/`round:score`, automatic in cron mode too), the
 tournament closes itself: winners are notified, the export is written to
 `TOURNAMENT_EXPORT_DIR`, and the scheduler stops (`scheduler:status` reports
-`FINITO (chiuso automaticamente)` with no further actions). The one manual
-operational step remaining is to **remove the `scheduler:tick` cron line** so
-that useless ticks stop; `channel:email:process` can stay active
-(registrations, unsubscriptions and clarifications keep working). The closed
-tournament's history remains consultable in the export archive and with
+`FINITO (chiuso automaticamente)` with no further actions). After closure the
+ticks are harmless: the scheduler is inhibited and no action is taken, so
+**the cron lines stay in place** (managed by the versioned template, D15); in
+particular, the historical recommendation to remove the `scheduler:tick` line
+after closure **no longer applies** on the VPS. `channel:email:process` stays
+active (registrations, unsubscriptions and clarifications keep working). The
+closed tournament's history remains consultable in the export archive and with
 `winner:check`.
 
 ### 4.3 Test Mode
@@ -518,13 +539,31 @@ scenario, the mailbox cleanup and the glossary — is
 
 ### 5.1 Invocation and common conventions
 
+**Development (local machine):**
+
 ```bash
 npm run cli -- <command> [options]
 ```
 
+**Deployed (VPS, environments `staging` and `prod`):** the recommended form is
+the wrapper `sl` (see `scripts/sl.sh`), which selects the environment and
+reads its own `.env` (no `ENV_FILE` on the VPS):
+
+```bash
+sudo -u survivor /opt/survivor/sl.sh <staging|prod> <command> [options]
+```
+
+The direct form (same commands) is `cd /opt/survivor/<env> && node dist/index.js
+<command> [options]`. The staging `.env` already has `TEST_MODE=true`, so
+`sl staging …` is equivalent to the local `ENV_FILE=.env.uat npm run cli -- …`.
+
+Common conventions (all forms):
+
 - `--json` (most commands): structured JSON output instead of Italian text.
 - `--help` / `-h`: command help, no configuration required.
-- `ENV_FILE=<path>`: loads an alternative env file (TEST MODE activation).
+- `ENV_FILE=<path>`: loads an alternative env file (TEST MODE activation). Local
+  development only: on the VPS the environment is selected by the `sl` wrapper
+  argument or by the working directory.
 - Exit code `0` on success; `1` on configuration errors, rejected operations
   and command errors, with a clean message on stderr (no stack trace).
 - All write operations are idempotent and safe to re-run.
@@ -677,14 +716,20 @@ of a tournament and beyond.
    mailbox with an App Password (for IMAP and SMTP); a football-data.org API
    token (from the product owner); an LLM API key (OpenAI-compatible
    provider).
-2. **Install.** `npm install`.
+2. **Install.** `npm install` (development) or the versioned deploy process on
+   the VPS (see `docs/deploy-vps-guide.md`).
 3. **Configure.** `cp .env.example .env` and fill in the required values
    (IMAP/SMTP credentials, LLM key and models, football-data token, database
-   paths). See §7 for every parameter.
+   paths). See §7 for every parameter. On the VPS the `.env` of each
+   environment lives in `/opt/survivor/<env>/.env` and is never overwritten
+   by `deploy.sh`.
 4. **Create the databases.** `npm run cli -- db:migrate` (tournament) and
    `npm run cli -- platform:migrate` (platform accounts). Both idempotent.
+   On the VPS: `sudo -u survivor /opt/survivor/sl.sh <staging|prod> db:migrate`
+   and `platform:migrate` (also run automatically by `deploy.sh`).
 5. **Import the season.** `npm run cli -- data:import`, then verify with
    `npm run cli -- data:calendar` (380 matches for a full Serie A season).
+   On the VPS: `sudo -u survivor /opt/survivor/sl.sh <staging|prod> data:import`.
 
 From this point the system is idle but fully operative: registrations already
 work.

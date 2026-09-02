@@ -245,6 +245,21 @@ cima al corpo il banner `[TEST MODE] This email was sent by a test instance of S
 > usa `pippo.db`). Per le prove **ripetibili e auditabili**, però, si usano
 > **file env dedicati** (`.env.uat`, `.env.uat-replay`), non override inline.
 
+> **Su VPS staging (ambiente deployato).** Lo staging della VPS è già un
+> ambiente TEST MODE permanente (il suo `.env` ha `TEST_MODE=true`, DB e log
+> dedicati con nome `staging`): niente `ENV_FILE`. Ogni comando della guida si
+> esegue con il wrapper `sl` (vedi `scripts/sl.sh`):
+>
+> ```bash
+> sudo -u survivor /opt/survivor/sl.sh staging <comando> [opzioni]
+> ```
+>
+> (da utente `survivor`: `/opt/survivor/sl.sh staging …`). Esempi:
+> `sudo -u survivor /opt/survivor/sl.sh staging db:migrate`,
+> `… staging data:seed-synthetic --teams 20 --rounds 8 …`,
+> `… staging tournament:start`. Equivalenza: `sl staging …` ≈ locale
+> `ENV_FILE=.env.uat npm run cli -- …`.
+
 ### 2.2 Come si usa (le due modalità)
 
 Ci sono due modalità operative, trattate in dettaglio nel §3:

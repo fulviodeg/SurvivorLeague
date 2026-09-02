@@ -9,7 +9,7 @@
   "scripts": {
     "cli": "tsx src/index.ts",
     "db:migrate": "tsx src/index.ts db:migrate",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && cp src/llm/team-aliases.md src/llm/team-aliases-synthetic.md dist/llm/",
     "test": "vitest run --passWithNoTests",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
