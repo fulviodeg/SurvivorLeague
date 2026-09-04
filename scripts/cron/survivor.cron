@@ -1,7 +1,9 @@
-# prod
-#* * * * * cd /opt/survivor/prod && /usr/bin/node dist/index.js scheduler:tick >> /opt/survivor/prod/logs/cron.log 2>&1
-#* * * * * cd /opt/survivor/prod && /usr/bin/node dist/index.js channel:email:process >> /opt/survivor/prod/logs/cron-mail.log 2>&1
+# prod (scheduler ogni 3 min: refresh football-data a 1/3; email ogni 1 min:
+# finestra minima per i pick dell'ultimo minuto prima della deadline)
+*/3 * * * * cd /opt/survivor/prod && /usr/bin/node dist/index.js scheduler:tick >> /opt/survivor/prod/logs/cron.log 2>&1
+* * * * * cd /opt/survivor/prod && /usr/bin/node dist/index.js channel:email:process >> /opt/survivor/prod/logs/cron-mail.log 2>&1
 
-# staging
-* * * * * cd /opt/survivor/staging && /usr/bin/node dist/index.js scheduler:tick >> /opt/survivor/staging/logs/cron.log 2>&1
-* * * * * cd /opt/survivor/staging && /usr/bin/node dist/index.js channel:email:process >> /opt/survivor/staging/logs/cron-mail.log 2>&1
+# staging (disattivo durante il live: stessa casella IMAP di prod — mai attivo
+# in parallelo, altrimenti risponde TEST MODE alle email reali)
+#* * * * * cd /opt/survivor/staging && /usr/bin/node dist/index.js scheduler:tick >> /opt/survivor/staging/logs/cron.log 2>&1
+#* * * * * cd /opt/survivor/staging && /usr/bin/node dist/index.js channel:email:process >> /opt/survivor/staging/logs/cron-mail.log 2>&1
